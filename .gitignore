@@ -10,6 +10,10 @@ dist/
 # reference build artifact from origin project
 origin/
 
+# original source study (extracted zip + research materials, dev only)
+_source-study/
+totoro-paradise-main.zip
+
 # runtime user data & dev caches
 data/
 .cache/
@@ -18,6 +22,7 @@ npm-debug.log*
 
 # dev docs (kept in dev copy only)
 DEVELOPMENT.md
+研究-源码解读.md
 *.local
 
 # editor
