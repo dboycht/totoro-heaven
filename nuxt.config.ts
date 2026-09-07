@@ -10,7 +10,15 @@ export default defineNuxtConfig({
     '@mdi/font/css/materialdesignicons.css',
     '~/assets/css/main.css',
   ],
+  watch: {
+    ignored: ['**/_source-study/**', '**/origin/**', '**/totoro-paradise-main.zip'],
+  },
   vite: {
+    server: {
+      watch: {
+        ignored: ['**/_source-study/**', '**/origin/**', '**/totoro-paradise-main.zip'],
+      },
+    },
     optimizeDeps: {
       include: ['ky'],
     },
