@@ -3,8 +3,8 @@
     <v-app-bar color="surface" elevation="0" border>
       <v-app-bar-title class="d-flex align-center gap-2">
         <v-icon color="primary">mdi-weather-sunny</v-icon>
-        <span class="font-weight-bold">Totoro Heaven</span>
-        <span class="text-caption text-medium-emphasis">阳光跑助手</span>
+        <span class="font-weight-bold">龙猫天堂</span>
+        <span class="text-caption text-medium-emphasis">Totoro Heaven · 阳光跑助手</span>
       </v-app-bar-title>
       <template v-if="session?.token">
         <v-btn to="/scanned" :prepend-icon="'mdi-map-marker-path'" text="阳光跑" variant="text" />
@@ -16,6 +16,8 @@
       <template v-else>
         <v-btn to="/decode" :prepend-icon="'mdi-script-text-key-outline'" text="解码" variant="text" />
       </template>
+      <v-btn icon="mdi-information-outline" title="关于" @click="aboutOpen = true" />
+      <AboutDialog v-model="aboutOpen" />
     </v-app-bar>
 
     <v-main>
@@ -31,6 +33,8 @@ import { useSession } from '~/composables/useSession'
 
 const { session, clearSession, isLoggedIn } = useSession()
 const router = useRouter()
+
+const aboutOpen = ref(false)
 
 function doLogout() {
   clearSession()
