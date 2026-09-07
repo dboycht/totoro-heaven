@@ -1,0 +1,26 @@
+# dependencies
+node_modules/
+
+# nuxt / nitro build outputs
+.nuxt/
+.output/
+dist/
+.build/
+
+# reference build artifact from origin project
+origin/
+
+# runtime user data & dev caches
+data/
+.cache/
+*.log
+npm-debug.log*
+
+# dev docs (kept in dev copy only)
+DEVELOPMENT.md
+*.local
+
+# editor
+.vscode/
+.idea/
+.DS_Store

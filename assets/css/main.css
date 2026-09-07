@@ -1,0 +1,25 @@
+html,
+body,
+#__nuxt {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: #121212;
+}
+
+.page-enter-active,
+.page-leave-active {
+  transition: opacity 0.18s ease;
+}
+
+.page-enter-from,
+.page-leave-to {
+  opacity: 0;
+}
+
+.text-dot {
+  height: 8px;
+  width: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}

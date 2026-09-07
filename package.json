@@ -1,0 +1,27 @@
+{
+  "name": "totoro-heaven",
+  "version": "1.0.1",
+  "description": "Totoro Paradise —— 阳光跑助手（Sunshine Running Assistant）",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "preview": "node .output/server/index.mjs",
+    "postinstall": "nuxt prepare"
+  },
+  "dependencies": {
+    "ky": "^1.2.3",
+    "node-rsa": "^2.0.0",
+    "nuxt": "3.9.1",
+    "vue": "^3.4.21",
+    "vue-router": "^4.3.0"
+  },
+  "devDependencies": {
+    "@mdi/font": "^7.4.47",
+    "@types/node": "^20.11.30",
+    "sass": "^1.75.0",
+    "typescript": "^5.4.5",
+    "vuetify": "^3.5.15"
+  }
+}
