@@ -20,6 +20,7 @@
               :height="200"
               class="mx-auto border-thin rounded"
               contain
+              referrerpolicy="no-referrer"
             />
           </template>
           <v-progress-circular v-else indeterminate color="primary" class="my-8" />
@@ -65,7 +66,7 @@ const { setDebugPaper } = useDebugSunRunPaper()
 const router = useRouter()
 
 const qrUuid = ref('')
-const qrImg = ref<{ src?: string } | string>('')
+const qrImg = ref('')
 const errorMsg = ref('')
 const checking = ref(false)
 
@@ -73,7 +74,7 @@ async function loadQr() {
   try {
     const data = await $fetch<{ uuid: string; imgUrl: string }>('/api/scanQr')
     qrUuid.value = data.uuid
-    qrImg.value = { src: data.imgUrl }
+    qrImg.value = data.imgUrl
     errorMsg.value = ''
   } catch (e) {
     console.error(e)

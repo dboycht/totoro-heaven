@@ -13,10 +13,17 @@ export default defineNuxtConfig({
   watch: {
     ignored: ['**/_source-study/**', '**/origin/**', '**/totoro-paradise-main.zip'],
   },
+  devServer: {
+    port: 3000,
+  },
   vite: {
     server: {
       watch: {
         ignored: ['**/_source-study/**', '**/origin/**', '**/totoro-paradise-main.zip'],
+      },
+      hmr: {
+        port: 3000,
+        protocol: 'ws',
       },
     },
     optimizeDeps: {

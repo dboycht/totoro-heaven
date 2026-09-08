@@ -1,9 +1,14 @@
 <template>
-  <div class="totoro-map" :style="{ height: height + 'px' }" ref="el"></div>
+  <div class="totoro-map-wrapper">
+    <div class="totoro-map" :style="{ height: height + 'px' }" ref="el"></div>
+    <div v-if="tileFailed" class="tile-warning text-caption">
+      <v-icon size="14" class="mr-1">mdi-image-off-outline</v-icon>地图底图加载失败（轨迹/路线仍可显示）
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, watch, ref, shallowRef } from 'vue'
+import { onMounted, onBeforeUnmount, watch, ref, shallowRef, nextTick } from 'vue'
 
 export interface MapPoint {
   longitude: string | number
@@ -28,10 +33,39 @@ let map: import('leaflet').Map | null = null
 const el = ref<HTMLElement>()
 const layers = shallowRef<import('leaflet').Layer[]>([])
 
-const tileAttrib = '&copy; OpenStreetMap contributors'
-// Carto 浅色底图（比默认 OSM 更清爽）
-const tileUrl =
-  'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
+const tileProviders = [
+  { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attrib: '&copy; OpenStreetMap' },
+  { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', attrib: '&copy; OpenStreetMap' },
+  { url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', attrib: '&copy; OSM &copy; CARTO' },
+]
+const tileIdx = ref(0)
+const tileFailed = ref(false)
+
+async function addTileLayer() {
+  if (!map) return
+  const L = (await import('leaflet')).default
+  const p = tileProviders[tileIdx.value]!
+  try {
+    const layer = L.tileLayer(p.url, { attribution: p.attrib, maxZoom: 19 })
+    layer.on('tileerror', () => {
+      // 当前源失败，自动切下一个
+      if (tileIdx.value >= tileProviders.length - 1) {
+        tileFailed.value = true
+        return
+      }
+      tileIdx.value += 1
+      if (map) {
+        map.eachLayer((l) => {
+          if ('_url' in l) map.removeLayer(l)
+        })
+        void addTileLayer()
+      }
+    })
+    layer.addTo(map)
+  } catch {
+    /* ignore */
+  }
+}
 
 function destroyMap() {
   if (map) {
@@ -47,9 +81,15 @@ async function render() {
     await import('leaflet')
     const L = (await import('leaflet')).default
     map = L.map(el.value)
-    L.tileLayer(tileUrl, { attribution: tileAttrib, maxZoom: 19 }).addTo(map)
   }
   const L = (await import('leaflet')).default
+  // 清理旧瓦片层后重挂（避免重复）
+  map.eachLayer((l) => {
+    if (l instanceof L.TileLayer) map!.removeLayer(l)
+  })
+  tileIdx.value = 0
+  tileFailed.value = false
+  void addTileLayer()
 
   layers.value.forEach((l) => map!.removeLayer(l))
   layers.value = []
@@ -97,6 +137,8 @@ async function render() {
 }
 
 onMounted(async () => {
+  // 确保容器已挂载到 DOM（延迟到 nextTick，避免 Map container not found）
+  await nextTick()
   await render()
 })
 
@@ -112,11 +154,27 @@ watch(
 </script>
 
 <style scoped>
+.totoro-map-wrapper {
+  position: relative;
+  width: 100%;
+}
 .totoro-map {
   width: 100%;
   border-radius: 8px;
   overflow: hidden;
   z-index: 0;
+}
+.tile-warning {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 400;
+  background: rgba(0, 0, 0, 0.6);
+  color: #ffd54f;
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
 }
 .totoro-map :deep(.leaflet-container) {
   height: 100%;
