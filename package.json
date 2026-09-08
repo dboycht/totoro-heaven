@@ -8,7 +8,8 @@
     "dev": "nuxt dev",
     "build": "nuxt build",
     "preview": "node .output/server/index.mjs",
-    "postinstall": "nuxt prepare"
+    "postinstall": "nuxt prepare",
+    "sea": "powershell -NoProfile -ExecutionPolicy Bypass -File pack/sea/build-sea.ps1"
   },
   "dependencies": {
     "ky": "^1.2.3",
@@ -20,7 +21,10 @@
   "devDependencies": {
     "@mdi/font": "^7.4.47",
     "@types/node": "^20.11.30",
+    "esbuild": "^0.28.2",
+    "postject": "^1.0.0-alpha.6",
     "sass": "^1.75.0",
+    "tar": "^7.5.22",
     "typescript": "^5.4.5",
     "vuetify": "^3.5.15"
   }

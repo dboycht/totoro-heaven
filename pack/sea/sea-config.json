@@ -1,0 +1,10 @@
+{
+  "main": "./launcher.bundle.mjs",
+  "output": "./sea-prep.blob",
+  "disableExperimentalSEAWarning": true,
+  "useSnapshot": false,
+  "useCodeCache": false,
+  "assets": {
+    "app.tar.gz": "./app.tar.gz"
+  }
+}

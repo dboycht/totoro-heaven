@@ -7,6 +7,9 @@ node_modules/
 dist/
 .build/
 
+# exe packaging runtime cache
+pack/sea/runtime/
+
 # reference build artifact from origin project
 origin/
 
