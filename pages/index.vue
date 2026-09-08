@@ -38,6 +38,14 @@
           </v-btn>
         </v-card-actions>
 
+        <v-divider class="mx-4" />
+
+        <div class="text-center py-3">
+          <v-btn variant="tonal" color="warning" :prepend-icon="'mdi-bug-outline'" @click="enterDebugMode">
+            调试模式（跳过扫码，无法提交）
+          </v-btn>
+        </div>
+
         <v-alert type="info" variant="tonal" class="mx-4 mb-4" density="compact">
           扫码后服务器会向龙猫接口发起登录，并同步拉取学校/版本信息，之后进入跑步页面。
         </v-alert>
@@ -52,7 +60,8 @@ import { useSession } from '~/composables/useSession'
 
 definePageMeta({ title: '登录' })
 
-const { setSession } = useSession()
+const { setSession, setDebugSession } = useSession()
+const { setDebugPaper } = useDebugSunRunPaper()
 const router = useRouter()
 
 const qrUuid = ref('')
@@ -112,6 +121,12 @@ async function startCheck() {
 
 function refreshQr() {
   loadQr()
+}
+
+function enterDebugMode() {
+  setDebugSession()
+  setDebugPaper()
+  router.push('/scanned')
 }
 
 onMounted(loadQr)

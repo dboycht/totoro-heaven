@@ -1,14 +1,17 @@
 import type { BasicReq } from '~/src/wrappers/TotoroApiWrapper'
+import { createDebugSession } from '~/utils/debugData'
 
 export interface TotoroLogin {
   token: string
   code: string
+  isDebug?: boolean
   stuNumber?: string
   stuName?: string
   campusId?: string
   campusName?: string
-  collegeName?: string
   schoolId?: string
+  schoolName?: string
+  collegeName?: string
   phoneNumber?: string
   [key: string]: unknown
 }
@@ -34,10 +37,15 @@ export function useSession() {
   const session = useTotoroSession()
 
   const isLoggedIn = computed(() => Boolean(session.value?.token))
+  const isDebug = computed(() => Boolean(session.value?.isDebug))
 
   function setSession(payload: TotoroLogin) {
     session.value = payload
     if (import.meta.client) localStorage.setItem(storageKey, JSON.stringify(payload))
+  }
+
+  function setDebugSession() {
+    setSession(createDebugSession())
   }
 
   function clearSession() {
@@ -55,5 +63,5 @@ export function useSession() {
     }
   })
 
-  return { session, isLoggedIn, setSession, clearSession, basicReq }
+  return { session, isLoggedIn, isDebug, setSession, setDebugSession, clearSession, basicReq }
 }

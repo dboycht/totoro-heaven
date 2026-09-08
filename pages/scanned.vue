@@ -122,10 +122,11 @@
 import { TotoroApiWrapper } from '~/src/wrappers/TotoroApiWrapper'
 import { useSession } from '~/composables/useSession'
 import { useSunRunPaper } from '~/composables/useSunRunPaper'
+import { createDebugPaper } from '~/utils/debugData'
 
 definePageMeta({ title: '跑步模式' })
 
-const { session, basicReq } = useSession()
+const { session, basicReq, isDebug } = useSession()
 const router = useRouter()
 const globalPaper = useSunRunPaper()
 
@@ -159,6 +160,13 @@ const randomRoute = () => {
 onMounted(async () => {
   if (!session.value?.token) {
     router.replace('/')
+    return
+  }
+  if (isDebug.value) {
+    // 调试模式：跳过扫码与真实试卷请求，直接展示本地模拟数据
+    paper.value = globalPaper.value ?? createDebugPaper()
+    globalPaper.value = paper.value
+    loading.value = false
     return
   }
   try {

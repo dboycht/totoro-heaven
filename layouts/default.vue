@@ -22,6 +22,23 @@
 
     <v-main>
       <v-container fluid class="py-6" style="max-width: 1200px">
+        <v-alert
+          v-if="isDebug"
+          type="warning"
+          variant="tonal"
+          class="mb-4"
+          density="compact"
+        >
+          <template #prepend>
+            <v-icon>mdi-bug-outline</v-icon>
+          </template>
+          <div class="d-flex align-center justify-space-between w-100">
+            <span>调试模式 · 本地模拟数据，提交已禁用</span>
+            <v-btn color="warning" variant="outlined" size="small" @click="exitDebug">
+              退出调试，回到扫码
+            </v-btn>
+          </div>
+        </v-alert>
         <slot />
       </v-container>
     </v-main>
@@ -31,10 +48,15 @@
 <script setup lang="ts">
 import { useSession } from '~/composables/useSession'
 
-const { session, clearSession, isLoggedIn } = useSession()
+const { session, isDebug, clearSession } = useSession()
 const router = useRouter()
 
 const aboutOpen = ref(false)
+
+function exitDebug() {
+  clearSession()
+  router.push('/')
+}
 
 function doLogout() {
   clearSession()

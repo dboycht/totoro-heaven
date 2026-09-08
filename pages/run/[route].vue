@@ -11,8 +11,14 @@
       </p>
 
       <template v-if="!running && !startedAt">
-        <v-btn color="primary my-4" :append-icon="'mdi-run'" size="large" @click="startRun">
-          确认开始
+        <v-btn
+          color="primary my-4"
+          :append-icon="'mdi-run'"
+          size="large"
+          :disabled="isDebug"
+          @click="startRun"
+        >
+          {{ isDebug ? '调试模式 · 提交已禁用' : '确认开始' }}
         </v-btn>
       </template>
 
@@ -52,7 +58,7 @@ import { buildRunRequest } from '~/utils/runRequest'
 definePageMeta({ title: '跑步执行' })
 
 const route = useRoute()
-const { session, basicReq } = useSession()
+const { session, basicReq, isDebug } = useSession()
 const paper = useSunRunPaper()
 const routePointId = computed(() => String(route.params.route ?? ''))
 
@@ -87,6 +93,7 @@ function onBeforeUnload(e: BeforeUnloadEvent) {
 }
 
 async function startRun() {
+  if (isDebug.value) return // 调试模式禁止提交
   const routePoint = routeInfo.value
   if (!routePoint || !paper.value || !session.value) return
 

@@ -126,8 +126,8 @@
           </v-card-text>
 
           <v-card-actions>
-            <v-btn color="primary" :append-icon="'mdi-send'" :loading="running" size="large" @click="startFreeRun">
-              开始自由跑
+            <v-btn color="primary" :append-icon="'mdi-send'" :loading="running" :disabled="isDebug" size="large" @click="startFreeRun">
+              {{ isDebug ? '调试模式 · 提交已禁用' : '开始自由跑' }}
             </v-btn>
           </v-card-actions>
         </v-card>
@@ -157,8 +157,8 @@
             <v-alert v-if="batchTimeHint" type="warning" variant="tonal" density="compact" class="mb-2">
               {{ batchTimeHint }}
             </v-alert>
-            <v-btn color="accent" :append-icon="'mdi-play'" :loading="running" :disabled="!isLoggedIn" @click="startBatch">
-              开始批量执行
+            <v-btn color="accent" :append-icon="'mdi-play'" :loading="running" :disabled="isDebug || !isLoggedIn" @click="startBatch">
+              {{ isDebug ? '调试模式 · 提交已禁用' : '开始批量执行' }}
             </v-btn>
           </v-card-text>
         </v-card>
@@ -205,11 +205,12 @@ import type { FreeRunData } from '~/src/wrappers/TotoroApiWrapper'
 import { TotoroApiWrapper } from '~/src/wrappers/TotoroApiWrapper'
 import { useSession } from '~/composables/useSession'
 import { useSunRunPaper, type RunPoint } from '~/composables/useSunRunPaper'
+import { createDebugPaper } from '~/utils/debugData'
 import { generateRoute } from '~/utils/generateRoute'
 
 definePageMeta({ title: '自由跑' })
 
-const { session, isLoggedIn, basicReq } = useSession()
+const { session, isLoggedIn, isDebug, basicReq } = useSession()
 const paper = useSunRunPaper()
 
 // ---------- 路线 ----------
@@ -235,6 +236,10 @@ const selectRandomRoute = () => {
 async function ensurePaper() {
   if (paper.value?.runPointList?.length) return
   if (!session.value?.token) return
+  if (isDebug.value) {
+    paper.value = createDebugPaper() as unknown as typeof paper.value
+    return
+  }
   loadingRoutes.value = true
   try {
     const res = await TotoroApiWrapper.getSunRunPaper({
