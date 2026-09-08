@@ -41,13 +41,11 @@
 
             <!-- 轨迹地图预览 -->
             <div v-if="!distanceError && distance > 0" class="mt-2">
-              <ClientOnly>
-                <TotoroMap
-                  :polylines="previewRoute.length ? [previewRoute] : []"
-                  :markers="selectedRouteInfo?.pointList?.length ? selectedRouteInfo.pointList.map((p, i) => ({ ...p, color: i === 0 ? '#FF5252' : '#4CAF50' })) : undefined"
-                  :height="280"
-                />
-              </ClientOnly>
+              <TotoroMap
+                :polylines="previewRoute.length ? [previewRoute] : []"
+                :markers="selectedRouteInfo?.pointList?.length ? selectedRouteInfo.pointList.map((p, i) => ({ ...p, color: i === 0 ? '#FF5252' : '#4CAF50' })) : undefined"
+                :height="280"
+              />
               <p class="text-caption text-medium-emphasis mt-1">
                 {{ previewHint }}
               </p>

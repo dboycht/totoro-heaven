@@ -73,14 +73,23 @@ function destroyMap() {
     map = null
   }
   layers.value = []
+  tileIdx.value = 0
+  tileFailed.value = false
 }
 
 async function render() {
-  if (!el.value) return
+  // 轮询等容器真正挂到 DOM 且有尺寸（规避 leaflet “Map container not found” / 高度为 0）
+  for (let i = 0; i < 20; i++) {
+    const node = el.value
+    if (node && node.isConnected && (node.clientHeight > 0 || node.clientWidth > 0)) break
+    await new Promise((r) => requestAnimationFrame(r))
+  }
+  if (!el.value || !el.value.isConnected) return
+
   if (!map) {
-    await import('leaflet')
     const L = (await import('leaflet')).default
     map = L.map(el.value)
+    setTimeout(() => map?.invalidateSize(), 0)
   }
   const L = (await import('leaflet')).default
   // 清理旧瓦片层后重挂（避免重复）
@@ -136,13 +145,23 @@ async function render() {
   }
 }
 
+let ro: ResizeObserver | null = null
+
 onMounted(async () => {
   // 确保容器已挂载到 DOM（延迟到 nextTick，避免 Map container not found）
   await nextTick()
   await render()
+  // 容器尺寸变化（窗口缩放/侧栏开合）时通知 Leaflet 重算
+  if (typeof ResizeObserver !== 'undefined' && el.value) {
+    ro = new ResizeObserver(() => map?.invalidateSize())
+    ro.observe(el.value)
+  }
 })
 
-onBeforeUnmount(destroyMap)
+onBeforeUnmount(() => {
+  ro?.disconnect()
+  destroyMap()
+})
 
 watch(
   () => [props.polylines, props.markers],

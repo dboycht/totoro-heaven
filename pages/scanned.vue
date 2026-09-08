@@ -105,13 +105,11 @@
 
         <!-- 路线地图预览 -->
         <div v-if="selectedRouteInfo?.pointList?.length" class="mt-4">
-          <ClientOnly>
-            <TotoroMap
-              :polylines="[selectedRouteInfo.pointList]"
-              :markers="selectedRouteInfo.pointList.map((p, i) => ({ ...p, color: i === 0 ? '#FF5252' : i === selectedRouteInfo.pointList.length - 1 ? '#FF5252' : '#4CAF50' }))"
-              :height="320"
-            />
-          </ClientOnly>
+          <TotoroMap
+            :polylines="[selectedRouteInfo.pointList]"
+            :markers="selectedRouteInfo.pointList.map((p, i) => ({ ...p, color: i === 0 ? '#FF5252' : i === selectedRouteInfo.pointList.length - 1 ? '#FF5252' : '#4CAF50' }))"
+            :height="320"
+          />
           <p class="text-caption text-medium-emphasis mt-1">地图仅为路线展示，不等于最终提交轨迹</p>
         </div>
       </template>

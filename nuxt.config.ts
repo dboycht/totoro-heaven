@@ -8,6 +8,7 @@ export default defineNuxtConfig({
   css: [
     'vuetify/styles',
     '@mdi/font/css/materialdesignicons.css',
+    'leaflet/dist/leaflet.css',
     '~/assets/css/main.css',
   ],
   watch: {
@@ -24,6 +25,7 @@ export default defineNuxtConfig({
       hmr: {
         port: 3000,
         protocol: 'ws',
+        host: 'localhost',
       },
     },
     optimizeDeps: {
