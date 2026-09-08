@@ -11,7 +11,11 @@ if (-not (Test-Path $distSea)) { New-Item -ItemType Directory -Path $distSea | O
 Write-Host '[1/6] bundle launcher (esbuild)...'
 $esbuild = Join-Path $root 'node_modules\.bin\esbuild.cmd'
 if (-not (Test-Path $esbuild)) { throw "esbuild not found at $esbuild" }
-$bundleArgs = @('pack/sea/launcher.mjs', '--bundle', '--platform=node', '--format=cjs', '--target=node22', "--outfile=$distSea/launcher.bundle.cjs")
+# 从 package.json 读取当前版本，构建时注入 launcher（横幅版本单一来源）
+$verMatch = Select-String -Path (Join-Path $root 'package.json') -Pattern '"version"\s*:\s*"([^"]+)"'
+$ver = if ($verMatch -and $verMatch.Matches.Count -gt 0) { $verMatch.Matches[0].Groups[1].Value } else { '0.0.0' }
+$defineArg = "--define:__APP_VERSION__=" + [char]34 + $ver + [char]34
+$bundleArgs = @('pack/sea/launcher.mjs', '--bundle', '--platform=node', '--format=cjs', '--target=node22', $defineArg, "--outfile=$distSea/launcher.bundle.cjs")
 & $esbuild @bundleArgs
 if ($LASTEXITCODE -ne 0) { throw 'esbuild failed' }
 

@@ -10,9 +10,11 @@ const RUNTIME_DIR = path.join(os.tmpdir(), 'totoro-heaven-runtime')
 const PORT = Number(process.env.TOTORO_PORT || 3000)
 const ASSET_KEY = 'app.tar.gz'
 
+const APP_VERSION = __APP_VERSION__
+
 const banner = `
 ========================================
-  Totoro Heaven · 龙猫天堂  v1.0.1
+  Totoro Heaven · 龙猫天堂  v${APP_VERSION}
   阳光跑助手（本地 Web 服务）
 ========================================
 `

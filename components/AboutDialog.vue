@@ -46,5 +46,6 @@
 <script setup lang="ts">
 const model = defineModel<boolean>({ default: false })
 
-const version = '1.0.1'
+const appConfig = useAppConfig()
+const version = computed(() => (appConfig.version as string) || 'dev')
 </script>
