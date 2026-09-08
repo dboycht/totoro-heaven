@@ -11,11 +11,14 @@ if (-not (Test-Path $distSea)) { New-Item -ItemType Directory -Path $distSea | O
 Write-Host '[1/6] bundle launcher (esbuild)...'
 $esbuild = Join-Path $root 'node_modules\.bin\esbuild.cmd'
 if (-not (Test-Path $esbuild)) { throw "esbuild not found at $esbuild" }
-# 从 package.json 读取当前版本，构建时注入 launcher（横幅版本单一来源）
+# 从 package.json 读取当前版本，先替换 launcher 里的占位符，再 bundle（避免 esbuild define 引号问题）
 $verMatch = Select-String -Path (Join-Path $root 'package.json') -Pattern '"version"\s*:\s*"([^"]+)"'
 $ver = if ($verMatch -and $verMatch.Matches.Count -gt 0) { $verMatch.Matches[0].Groups[1].Value } else { '0.0.0' }
-$defineArg = "--define:__APP_VERSION__=" + [char]34 + $ver + [char]34
-$bundleArgs = @('pack/sea/launcher.mjs', '--bundle', '--platform=node', '--format=cjs', '--target=node22', $defineArg, "--outfile=$distSea/launcher.bundle.cjs")
+$srcLauncher = Join-Path $PSScriptRoot 'launcher.mjs'
+$tmpLauncher = Join-Path $distSea 'launcher.tmp.mjs'
+$content = (Get-Content $srcLauncher -Raw -Encoding UTF8) -replace "__APP_VERSION__", $ver
+[System.IO.File]::WriteAllText($tmpLauncher, $content, (New-Object System.Text.UTF8Encoding($false)))
+$bundleArgs = @($tmpLauncher, '--bundle', '--platform=node', '--format=cjs', '--target=node22', "--outfile=$distSea/launcher.bundle.cjs")
 & $esbuild @bundleArgs
 if ($LASTEXITCODE -ne 0) { throw 'esbuild failed' }
 
@@ -48,7 +51,9 @@ if ($LASTEXITCODE -ne 0) { throw 'postject failed' }
 Write-Host '[6/7] set EXE icon from logo.ico (rcedit)...'
 $rcedit = Join-Path $root 'node_modules\rcedit\bin\rcedit.exe'
 $logoIco = Join-Path $root 'logo.ico'
-if (Test-Path $rcedit -and (Test-Path $logoIco)) {
+$hasRcedit = Test-Path $rcedit
+$hasIcon = Test-Path $logoIco
+if ($hasRcedit -and $hasIcon) {
     & $rcedit $exeOut --set-icon $logoIco
     if ($LASTEXITCODE -ne 0) { Write-Warning 'rcedit icon set failed (EXE still works, without custom icon)' }
 } else {

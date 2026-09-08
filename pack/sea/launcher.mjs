@@ -10,7 +10,8 @@ const RUNTIME_DIR = path.join(os.tmpdir(), 'totoro-heaven-runtime')
 const PORT = Number(process.env.TOTORO_PORT || 3000)
 const ASSET_KEY = 'app.tar.gz'
 
-const APP_VERSION = __APP_VERSION__
+// 打包脚本会把这行占位符替换为实际版本号
+const APP_VERSION = '__APP_VERSION__'
 
 const banner = `
 ========================================
