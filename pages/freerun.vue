@@ -265,6 +265,16 @@ const presets = [
 const preset = ref('standard')
 const activePreset = computed(() => presets.find((p) => p.key === preset.value))
 
+// 点击模板 -> 将模板的距离/速度回填到表单（原版行为）
+watch(preset, (key) => {
+  const t = presets.find((p) => p.key === key)
+  if (!t) return
+  distance.value = t.distance
+  speed.value = t.speed
+  paceMode.value = 'speed'
+  targetMinutes.value = undefined
+})
+
 const distance = ref(5)
 const speed = ref(10)
 const targetMinutes = ref<number>()
