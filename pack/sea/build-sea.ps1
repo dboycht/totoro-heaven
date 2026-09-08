@@ -12,8 +12,10 @@ Write-Host '[1/6] bundle launcher (esbuild)...'
 $esbuild = Join-Path $root 'node_modules\.bin\esbuild.cmd'
 if (-not (Test-Path $esbuild)) { throw "esbuild not found at $esbuild" }
 # 从 package.json 读取当前版本，先替换 launcher 里的占位符，再 bundle（避免 esbuild define 引号问题）
-$verMatch = Select-String -Path (Join-Path $root 'package.json') -Pattern '"version"\s*:\s*"([^"]+)"'
-$ver = if ($verMatch -and $verMatch.Matches.Count -gt 0) { $verMatch.Matches[0].Groups[1].Value } else { '0.0.0' }
+# 从 package.json 读取当前版本（用 node 读取，避免 PowerShell 正则/编码坑）
+$ver = (& node -e "console.log(require(process.argv[1]).version)" (Join-Path $root 'package.json')) 2>$null
+if (-not $ver) { $ver = '0.0.0' }
+Write-Host "[ver] root=$root ver=$ver"
 $srcLauncher = Join-Path $PSScriptRoot 'launcher.mjs'
 $tmpLauncher = Join-Path $distSea 'launcher.tmp.mjs'
 $content = (Get-Content $srcLauncher -Raw -Encoding UTF8) -replace "__APP_VERSION__", $ver
@@ -54,8 +56,8 @@ $logoIco = Join-Path $root 'logo.ico'
 $hasRcedit = Test-Path $rcedit
 $hasIcon = Test-Path $logoIco
 if ($hasRcedit -and $hasIcon) {
-    & $rcedit $exeOut --set-icon $logoIco
-    if ($LASTEXITCODE -ne 0) { Write-Warning 'rcedit icon set failed (EXE still works, without custom icon)' }
+    $rceditProc = Start-Process -FilePath $rcedit -ArgumentList @($exeOut, '--set-icon', $logoIco) -Wait -NoNewWindow -PassThru
+    if ($rceditProc.ExitCode -ne 0) { Write-Warning "rcedit icon set failed (exit $($rceditProc.ExitCode))" }
 } else {
     Write-Warning 'rcedit or logo.ico not found - skipping icon step'
 }
