@@ -15,10 +15,10 @@
           color="primary my-4"
           :append-icon="'mdi-run'"
           size="large"
-          :disabled="isDebug"
+          :disabled="isDebug || !routeInfo"
           @click="startRun"
         >
-          {{ isDebug ? '调试模式 · 提交已禁用' : '确认开始' }}
+          {{ isDebug ? '调试模式 · 提交已禁用' : routeInfo ? '确认开始' : '未找到路线，请返回重选' }}
         </v-btn>
       </template>
 

@@ -280,7 +280,7 @@ export const TotoroApiWrapper = {
 
         const fullRequest = {
           LocalSubmitReason: '',
-          avgSpeed: data.avgSpeed,
+          avgSpeed: String(data.avgSpeed),
           baseStation: '',
           endTime: formatTime(endDate), // HH:mm:ss
           evaluateDate: formatDateTime(endDate), // yyyy-MM-dd HH:mm:ss
@@ -288,7 +288,7 @@ export const TotoroApiWrapper = {
           flag: '1',
           headImage: '',
           ifLocalSubmit: '0',
-          km: data.distance,
+          km: String(data.distance),
           mac: data.mac || '',
           phoneInfo: data.deviceInfo || '$CN11/iPhone15,4/17.4.1',
           phoneNumber: '',
@@ -297,7 +297,7 @@ export const TotoroApiWrapper = {
           runType: '1', // '1' = 自由跑/累计跑步（独立于阳光跑）
           sensorString: '',
           startTime: formatTime(startDate), // HH:mm:ss
-          steps: data.steps || 0,
+          steps: String(data.steps || 0),
           stuNumber: data.stuNumber,
           taskId,
           token: data.token,

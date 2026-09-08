@@ -48,8 +48,10 @@
                 <v-card min-width="320" class="pa-4">
                   <v-text-field v-model.number="minDistance" label="最小距离 (km)" type="number" density="compact" />
                   <v-text-field v-model.number="maxDistance" label="最大距离 (km)" type="number" density="compact" />
-                  <v-select v-model="statusFilter" :items="['success', 'failed']" label="状态" clearable density="compact" />
-                  <v-btn color="primary" density="compact" @click="applyFilters">应用筛选</v-btn>
+                  <v-select v-model="statusFilter" :items="['completed', 'failed']" label="状态" clearable density="compact" />
+                  <v-text-field v-model="dateFrom" label="开始日期" type="date" density="compact" class="mt-2" />
+                  <v-text-field v-model="dateTo" label="结束日期" type="date" density="compact" class="mt-2" />
+                  <v-btn color="primary" density="compact" class="mt-2" @click="applyFilters">应用筛选</v-btn>
                 </v-card>
               </v-menu>
               <v-btn

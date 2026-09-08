@@ -61,9 +61,11 @@ export const buildRunRequest = async ({
   maxTime,
 }: RunRequestInput) => {
   const { minSecond, maxSecond } = { minSecond: Number(minTime) * 60, maxSecond: Number(maxTime) * 60 }
+  // 与原版 generateSunRunExercisesReq 完全一致：
+  // 均值 = minSecond + maxSecond/2；σ = (maxSecond - 均值) / 3
   const mean = minSecond + maxSecond / 2
-  const span = maxSecond - minSecond
-  const durationSeconds = Math.floor(gaussian(mean, span / 3))
+  const std = Math.max(0, (maxSecond - mean) / 3)
+  const durationSeconds = Math.floor(gaussian(mean, std))
   const start = new Date()
   const end = new Date(Number(start) + durationSeconds * 1000)
   const avgSpeed = (Number(distance) / (durationSeconds / 3600)).toFixed(2)

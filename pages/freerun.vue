@@ -314,7 +314,8 @@ const paceError = computed(() => {
 })
 
 const batchTimeHint = computed(() => {
-  const baseDurMin = Math.ceil((distance.value / (paceMode.value === 'speed' ? speed.value : (distance.value / ((targetMinutes.value || 15) / 60)))) * 60)
+  const baseSpeed = resolveBaseSpeed()
+  const baseDurMin = baseSpeed ? Math.ceil((distance.value / baseSpeed) * 60) : 15
   const totalMin = batchCount.value * baseDurMin + batchCount.value * batchInterval.value
   if (totalMin > 6 * 60) return `批量总时间将超过 ${Math.round(totalMin / 60)} 小时，考虑减少次数或缩短间隔时间`
   return ''
@@ -361,9 +362,16 @@ interface IItem extends FreeRunData {
   taskId?: string
 }
 
+/** 解析基础速度：按速度模式取输入值；按时间模式由距离/时间推算；时间留空用默认 8 km/h（原版行为） */
+const resolveBaseSpeed = (): number => {
+  if (paceMode.value === 'speed') return speed.value
+  if (targetMinutes.value) return distance.value / (targetMinutes.value / 60)
+  return 8
+}
+
 const buildSingle = (runIdxOffset: number, presetSpeed?: number): IItem => {
   const stuNumber = session.value?.stuNumber as string
-  const baseSpeed = presetSpeed ?? (paceMode.value === 'speed' ? speed.value : distance.value / ((targetMinutes.value || 15) / 60))
+  const baseSpeed = presetSpeed ?? resolveBaseSpeed()
 
   // 距离/速度随机扰动（原版 ±0.09km / ±0.15km/h，批量范围更大）
   let finalDistance = distance.value
@@ -413,7 +421,7 @@ const batchCountActive = ref(false)
 const preview = computed(() => {
   if (!distance.value) return null
   try {
-    const s = paceMode.value === 'speed' ? speed.value : distance.value / ((targetMinutes.value || 15) / 60)
+    const s = resolveBaseSpeed()
     if (!s || s < 3 || s > 25) return null
     const duration = (distance.value / s) * 3600
     return {
@@ -506,6 +514,9 @@ async function runList(dataList: IItem[]) {
     await Promise.all(
       chunk.map(async (data, idx) => {
         const gi = i + idx
+        if (gi > 0) {
+          await new Promise((r) => setTimeout(r, 1200)) // 错峰提交，降低限流风险
+        }
         const r = await submitOne(data)
         progress.value[gi] = r.recordId
           ? { index: gi, status: 'success', recordId: r.recordId }
