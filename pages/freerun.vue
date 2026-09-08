@@ -39,6 +39,20 @@
               已选择: {{ selectedRouteInfo.pointName }}（{{ paper?.mileage }} km 官方路线）
             </p>
 
+            <!-- 轨迹地图预览 -->
+            <div v-if="!distanceError && distance > 0" class="mt-2">
+              <ClientOnly>
+                <TotoroMap
+                  :polylines="previewRoute.length ? [previewRoute] : []"
+                  :markers="selectedRouteInfo?.pointList?.length ? selectedRouteInfo.pointList.map((p, i) => ({ ...p, color: i === 0 ? '#FF5252' : '#4CAF50' })) : undefined"
+                  :height="280"
+                />
+              </ClientOnly>
+              <p class="text-caption text-medium-emphasis mt-1">
+                {{ previewHint }}
+              </p>
+            </div>
+
             <v-divider class="my-3" />
 
             <!-- 预置模板 -->
@@ -464,6 +478,22 @@ const buildRoutePoints = (distanceKm: number): { longitude: string; latitude: st
   }
   return generateCircleRoute(distanceKm)
 }
+
+// 地图预览：基于当前距离生成将提交的轨迹
+const previewRoute = computed(() => {
+  const d = distance.value
+  if (!d || d < 0.5) return []
+  try {
+    return buildRoutePoints(d)
+  } catch {
+    return []
+  }
+})
+const previewHint = computed(() =>
+  selectedRouteInfo.value?.pointList?.length
+    ? `在「${selectedRouteInfo.value.pointName}」路线上按 ${distance.value} km 生成的模拟轨迹（红点为打卡点）`
+    : `默认圆形模拟轨迹（未选路线），约 ${distance.value} km；选路线可让记录在 App 端正常显示`,
+)
 
 async function submitOne(data: IItem): Promise<{ recordId?: string; error?: string }> {
   try {

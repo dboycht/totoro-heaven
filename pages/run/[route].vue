@@ -10,6 +10,20 @@
         请再次确认是否跑步：开跑时会向龙猫服务器发送请求，所以请尽量不要在开跑后取消。
       </p>
 
+      <!-- 路线与模拟轨迹地图预览 -->
+      <div v-if="routeInfo?.pointList?.length" class="mt-2">
+        <ClientOnly>
+          <TotoroMap
+            :polylines="[routeInfo.pointList, mockRoute]"
+            :markers="routeInfo.pointList.map((p, i) => ({ ...p, color: i === 0 ? '#FF5252' : '#4CAF50' }))"
+            :height="340"
+          />
+        </ClientOnly>
+        <p v-if="mockRoute.length" class="text-caption text-medium-emphasis mt-1">
+          红点为官方打卡路线，橙色线为本次模拟轨迹（约 {{ paper?.mileage }} km）
+        </p>
+      </div>
+
       <template v-if="!running && !startedAt">
         <v-btn
           color="primary my-4"
@@ -65,6 +79,18 @@ const routePointId = computed(() => String(route.params.route ?? ''))
 const routeInfo = computed<RunPoint | undefined>(() =>
   paper.value?.runPointList?.find((p) => p.pointId === routePointId.value),
 )
+
+// 模拟轨迹预览（供地图可视化；与实际提交一致）
+const mockRoute = computed(() => {
+  const r = routeInfo.value
+  const mileage = paper.value?.mileage
+  if (!r?.pointList?.length || !mileage) return []
+  try {
+    return generateRoute(mileage, r).mockRoute
+  } catch {
+    return r.pointList
+  }
+})
 
 const running = ref(false)
 const startedAt = ref(0)

@@ -12,7 +12,9 @@
     "sea": "powershell -NoProfile -ExecutionPolicy Bypass -File pack/sea/build-sea.ps1"
   },
   "dependencies": {
+    "@types/leaflet": "^1.9.22",
     "ky": "^1.2.3",
+    "leaflet": "^1.9.4",
     "node-rsa": "^2.0.0",
     "nuxt": "3.9.1",
     "vue": "^3.4.21",
@@ -23,6 +25,7 @@
     "@types/node": "^20.11.30",
     "esbuild": "^0.28.2",
     "postject": "^1.0.0-alpha.6",
+    "rcedit": "^5.0.1",
     "sass": "^1.75.0",
     "tar": "^7.5.22",
     "typescript": "^5.4.5",

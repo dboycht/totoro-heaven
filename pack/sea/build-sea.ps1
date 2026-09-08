@@ -41,5 +41,15 @@ Write-Host '[5/6] inject SEA blob (postject)...'
 & npx postject $exeOut NODE_SEA_BLOB (Join-Path $distSea 'sea-prep.blob') --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
 if ($LASTEXITCODE -ne 0) { throw 'postject failed' }
 
+Write-Host '[6/7] set EXE icon from logo.ico (rcedit)...'
+$rcedit = Join-Path $root 'node_modules\rcedit\bin\rcedit.exe'
+$logoIco = Join-Path $root 'logo.ico'
+if (Test-Path $rcedit -and (Test-Path $logoIco)) {
+    & $rcedit $exeOut --set-icon $logoIco
+    if ($LASTEXITCODE -ne 0) { Write-Warning 'rcedit icon set failed (EXE still works, without custom icon)' }
+} else {
+    Write-Warning 'rcedit or logo.ico not found - skipping icon step'
+}
+
 $size = [math]::Round((Get-Item $exeOut).Length / 1MB, 1)
-Write-Host "[6/6] done -> $exeOut ($size MB)"
+Write-Host "[7/7] done -> $exeOut ($size MB)"
