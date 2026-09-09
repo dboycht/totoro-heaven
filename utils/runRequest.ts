@@ -47,6 +47,8 @@ export interface RunRequestInput {
   phoneNumber?: string
   minTime: number // 分钟
   maxTime: number // 分钟
+  /** 补跑日期（yyyy-MM-dd），为空则按当天 */
+  targetDate?: string
 }
 
 /** 构造阳光跑提交请求 + 计算的结束时间（原版 ha 函数） */
@@ -59,6 +61,7 @@ export const buildRunRequest = async ({
   // minTime/maxTime 来自试卷，单位为分钟
   minTime,
   maxTime,
+  targetDate,
 }: RunRequestInput) => {
   const { minSecond, maxSecond } = { minSecond: Number(minTime) * 60, maxSecond: Number(maxTime) * 60 }
   // 与原版 generateSunRunExercisesReq 完全一致：
@@ -66,7 +69,14 @@ export const buildRunRequest = async ({
   const mean = minSecond + maxSecond / 2
   const std = Math.max(0, (maxSecond - mean) / 3)
   const durationSeconds = Math.floor(gaussian(mean, std))
-  const start = new Date()
+  // 补跑支持：指定 targetDate 时，起跑时间锚定到该日（保留当天时刻，跨日到次日也属正常）
+  const now = new Date()
+  let start: Date
+  if (targetDate) {
+    start = new Date(`${targetDate}T${timeOnly(now)}+08:00`)
+  } else {
+    start = new Date()
+  }
   const end = new Date(Number(start) + durationSeconds * 1000)
   const avgSpeed = (Number(distance) / (durationSeconds / 3600)).toFixed(2)
   const dur = durationBetween(start, end)

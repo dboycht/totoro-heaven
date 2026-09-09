@@ -15,7 +15,9 @@ origin/
 
 # original source study (extracted zip + research materials, dev only)
 _source-study/
+_source-study-apk/
 totoro-paradise-main.zip
+龙猫校园_*.apk
 
 # runtime user data & dev caches
 data/
