@@ -52,8 +52,12 @@
               v-if="backfillMode"
               ref="backfillPickerRef"
               v-model="backfillDate"
+              :single="true"
               class="mt-2"
             />
+            <p v-if="backfillMode && !backfillDate" class="text-caption text-warning mt-1">
+              阳光跑每次补跑一条，请选择 1 个历史日期（未选日期时已禁用提交）
+            </p>
           </v-card-text>
         </v-card>
 
@@ -61,10 +65,10 @@
           color="primary my-4"
           :append-icon="'mdi-run'"
           size="large"
-          :disabled="isDebug || !routeInfo"
+          :disabled="isDebug || !routeInfo || (backfillMode && !backfillDate)"
           @click="startRun"
         >
-          {{ isDebug ? '调试模式 · 提交已禁用' : routeInfo ? '确认开始' : '未找到路线，请返回重选' }}
+          {{ isDebug ? '调试模式 · 提交已禁用' : (backfillMode && !backfillDate) ? '补跑模式 · 请选择日期' : routeInfo ? '确认开始' : '未找到路线，请返回重选' }}
         </v-btn>
       </template>
 
@@ -170,6 +174,7 @@ async function startRun() {
   if (isDebug.value) return // 调试模式禁止提交
   const routePoint = routeInfo.value
   if (!routePoint || !paper.value || !session.value) return
+  if (backfillMode.value && !backfillFirstDay.value) return // 双保险：补跑开启但未选日期
 
   const { req, endTime: w } = await buildRunRequest({
     distance: paper.value.mileage ?? 0,

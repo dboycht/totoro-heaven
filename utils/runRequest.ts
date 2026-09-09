@@ -28,6 +28,24 @@ export const durationBetween = (start: Date, end: Date) => {
   }
 }
 
+/** 本地时区偏移串（如 +08:00 / -05:00）。与 Date 本地 getter 语义一致，供跨时区机保持「墙上时钟」一致 */
+export const localOffsetString = (d: Date): string => {
+  const offset = -d.getTimezoneOffset()
+  const sign = offset >= 0 ? '+' : '-'
+  const abs = Math.abs(offset)
+  return `${sign}${Math.floor(abs / 60).toString().padStart(2, '0')}:${(abs % 60).toString().padStart(2, '0')}`
+}
+
+/** 把 ref 的时分秒安放到 yyyy-MM-dd 目标日期（保留本地时区语义；原自由跑页内联实现上移共享） */
+export const sameTimeOnDate = (dateStr: string, ref: Date): Date =>
+  new Date(`${dateStr}T${timeOnly(ref)}${localOffsetString(ref)}`)
+
+/** 目标日期（yyyy-MM-dd）在本地时区的 23:59:59，用于把补跑记录压回当天 */
+export const endOfLocalDay = (dateStr: string): Date => {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  return new Date(y, m - 1, d, 23, 59, 59)
+}
+
 /** sha256 的 hex，取前 32 位（原版 mac 字段生成方式） */
 export const sha256short = async (input: string): Promise<string> => {
   const t = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
@@ -69,11 +87,16 @@ export const buildRunRequest = async ({
   const mean = minSecond + maxSecond / 2
   const std = Math.max(0, (maxSecond - mean) / 3)
   const durationSeconds = Math.floor(gaussian(mean, std))
-  // 补跑支持：指定 targetDate 时，起跑时间锚定到该日（保留当天时刻，跨日到次日也属正常）
+  // 补跑支持：指定 targetDate 时，把起跑时刻锚定到该日（保留当前时分秒）。
+  // 若按当前时刻开跑会跨过午夜（导致 evaluateDate 落到目标日期次日），则把结束压到当天 23:59:59、
+  // 反推起跑时刻，保证 evaluateDate 的日期部分 == 目标日期。
   const now = new Date()
   let start: Date
   if (targetDate) {
-    start = new Date(`${targetDate}T${timeOnly(now)}+08:00`)
+    start = sameTimeOnDate(targetDate, now)
+    if (formatDateTime(new Date(Number(start) + durationSeconds * 1000), false) !== targetDate) {
+      start = new Date(Number(endOfLocalDay(targetDate)) - durationSeconds * 1000)
+    }
   } else {
     start = new Date()
   }

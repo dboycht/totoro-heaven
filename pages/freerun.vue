@@ -170,8 +170,15 @@
           </v-card-text>
 
           <v-card-actions>
-            <v-btn color="primary" :append-icon="'mdi-send'" :loading="running" :disabled="isDebug" size="large" @click="startFreeRun">
-              {{ isDebug ? '调试模式 · 提交已禁用' : '开始自由跑' }}
+            <v-btn
+              color="primary"
+              :append-icon="'mdi-send'"
+              :loading="running"
+              :disabled="isDebug || backfillInvalid"
+              size="large"
+              @click="startFreeRun"
+            >
+              {{ isDebug ? '调试模式 · 提交已禁用' : backfillInvalid ? '补跑模式 · 请选择日期' : '开始自由跑' }}
             </v-btn>
           </v-card-actions>
         </v-card>
@@ -201,8 +208,14 @@
             <v-alert v-if="batchTimeHint" type="warning" variant="tonal" density="compact" class="mb-2">
               {{ batchTimeHint }}
             </v-alert>
-            <v-btn color="accent" :append-icon="'mdi-play'" :loading="running" :disabled="isDebug || !isLoggedIn" @click="startBatch">
-              {{ isDebug ? '调试模式 · 提交已禁用' : '开始批量执行' }}
+            <v-btn
+              color="accent"
+              :append-icon="'mdi-play'"
+              :loading="running"
+              :disabled="isDebug || !isLoggedIn || backfillInvalid"
+              @click="startBatch"
+            >
+              {{ isDebug ? '调试模式 · 提交已禁用' : backfillInvalid ? '补跑模式 · 请选择日期' : '开始批量执行' }}
             </v-btn>
           </v-card-text>
         </v-card>
@@ -251,6 +264,7 @@ import { useSession } from '~/composables/useSession'
 import { useSunRunPaper, type RunPoint } from '~/composables/useSunRunPaper'
 import { createDebugPaper } from '~/utils/debugData'
 import { generateRoute } from '~/utils/generateRoute'
+import { sameTimeOnDate, endOfLocalDay } from '~/utils/runRequest'
 
 definePageMeta({ title: '自由跑' })
 
@@ -343,6 +357,8 @@ const todayStr = computed(() => {
   const d = new Date()
   return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`
 })
+// 补跑开启但未选日期：禁用提交，避免误提交成今天
+const backfillInvalid = computed(() => backfillMode.value && !backfillDate.value.trim())
 
 const batchCount = ref(3)
 const batchInterval = ref(10)
@@ -453,15 +469,14 @@ const buildSingle = (runIdxOffset: number, presetSpeed?: number, targetDay?: str
   const startMs = Date.now() + runIdxOffset * 1000
   const startBase = new Date(startMs)
   const endBase = new Date(startMs + duration * 1000)
-  // 补跑模式：把日期部分替换为目标日期，保留时分秒（未验证服务端是否接受历史日期）
-  const offset = -startBase.getTimezoneOffset() // 本地时区偏移（分钟）转小时
-  const offsetStr = `${offset >= 0 ? '+' : '-'}${Math.abs(Math.floor(offset / 60)).toString().padStart(2, '0')}:${(Math.abs(offset) % 60).toString().padStart(2, '0')}`
-  const start = targetDay
-    ? new Date(`${targetDay}T${startBase.toTimeString().slice(0, 8)}${offsetStr}`)
-    : startBase
-  const end = targetDay
-    ? new Date(`${targetDay}T${endBase.toTimeString().slice(0, 8)}${offsetStr}`)
-    : endBase
+  // 补跑模式：把日期部分替换为目标日期，保留时分秒（与阳光跑共用 helper，见 utils/runRequest.ts）
+  // 若跨 midnight（end 时刻 < start 时刻），把结束压到当天 23:59:59 并反推起跑，保证 evaluateDate 是目标日期当天
+  let start = targetDay ? sameTimeOnDate(targetDay, startBase) : startBase
+  let end = targetDay ? sameTimeOnDate(targetDay, endBase) : endBase
+  if (targetDay && end.getTime() <= start.getTime()) {
+    end = endOfLocalDay(targetDay)
+    start = new Date(end.getTime() - duration * 1000)
+  }
   const stepsPerKm = 1200 + (Math.random() - 0.5) * 100
   const steps = Math.round(finalDistance * stepsPerKm)
   const calorie = Math.round(metForSpeed(avgSpeed) * 65 * (duration / 3600))
@@ -619,6 +634,7 @@ const backfillDays = computed(() => {
 async function startFreeRun() {
   if (!isLoggedIn.value) return
   if (distanceError.value || paceError.value) return
+  if (backfillInvalid.value) return // 双保险：补跑开启但未选日期
   running.value = true
   try {
     batchCountActive.value = false
@@ -640,6 +656,7 @@ async function startBatch() {
   if (!isLoggedIn.value) return
   if (batchCount.value < 1 || batchCount.value > 10) return
   if (distanceError.value || paceError.value) return
+  if (backfillInvalid.value) return // 双保险
   running.value = true
   progress.value = []
   try {

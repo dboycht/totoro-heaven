@@ -57,7 +57,7 @@ import { TotoroApiWrapper } from '~/src/wrappers/TotoroApiWrapper'
 import type { BasicReq } from '~/src/wrappers/TotoroApiWrapper'
 import { useSession } from '~/composables/useSession'
 
-const props = defineProps<{ modelValue: string }>()
+const props = defineProps<{ modelValue: string; single?: boolean }>()
 const emit = defineEmits<{
   'update:modelValue': [value: string]
   'clear': []
@@ -84,6 +84,11 @@ watch(selected, (v) => {
 })
 
 function toggle(value: string) {
+  if (props.single) {
+    // 单选模式：再次点已选项可取消；选新项替换
+    selected.value = selectedSet.value.has(value) ? '' : value
+    return
+  }
   const s = new Set(selectedSet.value)
   if (s.has(value)) s.delete(value)
   else s.add(value)
