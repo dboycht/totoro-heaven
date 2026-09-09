@@ -82,16 +82,39 @@ const DEVICE_TYPE = '2'
  * ky 需要绝对 base（相对 prefixUrl 在 Node/undici 下解析失败）
  * - 浏览器：指向本机 Nitro 的 /api/totoro 通用代理
  * - 服务器：回环到本地代理（可用 TOTORO_INTERNAL_BASE 覆盖，默认 127.0.0.1:3000）
+ * - 优化：添加更健壮的环境检测和错误处理
  */
 const resolvePrefixUrl = (): string => {
-  if (import.meta.server) {
-    const internal = process.env.TOTORO_INTERNAL_BASE
-    if (internal) return `${internal.replace(/\/$/, '')}/api/totoro/`
-    const port = process.env.PORT || process.env.NITRO_PORT || '3000'
-    return `http://127.0.0.1:${port}/api/totoro/`
+  try {
+    if (import.meta.server) {
+      const internal = process.env.TOTORO_INTERNAL_BASE
+      if (internal) {
+        const cleanInternal = internal.replace(/\/$/, '')
+        return `${cleanInternal}/api/totoro/`
+      }
+      
+      // 优先使用NITRO_PORT，其次是PORT，最后是默认3000
+      const port = process.env.NITRO_PORT || process.env.PORT || '3000'
+      const portNum = parseInt(port, 10)
+      if (isNaN(portNum) || portNum <= 0 || portNum > 65535) {
+        console.warn(`Invalid port number: ${port}, using default 3000`)
+        return 'http://127.0.0.1:3000/api/totoro/'
+      }
+      return `http://127.0.0.1:${port}/api/totoro/`
+    }
+    
+    // 浏览器端：使用VITE环境变量或当前origin
+    const origin = import.meta.env?.VITE_TOTORO_PROXY_BASE || window.location.origin
+    if (!origin || !origin.startsWith('http')) {
+      console.warn(`Invalid origin: ${origin}, using default`)
+      return 'http://localhost:3000/api/totoro/'
+    }
+    return `${origin}/api/totoro/`
+  } catch (error) {
+    console.error('Error resolving prefix URL:', error)
+    // 回退到默认值
+    return 'http://127.0.0.1:3000/api/totoro/'
   }
-  const origin = import.meta.env?.VITE_TOTORO_PROXY_BASE || window.location.origin
-  return `${origin}/api/totoro/`
 }
 
 /**
@@ -191,9 +214,31 @@ export const TotoroApiWrapper = {
   },
 
   async getRunBegin(req: unknown): Promise<TotoroResponse> {
-    return await this.client
-      .post('sunrun/getRunBegin', { body: encryptRequestContent(req) })
-      .json() as Promise<TotoroResponse>
+    // 龙猫线上契约问题修复：尝试不同的请求格式
+    try {
+      // 原版格式（可能有问题）
+      return await this.client
+        .post('sunrun/getRunBegin', { body: encryptRequestContent(req) })
+        .json() as Promise<TotoroResponse>
+    } catch (error) {
+      // 如果原版失败，尝试明文格式（某些接口可能不需要加密）
+      try {
+        return await this.client
+          .post('sunrun/getRunBegin', { json: req })
+          .json() as Promise<TotoroResponse>
+      } catch (error2) {
+        // 如果还是失败，尝试基础格式
+        const basicReq = {
+          token: (req as any)?.token,
+          stuNumber: (req as any)?.stuNumber,
+          schoolId: (req as any)?.schoolId,
+          campusId: (req as any)?.campusId,
+        }
+        return await this.client
+          .post('sunrun/getRunBegin', { body: encryptRequestContent(basicReq) })
+          .json() as Promise<TotoroResponse>
+      }
+    }
   },
 
   async sunRunExercises(req: unknown): Promise<TotoroResponse> {

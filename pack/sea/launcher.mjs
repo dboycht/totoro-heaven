@@ -13,7 +13,7 @@ const ASSET_KEY = 'app.tar.gz'
 // 打包脚本会把这行占位符替换为实际版本号
 const APP_VERSION = '__APP_VERSION__'
 
-/* ===== 终端横幅：点阵式 ASCII 大字（/ \\ - _ 绘制）+ 科技风配色 ===== */
+/* ===== 终端横幅：FIGlet slant 字体 + 科技风配色 ===== */
 const esc = (code) => `\u001b[${code}m`
 const CLR = {
   reset: esc(0),
@@ -28,36 +28,15 @@ const CLR = {
   dim: esc(2),
 }
 
-// 每个字符 3 行、固定 5 宽的衬线字模（/ \ - _ 组合，保证行宽统一）
-// 每个字符 3 行、固定 5 宽的块状字模（/ \ = - _ 组合，全部严格 5 字符）
-// ASCII 大字标题（3 行、逐字符 5 宽程序拼接，保证行宽一致）
-// 字符集：T O R H E A V N M G —— 用 | - _ / 绘制
-const FONT = {
-  T: ['=====', '  |  ', '  |  '],
-  O: [' _ _ ', '|___|', ' _ _ '],
-  R: ['|--/_', '|--|_', '|___/'],
-  H: ['| | |', '|-|-|', '| | |'],
-  E: ['=====', '|=== ', '|=== '],
-  A: [' /\\  ', '/||\\ ', '|  | '],
-  V: ['\\ | /', ' \\|/ ', '  |  '],
-  N: ['|\\ | ', '| \\| ', '|  | '],
-  M: ['|\\ /|', '| V |', '|   |'],
-  G: ['=====', '| __ ', '|__|_'],
-}
-const SPACE = ['  ', '  ', '  '] // 语义间隔字宽不足时手动扩
-
-function renderTitle(text = '') {
-  const lines = ['', '', '']
-  for (const ch of text) {
-    const glyph = FONT[ch] || SPACE
-    for (let r = 0; r < 3; r++) {
-      lines[r] += String(glyph[r] || '').padEnd(3, ' ') + ' '
-    }
-  }
-  return lines
-}
-
-const TITLE_LINES = renderTitle('TOTORO HEAVEN')
+/* ===== 终端横幅：FIGlet slant 字体艺术字 + 科技风配色 ===== */
+// FIGlet slant 渲染的 "TOTORO HEAVEN"（npx figlet -f slant 生成）
+const TITLE_LINES = [
+  '  __________  __________  ____  ____     __  ___________ _    _________   __',
+  ' /_  __/ __ \\/_  __/ __ \\/ __ \\/ __ \\   / / / / ____/   | |  / / ____/ | / /',
+  '  / / / / / / / / / / / / /_/ / / / /  / /_/ / __/ / /| | | / / __/ /  |/ /',
+  ' / / / /_/ / / / / /_/ / _, _/ /_/ /  / __  / /___/ ___ | |/ / /___/ /|  /',
+  '/_/  \\____/ /_/  \\____/_/ |_|\\____/  /_/ /_/_____/_/  |_|___/_____/_/ |_/',
+]
 
 function buildBanner() {
   const it = CLR.bold + CLR.italic
