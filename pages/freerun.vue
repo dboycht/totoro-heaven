@@ -111,6 +111,35 @@
               </v-card-text>
             </v-card>
 
+            <!-- 补跑模式（测试） -->
+            <v-card variant="tonal" color="warning" class="mt-3">
+              <v-card-text>
+                <div class="d-flex align-center">
+                  <v-checkbox
+                    v-model="backfillMode"
+                    label="补跑模式（测试）"
+                    density="compact"
+                    hide-details
+                    color="warning"
+                  />
+                </div>
+                <p class="text-body-2 text-medium-emphasis mt-1">
+                  指定提交记录归属的日期；功能为<strong>测试阶段</strong>，未经验证服务端是否接受历史日期。
+                </p>
+                <v-text-field
+                  v-if="backfillMode"
+                  v-model="backfillDate"
+                  label="补跑日期（测试）"
+                  type="date"
+                  :max="todayStr"
+                  density="compact"
+                  class="mt-2"
+                  hint="留空则按当天提交；勾选后记录会被标记为所选日期"
+                  persistent-hint
+                />
+              </v-card-text>
+            </v-card>
+
             <v-expansion-panels class="mt-3">
               <v-expansion-panel>
                 <v-expansion-panel-title>
@@ -297,6 +326,14 @@ const varyDistanceKm = ref(0.5)
 const varySpeedKmh = ref(0.5)
 const varyTimeMin = ref(2)
 
+// 补跑模式（测试）：将记录归属到历史日期（未验证服务端是否接受）
+const backfillMode = ref(false)
+const backfillDate = ref('')
+const todayStr = computed(() => {
+  const d = new Date()
+  return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`
+})
+
 const batchCount = ref(3)
 const batchInterval = ref(10)
 
@@ -404,8 +441,17 @@ const buildSingle = (runIdxOffset: number, presetSpeed?: number): IItem => {
   const avgSpeed = +(finalDistance / (duration / 3600)).toFixed(2)
 
   const startMs = Date.now() + runIdxOffset * 1000
-  const start = new Date(startMs)
-  const end = new Date(startMs + duration * 1000)
+  const startBase = new Date(startMs)
+  const endBase = new Date(startMs + duration * 1000)
+  // 补跑模式：把日期部分替换为目标日期，保留时分秒（未验证服务端是否接受历史日期）
+  const offset = -startBase.getTimezoneOffset() // 本地时区偏移（分钟）转小时
+  const offsetStr = `${offset >= 0 ? '+' : '-'}${Math.abs(Math.floor(offset / 60)).toString().padStart(2, '0')}:${(Math.abs(offset) % 60).toString().padStart(2, '0')}`
+  const start = backfillMode.value && backfillDate.value
+    ? new Date(`${backfillDate.value}T${startBase.toTimeString().slice(0, 8)}${offsetStr}`)
+    : startBase
+  const end = backfillMode.value && backfillDate.value
+    ? new Date(`${backfillDate.value}T${endBase.toTimeString().slice(0, 8)}${offsetStr}`)
+    : endBase
   const stepsPerKm = 1200 + (Math.random() - 0.5) * 100
   const steps = Math.round(finalDistance * stepsPerKm)
   const calorie = Math.round(metForSpeed(avgSpeed) * 65 * (duration / 3600))
