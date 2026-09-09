@@ -5,10 +5,13 @@
       补跑为<strong>测试阶段</strong>：日期取自「本学期阳光跑归档」。已跑过的日期置灰、可补跑的日期可勾选；功能未经验证服务端是否接受历史日期。
     </v-alert>
 
-    <div v-if="loading" class="text-body-2 text-medium-emphasis pa-2">正在加载跑步归档…</div>
-    <div v-else-if="error" class="text-body-2 text-error pa-2">{{ error }}</div>
+    <!-- 首次加载（尚无月份数据时） -->
+    <div v-if="!ready && loading" class="text-body-2 text-medium-emphasis pa-2">正在加载跑步归档…</div>
+    <div v-else-if="!ready && error" class="text-body-2 text-error pa-2">{{ error }}</div>
+    <div v-else-if="!ready" class="text-body-2 text-medium-emphasis pa-2">暂无可用归档数据。</div>
 
-    <template v-else-if="ready">
+    <!-- 日历主体：一旦 ready 即常驻（切月时仅显示加载指示，不卸载，避免高度塌缩导致滚动跳到顶部） -->
+    <template v-else>
       <!-- 月份切换头 -->
       <div class="d-flex align-center mb-1">
         <v-btn
@@ -22,7 +25,7 @@
         <div class="flex-grow-1 text-center">
           <div class="text-subtitle-1 font-weight-medium">{{ monthName }}</div>
           <div class="text-caption text-medium-emphasis">
-            该月已跑 {{ ranDates.size }} 天 / 共 {{ dayCells.length }} 天
+            {{ loading ? '加载中…' : `该月已跑 ${ranDates.size} 天 / 共 ${daysInMonth} 天` }}
           </div>
         </div>
         <v-btn
@@ -35,6 +38,8 @@
         />
       </div>
 
+      <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-1" height="2" />
+
       <!-- 星期表头 -->
       <div class="calendar-grid">
         <div v-for="w in ['日', '一', '二', '三', '四', '五', '六']" :key="w" class="week-head">
@@ -42,8 +47,8 @@
         </div>
       </div>
 
-      <!-- 日期网格 -->
-      <div class="calendar-grid">
+      <!-- 日期网格（切月时保留，遮罩半透明以示意加载中） -->
+      <div class="calendar-grid" :class="{ 'is-loading': loading }">
         <template v-for="(d, i) in dayCells" :key="i">
           <div v-if="d.blank" class="day-cell day-blank" />
           <button
@@ -83,9 +88,9 @@
         </span>
         <v-btn v-if="selectedList.length" size="small" variant="text" @click="$emit('clear')">清空</v-btn>
       </div>
-    </template>
 
-    <div v-else class="text-body-2 text-medium-emphasis pa-2">暂无可用归档数据。</div>
+      <div v-if="error" class="text-caption text-error mt-2">{{ error }}</div>
+    </template>
   </div>
 </template>
 
@@ -128,6 +133,9 @@ const ranDates = ref(new Set<string>())
 const termId = ref('')
 
 const pad2 = (n: number) => n.toString().padStart(2, '0')
+
+// 本月非空白天数（用于「共 N 天」统计；dayCells 含星期偏移补位 blank）
+const daysInMonth = computed(() => dayCells.value.filter((c) => !c.blank).length)
 
 // 解析 "2024年9月" -> {year, month}
 const parseMonthName = (name: string) => {
@@ -187,15 +195,31 @@ function buildCells(year: number, month: number, ran: Set<string>) {
   dayCells.value = cells
 }
 
+// 生成目标月的空骨架（星期偏移 + 天数，无 ran/status），用于切月瞬间占位，避免与月份名错位
+function emptyCellsFor(year: number, month: number) {
+  const totalDays = new Date(year, month, 0).getDate()
+  const firstDow = new Date(year, month - 1, 1).getDay()
+  const cells: DayCell[] = []
+  for (let i = 0; i < firstDow; i++) cells.push({ blank: true })
+  for (let d = 1; d <= totalDays; d++) {
+    cells.push({ blank: false, value: `${year}-${pad2(month)}-${pad2(d)}`, day: pad2(d), selectable: false, ran: false, future: false })
+  }
+  dayCells.value = cells
+  ranDates.value = new Set()
+}
+
 async function loadMonth() {
   const month = monthList.value[monthIdx.value]
   if (!month) return
+  const parsed = parseMonthName(month.monthName)
   loading.value = true
   error.value = ''
   try {
     monthName.value = month.monthName
-    const parsed = parseMonthName(month.monthName)
-    if (!parsed) {
+    // 先渲染目标月骨架（同步更新月份名与网格，避免错位；高度与真实月基本一致）
+    if (parsed) {
+      emptyCellsFor(parsed.year, parsed.month)
+    } else {
       dayCells.value = []
       ranDates.value = new Set()
       return
@@ -379,5 +403,11 @@ defineExpose({ reload: load })
 }
 .day-flag.flag-selected {
   color: var(--v-theme-primary);
+}
+
+/* 切月加载中：日历保留但有半透明遮罩感，避免整体卸载导致页面高度塌缩 */
+.calendar-grid.is-loading {
+  opacity: 0.55;
+  pointer-events: none;
 }
 </style>
