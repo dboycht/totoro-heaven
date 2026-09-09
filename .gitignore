@@ -25,6 +25,7 @@ npm-debug.log*
 
 # dev docs (kept in dev copy only)
 DEVELOPMENT.md
+ERROR.md
 研究-源码解读.md
 *.local
 
