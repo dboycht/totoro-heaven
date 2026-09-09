@@ -38,23 +38,70 @@ const TITLE_LINES = [
   '/_/  \\____/ /_/  \\____/_/ |_|\\____/  /_/ /_/_____/_/  |_|___/_____/_/ |_/',
 ]
 
+// 文本显示宽度：全角（CJK）字符计 2 列，其它（含 ANSI 码剔除后）计 1 列
+const displayWidth = (s) => {
+  let w = 0
+  for (const ch of s) {
+    w += (ch.codePointAt(0) > 0x1fff) ? 2 : 1
+  }
+  return w
+}
+
+// 把字符串填充/居中到指定显示宽度：不足则两侧对称补空格，超宽原样返回
+const padTo = (s, width) => {
+  const w = displayWidth(s)
+  if (w >= width) return s
+  const left = Math.floor((width - w) / 2)
+  return ' '.repeat(left) + s + ' '.repeat(width - w - left)
+}
+
+// 把若干“样式文本 + 纯文本”对拼成整块居中横幅：取所有行纯文本的最大显示宽，整块左右留白对称
+function centerBlock(items) {
+  const max = Math.max(...items.map((p) => displayWidth(p.plain)))
+  const pad = Math.max(0, Math.floor((terminalCols() - max) / 2))
+  return items.map((p) => ' '.repeat(pad) + p.styled).join('\n')
+}
+
+function terminalCols() {
+  try {
+    const c = process.stdout.columns
+    return (typeof c === 'number' && c > 30) ? c : 96
+  } catch {
+    return 96
+  }
+}
+
 function buildBanner() {
   const it = CLR.bold + CLR.italic
-  const body = []
-  // 顶部斜线装饰
-  body.push(CLR.cyan + '  ' + '\\/\\/'.repeat(20) + CLR.reset)
+  const plainLines = []
+  const styledLines = []
+  const push = (styled, plain) => { styledLines.push(styled); plainLines.push(plain) }
+
+  const slashTop = '  ' + '\\/\\/'.repeat(20)
+  const slashBot = '  ' + '/\\/\\'.repeat(20)
+  push(CLR.cyan + slashTop + CLR.reset, slashTop)
   for (const line of TITLE_LINES) {
-    body.push(it + CLR.cyan + line + CLR.reset)
+    push(it + CLR.cyan + line + CLR.reset, line)
   }
-  body.push(
-    CLR.dim + '┌──────────────────────────────────────────────────────────────────────────┐' + CLR.reset,
-    CLR.dim + '│' + CLR.reset + CLR.bold + CLR.magenta + '  Totoro Heaven · 龙猫天堂  v' + APP_VERSION + CLR.reset + '       ' + CLR.dim + '阳光跑助手 · 本地 Web 服务' + CLR.reset + CLR.dim + '  │' + CLR.reset,
-    CLR.dim + '└──────────────────────────────────────────────────────────────────────────┘' + CLR.reset,
-  )
-  body.push(CLR.cyan + '  ' + '/\\/\\'.repeat(20) + CLR.reset)
-  body.push('')
-  body.push(CLR.green + '  ▶ ' + CLR.reset + '服务已启动，浏览器将自动打开  ' + CLR.cyan + `http://localhost:${PORT}/` + CLR.reset)
-  return body.join('\n')
+  const boxW = 74
+  const boxTop = '┌' + '─'.repeat(boxW - 2) + '┐'
+  const boxBot = '└' + '─'.repeat(boxW - 2) + '┘'
+
+  // 盒子内两行：标题行（含版本）+ 副标题行，分别按盒子内宽居中
+  const innerW = boxW - 2
+  const title = `  Totoro Heaven · 龙猫天堂  v${APP_VERSION}`
+  const subtitle = `阳光跑助手 · 本地 Web 服务`
+  const boxTitle = '│' + padTo(title, innerW) + '│'
+  const boxSub = '│' + padTo(subtitle, innerW) + '│'
+  push(CLR.dim + boxTop + CLR.reset, boxTop)
+  push(CLR.dim + boxTitle + CLR.reset, boxTitle)
+  push(CLR.bold + CLR.magenta + boxSub + CLR.reset, boxSub)
+  push(CLR.dim + boxBot + CLR.reset, boxBot)
+  push(CLR.cyan + slashBot + CLR.reset, slashBot)
+  push('', '')
+  const line = `  ▶ 服务已启动，浏览器将自动打开  http://localhost:${PORT}/`
+  push(CLR.green + '  ▶ ' + CLR.reset + '服务已启动，浏览器将自动打开  ' + CLR.cyan + `http://localhost:${PORT}/` + CLR.reset, line)
+  return centerBlock(styledLines.map((s, i) => ({ styled: s, plain: plainLines[i] })))
 }
 
 const banner = buildBanner()
