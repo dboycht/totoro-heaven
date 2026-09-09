@@ -1,10 +1,18 @@
 html,
 body,
 #__nuxt {
-  height: 100%;
+  min-height: 100%;
   margin: 0;
   padding: 0;
   background: #121212;
+}
+
+/* 允许页面内容超高时自然滚动，避免被固定高度/overflow 截断（补跑长卡片等） */
+html,
+body {
+  height: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .page-enter-active,

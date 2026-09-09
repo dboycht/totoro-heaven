@@ -225,17 +225,39 @@ async function loadMonth() {
 
 async function load() {
   if (isDebug.value) {
-    // 调试模式：显示当月全部可补跑（已跑=今天示例）
+    // 调试模式：生成若干个月的模拟归档，展示「已跑/可补/未来」等不同状态
     const now = new Date()
     const y = now.getFullYear()
     const m = now.getMonth() + 1
-    monthName.value = `${y} 年 ${m} 月`
-    monthList.value = [
-      { monthId: 'debug', monthName: `${y} 年 ${m} 月`, ifCurrent: '1' },
-    ]
-    monthIdx.value = 0
+    // 展示最近 3 个月（当前月 + 前两月），方便预览「切换月份」
+    const months: { monthId: string; monthName: string; ifCurrent: string }[] = []
+    for (let off = 2; off >= 0; off--) {
+      const d = new Date(y, m - 1 - off, 1)
+      months.push({
+        monthId: `debug-${d.getFullYear()}-${d.getMonth() + 1}`,
+        monthName: `${d.getFullYear()} 年 ${d.getMonth() + 1} 月`,
+        ifCurrent: off === 0 ? '1' : '0',
+      })
+    }
+    monthList.value = months
+    monthIdx.value = 2 // 定位到当前月
+    monthName.value = months[2].monthName
     termId.value = 'debug'
-    const ran = new Set<string>([`${y}-${pad2(m)}-${pad2(now.getDate())}`])
+    // 模拟归档：当月已跑的前几天置灰，未来几天禁用
+    const today = now.getDate()
+    const ran = new Set<string>()
+    // 已经过去的日子里，随机挑一部分作为「已跑」（展示灰色）
+    for (let day = 1; day < today; day++) {
+      if (day % 2 === 0 || day % 5 === 0) {
+        ran.add(`${y}-${pad2(m)}-${pad2(day)}`)
+      }
+    }
+    // 上月随机已跑，用于切换预览
+    const pm = months[1]
+    const pmm = Number(pm.monthName.match(/(\d{2})\s*月/)?.[1] || 0)
+    for (let day = 1; day <= 15; day++) {
+      if (day % 3 === 0) ran.add(`${pm.monthName.match(/(\d{4})/)?.[0]}-${pad2(pmm)}-${pad2(day)}`)
+    }
     ranDates.value = ran
     buildCells(y, m, ran)
     ready.value = true
@@ -304,8 +326,8 @@ defineExpose({ reload: load })
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 44px;
-  border-radius: 8px;
+  height: 58px;
+  border-radius: 10px;
   border: 1px solid rgba(var(--v-theme-primary), 0.12);
   background: rgba(var(--v-theme-surface), 0.6);
   cursor: pointer;
@@ -321,14 +343,14 @@ defineExpose({ reload: load })
   opacity: 1;
 }
 .day-num {
-  font-size: 0.85rem;
-  font-weight: 500;
+  font-size: 0.95rem;
+  font-weight: 600;
   line-height: 1;
 }
 .day-flag {
-  font-size: 0.6rem;
+  font-size: 0.62rem;
   line-height: 1;
-  margin-top: 3px;
+  margin-top: 4px;
 }
 .day-blank {
   border: none;
