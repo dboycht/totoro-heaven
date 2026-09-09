@@ -36,20 +36,23 @@
                 hide-details
                 color="warning"
               />
+              <v-btn
+                v-if="backfillMode"
+                size="small"
+                variant="text"
+                color="primary"
+                class="ml-auto"
+                :loading="backfillLoading"
+                @click="reloadBackfill"
+              >
+                刷新日期
+              </v-btn>
             </div>
-            <p class="text-body-2 text-medium-emphasis mt-1">
-              指定本次记录归属的日期；功能为<strong>测试阶段</strong>，未经验证服务端是否接受历史日期。
-            </p>
-            <v-text-field
+            <BackfillPicker
               v-if="backfillMode"
+              ref="backfillPickerRef"
               v-model="backfillDate"
-              label="补跑日期（测试）"
-              type="date"
-              :max="todayStr"
-              density="compact"
               class="mt-2"
-              hint="留空则按当天提交"
-              persistent-hint
             />
           </v-card-text>
         </v-card>
@@ -130,10 +133,18 @@ let timer: ReturnType<typeof setInterval> | null = null
 // 补跑模式（测试）：将记录归属到历史日期（未验证服务端是否接受）
 const backfillMode = ref(false)
 const backfillDate = ref('')
+const backfillPickerRef = ref<{ reload: () => Promise<void> } | null>(null)
+const backfillLoading = ref(false)
+async function reloadBackfill() {
+  if (!backfillPickerRef.value) return
+  backfillLoading.value = true
+  try { await backfillPickerRef.value.reload() } finally { backfillLoading.value = false }
+}
 const todayStr = computed(() => {
   const d = new Date()
   return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`
 })
+const backfillFirstDay = computed(() => backfillDate.value.split(',').map((s) => s.trim()).find(Boolean) || '')
 
 const totalMs = computed(() => Math.max(0, endTime.value - startedAt.value))
 const progressPercent = computed(() =>
@@ -170,7 +181,7 @@ async function startRun() {
     phoneNumber: session.value.phoneNumber,
     minTime: paper.value.minTime ?? 0,
     maxTime: paper.value.maxTime ?? 0,
-    targetDate: backfillMode.value ? backfillDate.value || undefined : undefined,
+    targetDate: backfillMode.value ? backfillFirstDay.value || undefined : undefined,
   })
 
   startedAt.value = Date.now()

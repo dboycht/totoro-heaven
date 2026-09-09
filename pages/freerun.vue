@@ -122,20 +122,23 @@
                     hide-details
                     color="warning"
                   />
+                  <v-btn
+                    v-if="backfillMode"
+                    size="small"
+                    variant="text"
+                    color="primary"
+                    class="ml-auto"
+                    :loading="backfillLoading"
+                    @click="reloadBackfill"
+                  >
+                    刷新日期
+                  </v-btn>
                 </div>
-                <p class="text-body-2 text-medium-emphasis mt-1">
-                  指定提交记录归属的日期；功能为<strong>测试阶段</strong>，未经验证服务端是否接受历史日期。
-                </p>
-                <v-text-field
+                <BackfillPicker
                   v-if="backfillMode"
+                  ref="backfillPickerRef"
                   v-model="backfillDate"
-                  label="补跑日期（测试）"
-                  type="date"
-                  :max="todayStr"
-                  density="compact"
                   class="mt-2"
-                  hint="留空则按当天提交；勾选后记录会被标记为所选日期"
-                  persistent-hint
                 />
               </v-card-text>
             </v-card>
@@ -329,6 +332,13 @@ const varyTimeMin = ref(2)
 // 补跑模式（测试）：将记录归属到历史日期（未验证服务端是否接受）
 const backfillMode = ref(false)
 const backfillDate = ref('')
+const backfillPickerRef = ref<{ reload: () => Promise<void> } | null>(null)
+const backfillLoading = ref(false)
+async function reloadBackfill() {
+  if (!backfillPickerRef.value) return
+  backfillLoading.value = true
+  try { await backfillPickerRef.value.reload() } finally { backfillLoading.value = false }
+}
 const todayStr = computed(() => {
   const d = new Date()
   return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`
@@ -418,7 +428,7 @@ const resolveBaseSpeed = (): number => {
   return 8
 }
 
-const buildSingle = (runIdxOffset: number, presetSpeed?: number): IItem => {
+const buildSingle = (runIdxOffset: number, presetSpeed?: number, targetDay?: string): IItem => {
   const stuNumber = session.value?.stuNumber as string
   const baseSpeed = presetSpeed ?? resolveBaseSpeed()
 
@@ -446,11 +456,11 @@ const buildSingle = (runIdxOffset: number, presetSpeed?: number): IItem => {
   // 补跑模式：把日期部分替换为目标日期，保留时分秒（未验证服务端是否接受历史日期）
   const offset = -startBase.getTimezoneOffset() // 本地时区偏移（分钟）转小时
   const offsetStr = `${offset >= 0 ? '+' : '-'}${Math.abs(Math.floor(offset / 60)).toString().padStart(2, '0')}:${(Math.abs(offset) % 60).toString().padStart(2, '0')}`
-  const start = backfillMode.value && backfillDate.value
-    ? new Date(`${backfillDate.value}T${startBase.toTimeString().slice(0, 8)}${offsetStr}`)
+  const start = targetDay
+    ? new Date(`${targetDay}T${startBase.toTimeString().slice(0, 8)}${offsetStr}`)
     : startBase
-  const end = backfillMode.value && backfillDate.value
-    ? new Date(`${backfillDate.value}T${endBase.toTimeString().slice(0, 8)}${offsetStr}`)
+  const end = targetDay
+    ? new Date(`${targetDay}T${endBase.toTimeString().slice(0, 8)}${offsetStr}`)
     : endBase
   const stepsPerKm = 1200 + (Math.random() - 0.5) * 100
   const steps = Math.round(finalDistance * stepsPerKm)
@@ -600,14 +610,27 @@ async function runList(dataList: IItem[]) {
   }
 }
 
+// 补跑选中的日期列表（逗号分隔 → 数组）；空数组 = 非补跑
+const backfillDays = computed(() => {
+  if (!backfillMode.value) return []
+  return backfillDate.value.split(',').map((s) => s.trim()).filter(Boolean)
+})
+
 async function startFreeRun() {
   if (!isLoggedIn.value) return
   if (distanceError.value || paceError.value) return
   running.value = true
   try {
     batchCountActive.value = false
-    const list = [buildSingle(1)]
-    await runList(list)
+    const days = backfillDays.value
+    if (days.length) {
+      // 补跑模式：每个勾选日期生成一条记录
+      const list: IItem[] = days.map((day, i) => buildSingle(i + 1, undefined, day))
+      await runList(list)
+    } else {
+      const list = [buildSingle(1)]
+      await runList(list)
+    }
   } finally {
     running.value = false
   }
@@ -622,9 +645,12 @@ async function startBatch() {
   try {
     batchCountActive.value = true
     const presetSpeed = activePreset.value?.speed
+    const days = backfillDays.value
     const list: IItem[] = []
     for (let i = 0; i < batchCount.value; i++) {
-      list.push(buildSingle(i * batchInterval.value * 60, presetSpeed))
+      // 补跑模式：依次循环使用所选日期；否则当天
+      const targetDay = days.length ? days[i % days.length] : undefined
+      list.push(buildSingle(i * batchInterval.value * 60, presetSpeed, targetDay))
     }
     await runList(list)
   } finally {
