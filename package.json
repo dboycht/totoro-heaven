@@ -9,6 +9,8 @@
     "build": "nuxt build",
     "preview": "node .output/server/index.mjs",
     "postinstall": "nuxt prepare",
+    "test:mp": "node scripts/run-mp-tests.mjs",
+    "typecheck:mp": "tsc -p tsconfig.mp.json",
     "sea": "powershell -NoProfile -ExecutionPolicy Bypass -File pack/sea/build-sea.ps1"
   },
   "dependencies": {

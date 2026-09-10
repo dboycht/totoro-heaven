@@ -12,7 +12,7 @@ export default defineNuxtConfig({
     '~/assets/css/main.css',
   ],
   watch: {
-    ignored: ['**/_source-study/**', '**/origin/**', '**/totoro-paradise-main.zip'],
+    ignored: ['**/_source-study/**', '**/origin/**', '**/totoro-paradise-main.zip', '**/_mp-analyze/**', '**/.mp-test-build/**'],
   },
   devServer: {
     port: 3000,
@@ -20,7 +20,7 @@ export default defineNuxtConfig({
   vite: {
     server: {
       watch: {
-        ignored: ['**/_source-study/**', '**/origin/**', '**/totoro-paradise-main.zip'],
+        ignored: ['**/_source-study/**', '**/origin/**', '**/totoro-paradise-main.zip', '**/_mp-analyze/**', '**/.mp-test-build/**'],
       },
       hmr: {
         port: 3000,
@@ -64,6 +64,11 @@ export default defineNuxtConfig({
       baseUrl: 'https://app.xtotoro.com',
       // 微信开放平台 OAuth appid（与龙猫 App 内登记一致）
       wechatAppId: 'wx20976a32c7a2fd75',
+    },
+    mp: {
+      // 微信小程序后端（「龙猫体育锻炼」，AppID wx8e8598deed63f9b1）
+      // ⚠️ 1.1.x 线目标后端；接口契约见 _mp-analyze/小程序逆向分析.md
+      baseUrl: 'https://wxxcx.xtotoro.com',
     },
   },
   nitro: {
