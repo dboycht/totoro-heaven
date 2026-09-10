@@ -29,6 +29,7 @@ npm-debug.log*
 DEVELOPMENT.md
 ERROR.md
 研究-源码解读.md
+_mp-analyze/
 *.local
 
 # editor
