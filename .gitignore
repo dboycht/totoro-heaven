@@ -25,6 +25,28 @@ capture/
 .mp-test-build/
 *.local
 
+# ⚠️ 隐私红线：抓包存档 / 证书 / 令牌 / 会话一律不得入库（含个人 token、学号、轨迹）
+# 见 _mp-analyze/解决方案与取证方案.md 「隐私纪律」
+*.saz
+*.har
+*.pcap
+*.pcapng
+*.chls*
+**/capture/**
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+*.csr
+token*.json
+*token*.txt
+mp_session*
+session*.json
+secrets/
+private/
+
 # editor
 .vscode/
 .idea/
