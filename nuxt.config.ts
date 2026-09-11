@@ -8,11 +8,10 @@ export default defineNuxtConfig({
   css: [
     'vuetify/styles',
     '@mdi/font/css/materialdesignicons.css',
-    'leaflet/dist/leaflet.css',
     '~/assets/css/main.css',
   ],
   watch: {
-    ignored: ['**/_source-study/**', '**/origin/**', '**/totoro-paradise-main.zip', '**/_mp-analyze/**', '**/.mp-test-build/**'],
+    ignored: ['**/_mp-analyze/**', '**/.mp-test-build/**'],
   },
   devServer: {
     port: 3000,
@@ -20,7 +19,7 @@ export default defineNuxtConfig({
   vite: {
     server: {
       watch: {
-        ignored: ['**/_source-study/**', '**/origin/**', '**/totoro-paradise-main.zip', '**/_mp-analyze/**', '**/.mp-test-build/**'],
+        ignored: ['**/_mp-analyze/**', '**/.mp-test-build/**'],
       },
       hmr: {
         port: 3000,
@@ -50,7 +49,7 @@ export default defineNuxtConfig({
       meta: [
         { charset: 'utf-8' },
         { name: 'viewport', content: 'width=device-width, initial-scale=1' },
-        { name: 'description', content: '阳光跑（乐学/龙猫校园）跑步记录辅助工具' },
+        { name: 'description', content: '阳光跑（乐学/龙猫校园）跑步记录辅助工具 · 微信小程序后端线' },
       ],
       link: [
         { rel: 'icon', type: 'image/x-icon', href: '/favicon.ico' },
@@ -59,15 +58,9 @@ export default defineNuxtConfig({
     },
   },
   runtimeConfig: {
-    totoro: {
-      // 龙猫校园服务端（客户端若需直连请设置）host
-      baseUrl: 'https://app.xtotoro.com',
-      // 微信开放平台 OAuth appid（与龙猫 App 内登记一致）
-      wechatAppId: 'wx20976a32c7a2fd75',
-    },
     mp: {
       // 微信小程序后端（「龙猫体育锻炼」，AppID wx8e8598deed63f9b1）
-      // ⚠️ 1.1.x 线目标后端；接口契约见 _mp-analyze/小程序逆向分析.md
+      // 唯一的后端目标：旧 App 后端 `app.xtotoro.com` 已于 1.0.4 停止支持并彻底移除
       baseUrl: 'https://wxxcx.xtotoro.com',
     },
   },

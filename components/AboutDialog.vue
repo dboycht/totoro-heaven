@@ -7,7 +7,7 @@
         <v-spacer />
         <span class="text-caption text-medium-emphasis">Totoro Heaven</span>
       </v-card-title>
-      <v-card-subtitle class="pb-2">阳光跑（乐学/龙猫校园）跑步记录辅助工具</v-card-subtitle>
+      <v-card-subtitle class="pb-2">阳光跑（乐学/龙猫校园）跑步记录辅助工具 · 微信小程序后端线</v-card-subtitle>
 
       <v-divider />
 

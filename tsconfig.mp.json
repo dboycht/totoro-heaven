@@ -1,5 +1,5 @@
 {
-  "//": "小程序（1.1.x 线）纯逻辑模块类型检查：不 extends 根配置，避免把旧 App 版的历史类型问题卷进来。",
+  "//": "小程序线（1.1.x）纯逻辑模块类型检查：不 extends 根配置，保持独立、可离线跑通（不依赖 nuxt prepare）。",
   "//2": "allowImportingTsExtensions：让 tests/mp 的测试能被 `node --test` 直接执行（Node ESM 需要显式 .ts 扩展名）。",
   "//3": "Nuxt 耦合文件（MpApiWrapper / server/api/mp / useMpSession）由 `npm run build` 把关。",
   "compilerOptions": {

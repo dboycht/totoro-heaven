@@ -10,25 +10,16 @@ dist/
 # exe packaging runtime cache
 pack/sea/runtime/
 
-# reference build artifact from origin project
-origin/
-
-# original source study (extracted zip + research materials, dev only)
-_source-study/
-_source-study-apk/
-totoro-paradise-main.zip
-龙猫校园_*.apk
-
 # runtime user data & dev caches
-data/
+# 注意：写成 `/data/`（仅根目录），早前的 `data/` 会连 `src/data/` 一起忽略
+/data/
 .cache/
 *.log
 npm-debug.log*
 
-# dev docs (kept in dev copy only)
+# dev docs & reverse-engineering materials (kept in dev copy only)
 DEVELOPMENT.md
 ERROR.md
-研究-源码解读.md
 _mp-analyze/
 capture/
 .mp-test-build/

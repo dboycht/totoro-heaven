@@ -6,39 +6,19 @@
         <span class="font-weight-bold">龙猫天堂</span>
         <span class="text-caption text-medium-emphasis">Totoro Heaven · 阳光跑助手</span>
       </v-app-bar-title>
-      <template v-if="session?.token">
-        <v-btn to="/scanned" :prepend-icon="'mdi-map-marker-path'" text="阳光跑" variant="text" />
-        <v-btn to="/freerun" :prepend-icon="'mdi-run-fast'" text="自由跑" variant="text" />
-        <v-btn to="/records" :prepend-icon="'mdi-history'" text="记录" variant="text" />
-        <v-btn to="/decode" :prepend-icon="'mdi-script-text-key-outline'" text="解码" variant="text" />
-        <v-btn icon="mdi-logout" @click="doLogout" title="退出登录" />
-      </template>
-      <template v-else>
-        <v-btn to="/decode" :prepend-icon="'mdi-script-text-key-outline'" text="解码" variant="text" />
-      </template>
+
+      <v-chip v-if="isLoggedIn" color="primary" variant="tonal" size="small" class="mr-2">
+        <v-icon start size="16">mdi-cellphone-check</v-icon>
+        小程序会话已就绪
+      </v-chip>
+      <v-btn v-if="isLoggedIn" icon="mdi-logout" title="清除小程序会话" @click="clearSession" />
+
       <v-btn icon="mdi-information-outline" title="关于" @click="aboutOpen = true" />
       <AboutDialog v-model="aboutOpen" />
     </v-app-bar>
 
     <v-main>
       <v-container fluid class="py-6" style="max-width: 1200px">
-        <v-alert
-          v-if="isDebug"
-          type="warning"
-          variant="tonal"
-          class="mb-4"
-          density="compact"
-        >
-          <template #prepend>
-            <v-icon>mdi-bug-outline</v-icon>
-          </template>
-          <div class="d-flex align-center justify-space-between w-100">
-            <span>调试模式 · 本地模拟数据，提交已禁用</span>
-            <v-btn color="warning" variant="outlined" size="small" @click="exitDebug">
-              退出调试，回到扫码
-            </v-btn>
-          </div>
-        </v-alert>
         <slot />
       </v-container>
     </v-main>
@@ -46,20 +26,10 @@
 </template>
 
 <script setup lang="ts">
-import { useSession } from '~/composables/useSession'
+import { useMpSession } from '~/composables/useMpSession'
 
-const { session, isDebug, clearSession } = useSession()
-const router = useRouter()
+// 1.1.x 起唯一后端为微信小程序（wxxcx.xtotoro.com），会话由 mp_session 承载
+const { isLoggedIn, clearSession } = useMpSession()
 
 const aboutOpen = ref(false)
-
-function exitDebug() {
-  clearSession()
-  router.push('/')
-}
-
-function doLogout() {
-  clearSession()
-  router.push('/')
-}
 </script>
