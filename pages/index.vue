@@ -16,13 +16,13 @@
         <v-icon color="primary" class="mr-2">mdi-cellphone-link</v-icon>
         微信小程序后端线（1.1.x）
       </v-card-title>
-      <v-card-subtitle>当前唯一后端通道 · 契约来自逆向分析，真包抓包后仍需逐条核对</v-card-subtitle>
+      <v-card-subtitle>当前唯一后端通道 · 契约来自逆向分析 + 真包实测（2026-09-11 / 09-13）</v-card-subtitle>
       <v-card-text>
         <v-list density="compact">
-          <v-list-item prepend-icon="mdi-server-network" title="后端地址" subtitle="https://wxxcx.xtotoro.com（路径前缀 /wxxcx）" />
-          <v-list-item prepend-icon="mdi-shield-key-outline" title="鉴权" subtitle="Authorization: Bearer <token>" />
+          <v-list-item prepend-icon="mdi-server-network" title="后端地址" subtitle="多租户：该校 domainUrl（缺省 https://wxxcx.xtotoro.com）" />
+          <v-list-item prepend-icon="mdi-shield-key-outline" title="鉴权" subtitle="Authorization: Bearer <token>（无 token 也发 Bearer null）" />
           <v-list-item prepend-icon="mdi-lock-open-variant-outline" title="请求体" subtitle="明文 JSON（不再使用 RSA 私钥加密）" />
-          <v-list-item prepend-icon="mdi-swap-horizontal" title="本机代理" subtitle="/api/mp/** → wxxcx.xtotoro.com/wxxcx/**（GET + POST 透传）" />
+          <v-list-item prepend-icon="mdi-swap-horizontal" title="本机代理" subtitle="/api/mp/** → 该校基址 + /wxxcx|/wxapi 全路径（GET/POST 透传）" />
           <v-list-item prepend-icon="mdi-content-save-outline" title="会话存储" subtitle="localStorage mp_session" />
           <v-list-item
             prepend-icon="mdi-account-check-outline"
@@ -42,7 +42,8 @@
           </v-card-title>
           <v-card-text>
             <v-list density="compact">
-              <v-list-item prepend-icon="mdi-file-document-outline" title="契约与类型" subtitle="src/mp/types.ts（含 TODO(verify) 标注）" />
+              <v-list-item prepend-icon="mdi-file-document-outline" title="契约与端点元数据表" subtitle="src/mp/types.ts（56 条：路径/方法/负载位置/是否需 token）" />
+              <v-list-item prepend-icon="mdi-email-open-outline" title="双信封判定与解包" subtitle="src/mp/envelope.ts（含 -199 登录过期判据）" />
               <v-list-item prepend-icon="mdi-vector-polyline" title="轨迹拟合度算法" subtitle="utils/mp/routeSimilarity.ts（5m 采样 / 25m 容差）" />
               <v-list-item prepend-icon="mdi-map-marker-path" title="走廊式轨迹生成" subtitle="utils/mp/generateRoute.ts（弧长推进 + OU 相关抖动）" />
               <v-list-item prepend-icon="mdi-timer-outline" title="数据自洽与格式化" subtitle="utils/mp/runData.ts（时长/配速/步数/卡路里/飞点）" />
@@ -61,7 +62,7 @@
           </v-card-title>
           <v-card-text>
             <v-list density="compact">
-              <v-list-item prepend-icon="mdi-bug-outline" title="真包抓包核对" subtitle="字段全集 / 时间格式 / fitDegree 口径 / 签名 header" />
+              <v-list-item prepend-icon="mdi-bug-outline" title="任务下发后的核对" subtitle="任务约束真实值 / 判分口径 / token 有效期（9-14 开跑后）" />
               <v-list-item prepend-icon="mdi-login-variant" title="登录入口" subtitle="token 录入或微信登录（wx.login code 换 token）" />
               <v-list-item prepend-icon="mdi-view-dashboard-outline" title="业务页面" subtitle="阳光跑 / 自由跑 / 记录 / 地图 —— 页面尚未开发" />
               <v-list-item prepend-icon="mdi-shield-alert-outline" title="风控适配" subtitle="随机人脸（faceBase64）/ cheatCode / 打卡点围栏" />
