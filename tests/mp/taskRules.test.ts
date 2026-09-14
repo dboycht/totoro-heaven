@@ -30,10 +30,12 @@ const makeTask = (overrides: Partial<MpSunrunTask> = {}): MpSunrunTask => ({
 const itemOf = (result: ReturnType<typeof evaluateRunAgainstTask>, key: string) =>
   result.items.find((item) => item.key === key)!
 
-test('toPaceSecPerKm：>30 视为配速秒、≤30 视为 m/s、支持 M\'SS"', () => {
-  assert.equal(toPaceSecPerKm(330), 330)
-  assert.equal(Math.round(toPaceSecPerKm(3)!), 333) // 3 m/s ≈ 333 秒/公里
-  assert.equal(toPaceSecPerKm(`5'30"`), 330)
+test("toPaceSecPerKm：数字按【时速 km/h】换算（实测口径），支持 M'SS\" 直读", () => {
+  // ✅ 2026-09-14 实测：任务下发 minSpeed:"3" / maxSpeed:"15"，字段名 minSpeedHour/maxSpeedHour ⇒ km/h
+  assert.equal(toPaceSecPerKm(15), 240) // 15 km/h = 4'00"/km
+  assert.equal(toPaceSecPerKm(3), 1200) // 3 km/h = 20'00"/km
+  assert.equal(toPaceSecPerKm('12'), 300) // 12 km/h = 5'00"/km
+  assert.equal(toPaceSecPerKm(`5'30"`), 330) // 配速字符串原样解析
   assert.equal(toPaceSecPerKm(undefined), undefined)
   assert.equal(toPaceSecPerKm(0), undefined)
 })
@@ -132,14 +134,17 @@ test('时段规则：命中任一时段即通过', () => {
   assert.equal(itemOf(noon, 'window').ok, false)
 })
 
-test('配速区间：按小/大归一化，超出上限判 false', () => {
-  const task = makeTask({ minSpeed: 3, maxSpeed: 12 })
-  // 3 m/s ≈ 333 s/km 为最慢、12 m/s ≈ 83 s/km 为最快
-  const normal = evaluateRunAgainstTask({ task, km: 3, durationSeconds: 990, fitDegree: 0.95 })
-  assert.equal(itemOf(normal, 'pace').ok, true, '5\'30" 应在区间内')
+test('配速区间：按小/大归一化（km/h → 秒/公里），超出区间判 false', () => {
+  const task = makeTask({ minSpeed: 3, maxSpeed: 15 })
+  // 15 km/h = 4'00"/km（最快）~ 3 km/h = 20'00"/km（最慢）
+  const normal = evaluateRunAgainstTask({ task, km: 3.2, durationSeconds: 1060, fitDegree: 0.95 })
+  assert.equal(itemOf(normal, 'pace').ok, true, '5\'31"/km 应在区间内')
 
-  const tooSlow = evaluateRunAgainstTask({ task, km: 3, durationSeconds: 1500, fitDegree: 0.95 })
-  assert.equal(itemOf(tooSlow, 'pace').ok, false, '8\'20" 应超慢')
+  const tooSlow = evaluateRunAgainstTask({ task, km: 3.2, durationSeconds: 4400, fitDegree: 0.95 })
+  assert.equal(itemOf(tooSlow, 'pace').ok, false, '22\'55"/km 应超慢（>20\'00"）')
+
+  const tooFast = evaluateRunAgainstTask({ task, km: 3.2, durationSeconds: 700, fitDegree: 0.95 })
+  assert.equal(itemOf(tooFast, 'pace').ok, false, '3\'39"/km 应超快（<4\'00"）')
 })
 
 test('字段缺失的约束项标 info / ok=undefined，不误判', () => {
@@ -161,14 +166,14 @@ test('formatTaskPeriod：缺字段用 — 兜底', () => {
   assert.equal(formatTaskPeriod(makeTask()), '— ~ —')
 })
 
-test('演示数据自洽：DEMO_TASK + 一次典型 3km（约 16.5 分钟、拟合度 1.00）→ 约束项全部通过', () => {
+test('演示数据自洽：DEMO_TASK（已对齐 9-14 实测值）+ 一次典型 3.2km → 约束项全部通过', () => {
   // 这条守住 demo 的叙事：跑完默认演示任务应当「各项都绿」，否则页面截图会自相矛盾
   const result = evaluateRunAgainstTask({
     task: DEMO_TASK,
-    km: 3,
-    durationSeconds: 996, // 5'32"/km
+    km: 3.2,
+    durationSeconds: 1060, // 5'31"/km
     fitDegree: 1,
-    now: new Date(2026, 8, 14, 7, 0, 0), // 落在 06:00-08:30 时段内
+    now: new Date(2026, 8, 14, 7, 0, 0), // 落在 06:00-23:00 时段内
   })
   assert.equal(result.pass, true)
   assert.deepEqual(result.problems, [])

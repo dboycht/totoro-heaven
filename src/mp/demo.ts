@@ -121,27 +121,24 @@ export const DEMO_PASS_POINTS = [
 
 /**
  * 【演示】阳光跑任务约束。
- * 字段名是实测拿到的**真实字段名**（见 `_mp-analyze/开跑前实测结论.md` §3），取值是编的。
+ * 字段名与**取值都已按 2026-09-14 实测的真实任务对齐**（单位已确认）：
+ *   mileage 3.2km / fitDegree 0.6 / 时段 06:00–23:00 / 时长 10–25 分钟 /
+ *   **minSpeed|maxSpeed = 时速 km/h（3 ~ 15）** ← 字段名实为 paperList.minSpeedHour/maxSpeedHour
  */
 export const DEMO_TASK: MpSunrunTask = {
-  paperName: '2026 秋季学期阳光跑（演示任务）',
+  paperName: '天目湖阳光跑（演示）',
   taskId: 'demo_task_2026F',
-  mileage: 3,
-  // ⚠️ minSpeed/maxSpeed/minTime/maxTime 的**单位与语义尚未实测**（推断为配速 / 时长上下限）。
-  //    这里按「配速秒/公里」（3'00" ~ 10'00"）与「分钟」（10 ~ 40 分钟）给演示值。
-  minSpeed: 180,
-  maxSpeed: 600,
+  mileage: 3.2,
+  minSpeed: 3,
+  maxSpeed: 15,
   minTime: 10,
-  maxTime: 40,
+  maxTime: 25,
   fitDegree: 0.6,
   startDate: '2026-09-14',
-  endDate: '2027-01-10',
+  endDate: '2027-01-08',
   startTime: '06:00:00',
-  endTime: '22:00:00',
-  runTimeRuleList: [
-    { startTime: '06:00:00', endTime: '08:30:00' },
-    { startTime: '16:30:00', endTime: '22:00:00' },
-  ],
+  endTime: '23:00:00',
+  runTimeRuleList: [{ startTime: '06:00:00', endTime: '23:00:00' }],
   runPointList: DEMO_LINES,
   faceFlag: '0',
   ifHasRun: '0',

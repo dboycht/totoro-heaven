@@ -5,12 +5,13 @@
  *   1. **提交前自检**：本地先算一遍，避免提交必然不合格的成绩（省一次真实上报）；
  *   2. **demo 展示**：把「合格/不合格 + 原因」逐条列出来，等 9-14 拿到真实约束值后直接可用。
  *
- * ⚠️ 口径诚实说明：任务约束字段名是 **2026-09-11 实测从 `camera/currentTimeMillis` 响应尾部拿到**的，
- *    但**取值与单位尚未实测**（`_mp-analyze/开跑前实测结论.md` §3）。因此本模块把规则分成三类：
- *      - `hard`     ：本地能确定判的（里程、拟合度阈值）→ **参与 pass 判定**
- *      - `inferred` ：单位/语义靠推断的（配速、时长、生效时段）→ 只提示，**不阻断**
- *      - `info`     ：纯展示
- *    9-14 读过一次真实 `getSunrunPaper` 后，把推断项按实测改准即可。
+ * ⚠️ 口径诚实说明（2026-09-14 更新：单位已实测）：
+ *    - **`minSpeed` / `maxSpeed` = 时速 km/h**（实测：任务 `getSunrunPaper` 下发 `minSpeed:"3" / maxSpeed:"15"`，
+ *      同一任务的 `getSunrunPaperList` 字段名直接写着 **`minSpeedHour:3` / `maxSpeedHour:15`**）
+ *      → 换算 `秒/公里 = 3600 / kmh`：3 km/h = 20'00"、15 km/h = 4'00"。
+ *    - `minTime` / `maxTime`：实测 10 / 25，**推断为分钟**（3.2km 合理用时应落在此区间）。
+ *    - 字段名最早是 2026-09-11 从 `camera/currentTimeMillis` 响应尾部拿到的，**取值**由 9-14 实测补齐。
+ *    规则分三类：`hard`（里程/拟合度阈值，参与 pass）/ `inferred`（配速、时长、时段，只提示不阻断）/ `info`。
  */
 import type { MpSunrunTask } from '../../src/mp/types'
 
@@ -56,10 +57,13 @@ export function parseClock(text: string | undefined): number | undefined {
 }
 
 /**
- * 把服务端的「速度/配速」取值统一换算成 **秒/公里**（口径推断，见文件头）。
- * - 数字 > 30  → 视为配速（秒/公里）
- * - 数字 ≤ 30  → 视为速度（米/秒）→ 1000 / v
- * - `5'30"` 形态 → 直接解析
+ * 把服务端的「速度」取值换算成 **秒/公里**。
+ *
+ * ✅ 单位已实测（2026-09-14）：**数字 = 时速 km/h** —— 任务 `getSunrunPaper` 给 `minSpeed:"3" / maxSpeed:"15"`，
+ *    同任务的 `getSunrunPaperList` 字段名直接是 `minSpeedHour` / `maxSpeedHour`。
+ *    换算：`秒/公里 = 3600 / kmh`（3 km/h = 20'00"，15 km/h = 4'00"）。
+ * - `5'30"` 形态 → 直接按配速解析（保底兼容库里可能出现的配速字符串）
+ * - 数字/数字串 → 视为 km/h
  */
 export function toPaceSecPerKm(value: number | string | undefined): number | undefined {
   if (value === undefined || value === null || value === '') return undefined
@@ -74,7 +78,8 @@ export function toPaceSecPerKm(value: number | string | undefined): number | und
     return toPaceSecPerKm(asNumber)
   }
   if (!Number.isFinite(value) || value <= 0) return undefined
-  return value > 30 ? value : 1000 / value
+  // ⚠️ 曾经错误地按「>30 视为配速秒 / ≤30 视为 m/s」推断（2026-09-13）—— 实测证明是 km/h，勿改回
+  return 3600 / value
 }
 
 /** 把服务端的「时长」取值统一换算成 **秒**（口径推断：≤120 视为分钟） */
