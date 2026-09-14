@@ -1,0 +1,26 @@
+{
+  "//": "UI/服务端 .ts 层类型检查：覆盖 composables / src / utils / server / plugins / app.config。",
+  "//2": "为什么需要它：`npm run build` 只做打包（不做类型检查），而 tsconfig.mp.json 只覆盖小程序纯逻辑层，",
+  "//3": "所以 composables 与 Nuxt 耦合的 .ts 之前没有任何类型把关。",
+  "//4": "⚠️ 范围不含 .vue 模板（校验模板需要 vue-tsc，本项目未引入）；模板错误仍由 build + 页面冒烟把关。",
+  "extends": "./.nuxt/tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": false,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"],
+      "~/*": ["./*"]
+    }
+  },
+  "include": [
+    ".nuxt/nuxt.d.ts",
+    "app.config.ts",
+    "composables/**/*.ts",
+    "plugins/**/*.ts",
+    "server/**/*.ts",
+    "src/**/*.ts",
+    "utils/**/*.ts"
+  ]
+}

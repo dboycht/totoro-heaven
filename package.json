@@ -11,6 +11,7 @@
     "postinstall": "nuxt prepare",
     "test:mp": "node scripts/run-mp-tests.mjs",
     "typecheck:mp": "tsc -p tsconfig.mp.json",
+    "typecheck:ui": "tsc -p tsconfig.ui.json",
     "sea": "powershell -NoProfile -ExecutionPolicy Bypass -File pack/sea/build-sea.ps1"
   },
   "dependencies": {

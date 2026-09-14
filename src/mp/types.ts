@@ -632,6 +632,90 @@ export interface MpScoreDetailRequest {
   [key: string]: unknown
 }
 
+/** 线路上的一个打卡点（`sunrunTaskList[].runPointList[]` / `getSunrunPaper.runPointList[]`） */
+export interface MpRunLine {
+  /** 线路 id（提交 getRunBegin 的 `lineId`，源码用 `columnsLine[i].pointId`） */
+  pointId: string
+  pointName: string
+  /** 线路点列（提交成绩的 `sunrunPathPointList` 就是它） */
+  pointList: { latitude: string | number; longitude: string | number }[]
+  [key: string]: unknown
+}
+
+/**
+ * 阳光跑任务与约束（`getSunrunPaper` → `getSunrunPaperResponseList[i]`，即源码里的 `sunrunlimiting`）。
+ *
+ * 字段名来自 `camera/currentTimeMillis` 响应尾部**实测暴露**的约束字段全集
+ * （`_mp-analyze/开跑前实测结论.md` §3）；**真实取值需 9-14 任务下发后确认**。
+ * ⚠️ `minSpeed`/`maxSpeed` 的**单位与语义尚未实测**（推断为配速上下限），故类型放宽为 number|string。
+ */
+export interface MpSunrunTask {
+  /** 任务名 */
+  paperName: string
+  /** 任务 id（提交成绩的 taskId） */
+  taskId: string
+  /** 目标里程（公里） */
+  mileage: number
+  /** 配速/速度下限（语义待实测） */
+  minSpeed?: number | string
+  /** 配速/速度上限（语义待实测） */
+  maxSpeed?: number | string
+  /** 时长下限（秒？待实测） */
+  minTime?: number | string
+  /** 时长上限（秒？待实测） */
+  maxTime?: number | string
+  /** 拟合度阈值（服务端执行，默认 0.6） */
+  fitDegree?: number | string
+  /** 任务有效期（YYYY-MM-DD） */
+  startDate?: string
+  endDate?: string
+  /** 生效时段（HH:mm:ss） */
+  startTime?: string
+  endTime?: string
+  /** 允许跑步的时段规则 */
+  runTimeRuleList?: { startTime: string; endTime: string }[]
+  /** 可选线路（含线路点列） */
+  runPointList: MpRunLine[]
+  /** 人脸标记（语义待实测） */
+  faceFlag?: string | number
+  /** 今日是否已跑 */
+  ifHasRun?: string | number
+  /** 步数约束（推断） */
+  minWalkTotal?: number
+  maxWalkTotal?: number
+  [key: string]: unknown
+}
+
+/**
+ * `getSunrunArch` 返回的一条成绩记录。
+ * ⚠️ 字段名逐字照抄源码与模板：`startTmie` / `endTmie` 是**服务端的拼写错误**，勿"纠正"。
+ */
+export interface MpRunRecord {
+  scoreId: string
+  /** 任务 id（申诉跳转参数 taskId） */
+  paperId: string
+  /** 日期 YYYY-MM-DD */
+  runTime: string
+  /** 开始时间 HH:mm:ss（源码拼写 Tmie） */
+  startTmie?: string
+  /** 结束时间 HH:mm:ss（源码拼写 Tmie） */
+  endTmie?: string
+  /** 0 无效 / 1 有效 / 2 申诉有效 / 3 补录有效 */
+  scorePassType: number | string
+  /** 无效原因文案（仅 scorePassType=='0' 时渲染） */
+  scorePassRemark?: string
+  /** 里程（km，字符串） */
+  mileage?: string
+  usedTime?: string
+  /** 轨迹拟合度 */
+  trajectorySimilary?: string | number
+  /** 0 阳光跑 / 1 自由跑 */
+  runType?: number
+  /** 成绩来源：1 补录 / 2 小程序申诉 / 3 App 申诉 / 4 补卡机 */
+  flag?: number
+  [key: string]: unknown
+}
+
 /** 成绩状态：0 无效 / 1 有效 / 2 申诉有效 / 3 补录有效（getSunrunArch.scorePassType） */
 export const MP_SCORE_STATUS = {
   0: '无效',
