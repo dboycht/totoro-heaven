@@ -1,6 +1,13 @@
-# 一键发布 totoro-heaven release（读 Windows 凭据管理器 token -> 设 GH_TOKEN -> node release.cjs）
-# 用法：.\pack\release\publish.ps1   （可选 -Tag 1.0.4 覆盖 TAG）
-param([string]$Tag = '1.0.4')
+﻿# 一键发布 totoro-heaven release（读 Windows 凭据管理器 token -> 设 GH_TOKEN -> node release.cjs）
+# 用法：.\pack\release\publish.ps1            （默认用 package.json 的 version 作为 tag）
+#       .\pack\release\publish.ps1 -Tag 1.0.4 （覆盖 tag）
+param([string]$Tag = '')
+
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+if (-not $Tag) {
+  $Tag = (& node -e "console.log(require(process.argv[1]).version)" (Join-Path $root 'package.json')).Trim()
+}
+if (-not $Tag) { Write-Host 'cannot resolve version from package.json'; exit 1 }
 
 Add-Type -TypeDefinition @'
 using System;
@@ -35,7 +42,7 @@ $tok = [Cred]::GetStr('git:https://github.com', 1)
 if ($tok -match '^gho_') {
   $env:GH_TOKEN = $tok
   Write-Host ("token ok (len " + $tok.Length + ") -> publishing tag " + $Tag)
-  node --use-system-ca (Join-Path $PSScriptRoot 'release.cjs')
+  node --use-system-ca (Join-Path $PSScriptRoot 'release.cjs') --tag $Tag
 } else {
   Write-Host '未能从 Windows 凭据管理器读取 GitHub token（git:https://github.com）'
   exit 1
