@@ -20,6 +20,7 @@ npm-debug.log*
 # dev docs & reverse-engineering materials (kept in dev copy only)
 DEVELOPMENT.md
 ERROR.md
+HANDOVER.md
 _mp-analyze/
 capture/
 .mp-test-build/
