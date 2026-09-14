@@ -6,8 +6,9 @@
 > - **历史 Release（1.0.4 及更早）仅适用于旧 App 后端，现已完全无法用于打卡**，请勿再下载使用。
 > - 本仓库 **1.1.x 起为微信小程序后端线**：旧的 App 通道代码（扫码登录 / RSA 加密 / Cookie 透传代理）
 >   **已从仓库中彻底移除**，不再随源码提供。
-> - ⚠️ **当前仓库处于「逻辑层就绪、界面层待建」阶段**：小程序协议的类型、算法、接口封装、代理与单测已完成，
->   **业务页面尚未开发**，因此现在 clone 下来还不能直接完成一次打卡。
+> - ⚠️ **当前 1.1.1 是预览版**：后端契约层已按真包实测重建，界面已有**可交互 demo**，
+>   但**界面数据仍是演示数据（mock），尚未接入真实打卡链路** —— **现在还无法完成一次真实打卡**。
+>   真实链路（登录 / 任务约束 / 成绩提交）将在 **1.1.2** 接入。
 >
 > ⚠️ 另外提醒：小程序版新增了**虚拟定位检测（检测到即阻断成绩）、随机人脸抽查、轨迹拟合度校验、运动传感器分析**
 > 等多重风控。使用前请自行评估风险，作者不对任何因使用本工具产生的后果负责。
@@ -39,40 +40,54 @@
 
 基于 Totoro Paradise v2.0.4（Nuxt 3 构建产物）重构为可维护的源码工程。
 
+## 下载（1.1.1 预览版）
+
+到 [Releases](https://github.com/dboycht/totoro-heaven/releases) 下载 `totoro-heaven-1.1.1.zip`，
+解压后**双击 `totoro-heaven.exe`** 即可（Windows 10/11 x64，**无需安装 Node.js 或任何依赖**）。
+启动后浏览器会自动打开 `http://localhost:3000/`，可完整点一遍「演示登录 → 阳光跑 → 结算 → 记录」流程。
+
+> 再次强调：预览版的界面数据是**演示数据**，不能用于真实打卡。
+
 ## 当前进度
 
-**已就绪（逻辑层，均通过本地验证）**
+**已就绪**
 
 | 模块 | 说明 | 验证 |
 | --- | --- | --- |
-| `src/mp/types.ts` | 小程序后端契约与类型（含 `TODO(verify)` 标注）+ 接口路径映射 | 类型检查 |
+| `src/mp/types.ts` | 端点元数据表：**56 个端点**的路径 / 方法 / 业务负载位置 / 是否需 token | 类型检查 + 表自检单测 |
+| `src/mp/envelope.ts` | 三轨信封判定（`status` / `code` / `header.bizCode`）+ 逐端点负载解包 + Bearer 构造 | 单测 |
+| `src/wrappers/MpApiWrapper.ts` | 请求层：**始终带 `Authorization`**、判定式调用、多租户基址解析 | 类型检查 + 真实后端冒烟 |
+| `server/api/mp/[...slug].ts` | Nitro 代理 `/api/mp/**` → **按学校动态上游**（多租户） | 真实连通 |
 | `utils/mp/routeSimilarity.ts` | 轨迹拟合度算法（与小程序端等价：5m 采样 / 25m 容差）+ 距离工具 | 12 单测 |
-| `utils/mp/generateRoute.ts` | 走廊式轨迹生成（弧长推进 + OU 相关抖动），输出可提交的 `fitDegree` | 9 单测 |
+| `utils/mp/generateRoute.ts` | 走廊式轨迹生成（全局弧长推进 + OU 相关抖动），输出可提交的 `fitDegree` | 9 单测 |
 | `utils/mp/runData.ts` | 时长/配速/步数/卡路里格式化 + 自洽校验 + 飞点检测 + 时间字段 | 7 单测 |
-| `src/wrappers/MpApiWrapper.ts` | 小程序后端封装（Bearer + 明文 JSON） | 构建通过 |
-| `server/api/mp/[...slug].ts` | Nitro 代理 `/api/mp/**` → `wxxcx.xtotoro.com/wxxcx/**` | 真实连通 |
+| `utils/mp/taskRules.ts` | 任务约束自检（提交前闸门，区分硬性 / 待实测口径） | 12 单测 |
+| `pages/`（工作台 / 阳光跑 / 记录） | 三页可交互 demo（mock 数据驱动，跑步过程用真实算法） | UI 冒烟（真实浏览器） |
 
-**尚待完成**
+**尚待完成（1.1.2 正式版）**
 
-- 真包抓包，逐条核对字段全集 / 时间格式 / `fitDegree` 口径 / 是否存在签名 header
-- 登录入口（token 录入或 `wx.login` code 换 token）
-- 业务页面：阳光跑 / 自由跑 / 记录 / 轨迹地图
-- 风控适配：随机人脸（`faceBase64`）、`cheatCode`、打卡点围栏
+- 真实登录链路：token 录入 / `wx.login` code 换 token + 学校基址解析
+- 读取真实任务约束（`getSunrunPaper`）并替换演示值
+- 真实提交：`getRunBegin` → `sunRunExercises` + `sunRunExercisesDetail`，并实测判分口径
+- 实测 token 有效期、复验人脸 / 随机抽查开关
+- 轨迹地图（当前版本按需求**不做**）
 
 ## 技术栈
 
 - Nuxt 3.9.1（SPA）+ Vue 3 + TypeScript + Vuetify 3
 - `ky` HTTP 客户端（Bearer + 明文 JSON，**不再使用 RSA 加密**）
-- Nitro 服务端代理到 `wxxcx.xtotoro.com`
+- Nitro 服务端代理到该校 API 基址（多租户）
 
 ## 快速开始
 
 ```bash
 npm install
 npm run dev            # http://localhost:3000
-npm run test:mp        # 31 个单测（Node 内置 test runner，零依赖）
+npm run test:mp        # 75 个单测（Node 内置 test runner，零依赖）
 npm run typecheck:mp   # 纯逻辑模块类型检查
+npm run typecheck:ui   # composables / src / utils / server 的 .ts 类型检查
 npm run build          # 产出 .output/
+npm run sea            # 打单文件 EXE（见 pack/sea/build-sea.ps1）
 ```
 
 ## 免责声明
