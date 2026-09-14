@@ -636,6 +636,8 @@ export interface MpScoreDetailRequest {
 export interface MpRunLine {
   /** 线路 id（提交 getRunBegin 的 `lineId`，源码用 `columnsLine[i].pointId`） */
   pointId: string
+  /** 所属任务 id（提交 getRunBegin 的 `paperId` / sunRunExercises 的 `taskId`；实测 9-14 同值） */
+  taskId?: string
   pointName: string
   /** 线路点列（提交成绩的 `sunrunPathPointList` 就是它） */
   pointList: { latitude: string | number; longitude: string | number }[]

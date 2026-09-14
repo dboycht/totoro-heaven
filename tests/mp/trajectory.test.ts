@@ -68,6 +68,43 @@ test('generateCorridorRoute：拟合度 ≥ 0.95（走廊内抖动）', () => {
   assert.equal(g.fitDegree, Number(score).toFixed(2))
 })
 
+test('generateCorridorRoute：drift 开启后拟合度落到 0.9x（不再满分，像真实 GPS）', () => {
+  const route = loopRoute()
+  const scores = [7, 11, 42, 2026, 20260914].map((seed) => {
+    const g = generateCorridorRoute(route, { targetKm: 0.6, seed, drift: true })
+    assert.ok(g.driftEpisodes > 0, `seed=${seed} 应至少产生一次精度下降期`)
+    const pts = g.points.map((p) => ({ latitude: p.latitude, longitude: p.longitude }))
+    return calculateRouteSimilarity(route, pts)
+  })
+  for (const [i, score] of scores.entries()) {
+    assert.ok(score >= 0.85, `第 ${i} 个种子的拟合度 ${score} 过低（应 ≥0.85）`)
+    assert.ok(score <= 0.999, `第 ${i} 个种子的拟合度 ${score} 满分，太假`)
+  }
+  // 至少有一个种子明显低于满分（证明 drift 真的起作用）
+  assert.ok(scores.some((s) => s < 0.995), `拟合度都接近满分：${scores.map((s) => s.toFixed(3)).join(', ')}`)
+})
+
+test('generateCorridorRoute：drift 不产生飞点（逐点速度 < 12 m/s）', () => {
+  const route = loopRoute()
+  for (const seed of [7, 42, 20260914]) {
+    // 真实模式口径：步长 3m ≈ 1Hz（3 m/s），因此每点间隔 1 秒
+    const g = generateCorridorRoute(route, { targetKm: 0.6, stepM: 3, seed, drift: true })
+    const pts = g.points.map((p) => ({ latitude: p.latitude, longitude: p.longitude }))
+    const totalSeconds = (Number(g.km) * 1000) / 3
+    const timeline = buildTimeline(pts.length, totalSeconds)
+    assert.deepEqual(findSpeedOutliers(pts, timeline), [], `seed=${seed} 出现飞点`)
+  }
+})
+
+test('generateCorridorRoute：drift 下里程仍贴合目标（±5%）', () => {
+  const route = loopRoute()
+  for (const seed of [3, 42, 777]) {
+    const g = generateCorridorRoute(route, { targetKm: 1, stepM: 3, seed, drift: true })
+    const actual = Number(g.km)
+    assert.ok(Math.abs(actual - 1) / 1 < 0.05, `seed=${seed} 实际 ${actual} km`)
+  }
+})
+
 test('generateCorridorRoute：同种子结果可复现', () => {
   const route = loopRoute()
   const a = generateCorridorRoute(route, { targetKm: 0.3, seed: 123 })

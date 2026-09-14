@@ -15,7 +15,8 @@ import { calculateRouteSimilarity, type LatLng } from '~/utils/mp/routeSimilarit
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import { buildRunStats, buildTimeFields } from '~/utils/mp/runData'
 import { evaluateRunAgainstTask, type TaskCheckResult } from '~/utils/mp/taskRules'
-import { toSubmitRunType, type MpRunRecord, type MpScoreDetailRequest, type MpScoreRequest, type MpUserInfo } from '~/src/mp/types'
+import { newRunSeed, planRealisticRun, type RunPlan } from '~/utils/mp/realism'
+import { toSubmitRunType, type MpRunLine, type MpRunRecord, type MpScoreDetailRequest, type MpScoreRequest, type MpSunrunTask, type MpUserInfo } from '~/src/mp/types'
 import {
   DEMO_ARCH_SUMMARY,
   DEMO_CLIENT,
@@ -34,6 +35,9 @@ export type RunStatus = 'idle' | 'running' | 'paused' | 'finished'
 /** 演示用的采样步长（米）：2000 点太多，20m 足够展示算法；真实提交建议 2m */
 export const DEMO_STEP_M = 20
 
+/** 真实提交用的采样步长（米）：3m ≈ 1Hz GPS（3 m/s × 1s），与 9-14 实测口径一致 */
+export const REAL_STEP_M = 3
+
 /** 自由跑演示的里程上限（真实自由跑由用户手动结束） */
 const FREE_RUN_CAP_KM = 5
 
@@ -46,8 +50,10 @@ export interface DemoRunState {
   runType: 0 | 1
   lineId: string
   targetKm: number
-  /** 演示目标配速（秒/公里），默认 5'30" */
+  /** 目标配速（秒/公里）——真实感规划后的本次实际配速（非整分钟） */
   paceSecPerKm: number
+  /** 本次真实感规划（超跑里程 / 配速 / 预计时长） */
+  plan: RunPlan | null
   /** 模拟倍速：1 / 10 / 60 / 600 */
   speed: number
   elapsedS: number
@@ -83,7 +89,8 @@ const createRunState = (): DemoRunState => ({
   runType: 0,
   lineId: DEMO_LINES[0]?.pointId ?? '',
   targetKm: Number(DEMO_TASK.mileage),
-  paceSecPerKm: 330,
+  paceSecPerKm: 360,
+  plan: null,
   speed: 60,
   elapsedS: 0,
   distanceM: 0,
@@ -109,8 +116,24 @@ export function useMpDemo() {
   /** 演示模式：默认开；接入真实 token 后可置 false */
   const demoMode = useState('mpDemoMode', () => true)
   const task = useState('mpDemoTask', () => DEMO_TASK)
+  /** 当前使用的线路集（演示默认 DEMO_LINES；真实模式由 useMpReal 注入真实线路） */
+  const lines = useState<MpRunLine[]>('mpDemoLines', () => DEMO_LINES)
   const switches = useState('mpDemoSwitches', () => DEMO_SWITCHES)
   const run = useState<DemoRunState>('mpDemoRun', createRunState)
+
+  /** 注入真实任务（1.1.2 真实模式）：替换演示约束，跑步自检/轨迹生成都按真实值走 */
+  const setTask = (next: MpSunrunTask) => {
+    task.value = next
+  }
+
+  /** 注入真实线路（1.1.2 真实模式）：替换演示假环线 */
+  const setLines = (next: MpRunLine[]) => {
+    lines.value = next
+    if (run.value.status === 'idle' && !next.some((l) => l.pointId === run.value.lineId)) {
+      run.value.lineId = next[0]?.pointId ?? ''
+    }
+  }
+
   const records = useState<MpRunRecord[]>('mpDemoRecords', () => {
     if (import.meta.client) {
       try {
@@ -202,22 +225,53 @@ export function useMpDemo() {
 
   /** 开始（生成整条轨迹，与真实提交用的是同一套算法） */
   const start = () => {
-    const line = DEMO_LINES.find((item) => item.pointId === run.value.lineId) ?? DEMO_LINES[0]
+    const line = lines.value.find((item) => item.pointId === run.value.lineId) ?? lines.value[0]
     if (!line) {
-      run.value.error = '演示线路缺失'
+      run.value.error = '线路缺失（真实模式请先在「工作台」读取真实任务与线路）'
       return
     }
-    const targetKm = run.value.runType === 0 ? Number(task.value.mileage) || 3 : FREE_RUN_CAP_KM
+    const isRealLine = lines.value !== DEMO_LINES
+    const isSunRun = run.value.runType === 0
+
+    // 真实感规划：里程**略超**任务要求（2%~9%）、配速**非整分钟**且夹紧在任务窗口内。
+    // 这样提交的数值是 3.41km / 20:34 / 6'02" 这种，而不是 3.20 / 16:00 / 5'00"（一眼假）。
+    const plan: RunPlan = isSunRun
+      ? planRealisticRun({
+          requiredKm: Number(task.value.mileage) || 3,
+          minSpeedKmh: task.value.minSpeed,
+          maxSpeedKmh: task.value.maxSpeed,
+          minMinutes: task.value.minTime,
+          maxMinutes: task.value.maxTime,
+          basePaceSecPerKm: run.value.paceSecPerKm,
+          seed: newRunSeed(),
+        })
+      : {
+          targetKm: FREE_RUN_CAP_KM,
+          paceSecPerKm: run.value.paceSecPerKm,
+          overshootRatio: 0,
+          durationSeconds: 0,
+        }
+
     try {
-      const generated = generateCorridorRoute(line.pointList, { targetKm, stepM: DEMO_STEP_M, seed: 20260914 })
+      // 演示用 20m 采样（点少、页面轻）；真实模式用 3m（≈1Hz GPS，与真实提交口径一致）
+      // drift:true → 叠加"GPS 精度下降期"，拟合度自然落到 0.9x（不是满分 1.00）
+      const generated = generateCorridorRoute(line.pointList, {
+        targetKm: plan.targetKm,
+        stepM: isRealLine ? REAL_STEP_M : DEMO_STEP_M,
+        drift: true,
+        seed: newRunSeed(),
+      })
+      const actualKm = Number(generated.km)
       run.value = {
         ...createRunState(),
         status: 'running',
         runType: run.value.runType,
         lineId: line.pointId,
-        paceSecPerKm: run.value.paceSecPerKm,
+        paceSecPerKm: plan.paceSecPerKm,
+        plan: { ...plan, targetKm: actualKm, durationSeconds: Math.round(actualKm * plan.paceSecPerKm) },
         speed: run.value.speed,
-        targetKm,
+        // 以"轨迹真实累计长度"为准（两位小数、非整数值），而不是任务要求里的整数
+        targetKm: actualKm,
         points: generated.points,
         visibleCount: 1,
         officialRoute: line.pointList,
@@ -251,8 +305,10 @@ export function useMpDemo() {
     if (run.value.status === 'finished' || run.value.points.length < 2) return
 
     const endedAtMs = Date.now()
-    const durationSeconds = Math.max(1, Math.round(run.value.elapsedS))
     const distanceKm = run.value.distanceM / 1000
+    // 时长由「实际里程 × 本次配速」推出（配速非整分钟 → 时长自然落到 20:34 这种）
+    const durationSeconds = Math.max(1, Math.round(distanceKm * run.value.paceSecPerKm))
+    run.value.elapsedS = durationSeconds
     const points = visiblePoints()
     const fitDegree = points.length >= 2 ? calculateRouteSimilarity(run.value.officialRoute, points) : 0
 
@@ -383,6 +439,7 @@ export function useMpDemo() {
     isLoggedIn,
     demoMode,
     task,
+    lines,
     switches,
     run,
     records,
@@ -393,6 +450,8 @@ export function useMpDemo() {
     // 动作
     login,
     logout,
+    setTask,
+    setLines,
     start,
     pause,
     resume,
