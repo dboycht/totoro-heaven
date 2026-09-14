@@ -12,13 +12,13 @@
       <v-btn to="/records" variant="text" prepend-icon="mdi-format-list-bulleted" class="text-none">记录</v-btn>
       <v-spacer />
 
-      <v-chip v-if="demoMode" color="accent" variant="tonal" size="small" class="mr-2">
-        <v-icon start size="16">mdi-flask-outline</v-icon>
-        演示模式
+      <v-chip :color="isRealSession ? 'success' : 'accent'" variant="tonal" size="small" class="mr-2">
+        <v-icon start size="16">{{ isRealSession ? 'mdi-cellphone-link' : 'mdi-flask-outline' }}</v-icon>
+        {{ isRealSession ? '真实数据 · 南航' : '演示数据' }}
       </v-chip>
       <v-chip v-if="isLoggedIn" color="primary" variant="tonal" size="small" class="mr-2">
         <v-icon start size="16">mdi-cellphone-check</v-icon>
-        {{ session?.token?.startsWith('demo-') ? '演示会话' : '小程序会话已就绪' }}
+        {{ isRealSession ? '真实会话已就绪' : '演示会话' }}
       </v-chip>
       <v-btn v-if="isLoggedIn" icon="mdi-logout" title="清除小程序会话" @click="clearSession" />
 
@@ -39,7 +39,9 @@ import { useMpSession } from '~/composables/useMpSession'
 
 // 1.1.x 起唯一后端为微信小程序（wxxcx.xtotoro.com），会话由 mp_session 承载
 const { isLoggedIn, clearSession, session } = useMpSession()
-const { demoMode } = useMpDemo()
+
+/** 真实会话 = 存了非 demo 前缀的 token（演示会话 token 以 `demo-` 开头） */
+const isRealSession = computed(() => Boolean(session.value?.token) && !session.value?.token?.startsWith('demo-'))
 
 const aboutOpen = ref(false)
 </script>

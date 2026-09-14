@@ -66,8 +66,10 @@ export function useMpReal() {
   const loadedAt = useState('mpRealLoadedAt', () => 0)
   /** 人脸 / 抽查开关（selectSunRunStartConfiguration 的 body）—— 一票否决项，实测值直接展示 */
   const switches = useState<Record<string, string> | null>('mpRealSwitches', () => null)
-  /** 所选线路是否启用摄像头杆（getCameraConfig 的 body.flag） */
+  /** 所选线路是否启用摄像头杆（getCameraConfig 的 body.flag）—— ⚠️ 这是**按线路**下发的 */
   const cameraFlag = useState<boolean | null>('mpRealCameraFlag', () => null)
+  /** 上面那个 flag 对应的线路 id（避免切线路后显示旧线路的值） */
+  const cameraFlagLineId = useState('mpRealCameraFlagLine', () => '')
 
   const phase = useState<RealPhase>('mpRealPhase', () => 'idle')
   const phaseMessage = useState('mpRealPhaseMessage', () => '')
@@ -146,15 +148,7 @@ export function useMpReal() {
     const cfg = await MpApiWrapper.getSunRunStartConfiguration(profile.value.snCode, options)
     switches.value = cfg.ok ? ((cfg.data as Record<string, string>) ?? null) : null
     const firstLine = (task.value.runPointList ?? [])[0]
-    if (firstLine?.pointId) {
-      const cam = await MpApiWrapper.call<Record<string, unknown>>(
-        'cameraConfig',
-        { lineId: firstLine.pointId, token },
-        options,
-      )
-      const flag = (cam.data as Record<string, unknown> | undefined)?.flag
-      cameraFlag.value = typeof flag === 'boolean' ? flag : null
-    }
+    if (firstLine?.pointId) await refreshCameraFlag(firstLine.pointId)
 
     if (import.meta.client) {
       try {
@@ -332,6 +326,28 @@ export function useMpReal() {
     return mine
   }
 
+  /** 查询某条线路的摄像头杆开关（只读；换线路时由 watch 自动跟随） */
+  async function refreshCameraFlag(lineId?: string): Promise<void> {
+    const id = lineId || (task.value?.runPointList?.[0]?.pointId ?? '')
+    if (!id || !session.value?.token || id === cameraFlagLineId.value) return
+    const cam = await MpApiWrapper.call<Record<string, unknown>>(
+      'cameraConfig',
+      { lineId: id, token: session.value.token },
+      { token: session.value.token, baseUrl: session.value.baseUrl },
+    )
+    const flag = (cam.data as Record<string, unknown> | undefined)?.flag
+    cameraFlag.value = typeof flag === 'boolean' ? flag : null
+    cameraFlagLineId.value = id
+  }
+
+  // ⚠️ 摄像头杆是**按线路**下发的：选中线路变化时自动重新查询（不再显示"第一条线路"的值）
+  watch(
+    () => run.value.lineId,
+    (id) => {
+      if (id && status.value === 'ready') void refreshCameraFlag(id)
+    },
+  )
+
   const profileMasked = computed(() => {
     if (!profile.value) return null
     const mask = (s: string) => (s.length <= 4 ? s[0] + '***' : `${s.slice(0, 2)}***${s.slice(-2)}`)
@@ -369,6 +385,7 @@ export function useMpReal() {
     applyToRunner,
     submitRealRun,
     fetchVerdict,
+    refreshCameraFlag,
     stopWait,
   }
 }

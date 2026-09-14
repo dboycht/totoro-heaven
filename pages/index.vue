@@ -119,7 +119,7 @@
               />
               <v-list-item
                 title="摄像头杆 getCameraConfig.flag"
-                :subtitle="cameraFlag === null ? '未读取' : cameraFlag ? '该线路启用（需人到杆附近）' : '该线路未启用'"
+                :subtitle="cameraFlag === null ? '未读取' : cameraFlag ? '当前选中线路启用（需人到杆附近）' : '当前选中线路未启用'"
                 prepend-icon="mdi-video-outline"
               />
             </v-list>
