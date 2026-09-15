@@ -17,13 +17,14 @@
 
     <v-alert type="info" variant="tonal" class="mb-4" density="comfortable">
       <template #prepend>
-        <v-icon>mdi-flask-outline</v-icon>
+        <v-icon>mdi-rocket-launch-outline</v-icon>
       </template>
-      <div class="font-weight-bold">两种模式：演示模式（假数据）/ 真实模式（南航）</div>
+      <div class="font-weight-bold">使用方式：粘贴 token → 自动读取 → 选线路开跑</div>
       <div class="text-body-2">
-        <b>演示模式</b>：数据全部来自 <code>src/mp/demo.ts</code>，只用来试界面，<b>不发任何网络请求</b>。<br />
-        <b>真实模式</b>：把真实 token 粘进来 → 点「读取真实账号与任务」→ 拿到<b>真实任务约束与真实线路</b>，
-        在「阳光跑」页用真实数据生成轨迹并可<b>真实提交</b>（提交前会先跑一遍自检）。
+        <b>真实流程</b>：把真实 token 粘进来 → 点「读取真实账号与任务」→ 自动校验 token、识别学校、
+        读取<b>真实任务约束与真实线路</b> → 在「阳光跑」页选线路开跑（提交前会先过<strong>开跑前门禁</strong>并自检）。<br />
+        <b>演示</b>：只是想先看界面/报文、不想碰真实账号时，点「载入演示数据」——数据来自
+        <code>src/mp/demo.ts</code>，<b>不发任何网络请求</b>，也不会真实提交。
       </div>
     </v-alert>
 
@@ -54,13 +55,13 @@
               >
                 读取真实账号与任务
               </v-btn>
-              <v-btn variant="text" prepend-icon="mdi-flask-outline" @click="doLogin">只用演示数据</v-btn>
+              <v-btn variant="text" prepend-icon="mdi-flask-outline" @click="doEnableDemo">载入演示数据（试界面）</v-btn>
               <v-btn v-if="isLoggedIn" variant="text" prepend-icon="mdi-logout" @click="doLogout">清除会话</v-btn>
             </div>
 
-            <v-chip v-if="isLoggedIn" :color="isRealSession ? 'success' : 'accent'" variant="tonal" size="small" class="mr-2">
-              <v-icon start size="14">{{ isRealSession ? 'mdi-account-check' : 'mdi-flask-outline' }}</v-icon>
-              {{ isRealSession ? '真实会话' : '演示会话' }}
+            <v-chip v-if="isLoggedIn" color="success" variant="tonal" size="small" class="mr-2">
+              <v-icon start size="14">mdi-account-check</v-icon>
+              真实会话
             </v-chip>
             <v-chip v-if="realStatus === 'ready'" color="success" variant="tonal" size="small">
               <v-icon start size="14">mdi-database-check-outline</v-icon>
@@ -71,7 +72,7 @@
               {{ realError }}
             </v-alert>
             <v-alert v-else-if="manualToken.trim() && !isRealSession" type="info" variant="tonal" density="compact" class="mt-3">
-              已填入 token —— 点「读取真实账号与任务」即可拉取真实数据（仅南航）。
+              已填入 token —— 点「读取真实账号与任务」即可校验并拉取真实数据（自动识别学校；非已验证学校会被拒绝）。
             </v-alert>
           </v-card-text>
         </v-card>
@@ -151,23 +152,23 @@
           <v-card-text>
             <v-list density="compact">
               <v-list-item title="任务" :subtitle="activeTask.paperName" prepend-icon="mdi-clipboard-text-outline" />
-              <v-list-item title="目标里程" :subtitle="`${activeTask.mileage} km`" prepend-icon="mdi-map-marker-distance" />
-              <v-list-item title="拟合度阈值" :subtitle="String(activeTask.fitDegree)" prepend-icon="mdi-chart-bell-curve" />
+              <v-list-item title="目标里程" :subtitle="`${activeTask?.mileage ?? '—'} km`" prepend-icon="mdi-map-marker-distance" />
+              <v-list-item title="拟合度阈值" :subtitle="String(activeTask?.fitDegree ?? '—')" prepend-icon="mdi-chart-bell-curve" />
               <v-list-item
                 title="速度区间"
-                :subtitle="`${activeTask.minSpeed ?? '—'} ~ ${activeTask.maxSpeed ?? '—'} km/h`"
+                :subtitle="`${activeTask?.minSpeed ?? '—'} ~ ${activeTask?.maxSpeed ?? '—'} km/h`"
                 prepend-icon="mdi-speedometer"
               />
               <v-list-item
                 title="时长区间"
-                :subtitle="`${activeTask.minTime ?? '—'} ~ ${activeTask.maxTime ?? '—'} 分钟`"
+                :subtitle="`${activeTask?.minTime ?? '—'} ~ ${activeTask?.maxTime ?? '—'} 分钟`"
                 prepend-icon="mdi-timer-outline"
               />
-              <v-list-item title="有效期" :subtitle="formatTaskPeriod(activeTask)" prepend-icon="mdi-calendar-range" />
+              <v-list-item title="有效期" :subtitle="activeTask ? formatTaskPeriod(activeTask) : '—'" prepend-icon="mdi-calendar-range" />
               <v-list-item title="线路" :subtitle="lineNames" prepend-icon="mdi-map-outline" />
             </v-list>
             <v-alert v-if="!usingRealTask" type="warning" variant="tonal" density="compact" class="mt-2">
-              当前是<b>演示取值</b>。点「读取真实账号与任务」换成南航真实约束。
+              当前是<b>演示取值</b>。点「读取真实账号与任务」换成真实约束（自动识别学校）。
             </v-alert>
           </v-card-text>
         </v-card>
@@ -181,19 +182,19 @@
           </v-card-title>
           <v-card-text>
             <ol class="text-body-2 mb-3 pl-4">
-              <li>粘真实 token → 点「<b>读取真实账号与任务</b>」</li>
-              <li>进「<b>阳光跑</b>」页，把模式切到「<b>真实模式</b>」</li>
+              <li>粘真实 token → 点「<b>读取真实账号与任务</b>」（自动校验 token、识别学校）</li>
+              <li>进「<b>阳光跑</b>」页（真实数据已就绪后即为真实链路）</li>
               <li>选线路 → 开始跑步（模拟倍速跑完）→ 看自检 → 点「<b>真实提交</b>」</li>
               <li>提交那一刻会<b>真实等待</b>报备时长（保证时间线一致），完成后自动读判定</li>
             </ol>
             <div class="d-flex flex-column ga-2">
-              <v-btn color="primary" block prepend-icon="mdi-run" :disabled="!isLoggedIn" to="/run">进入阳光跑</v-btn>
+              <v-btn color="primary" block prepend-icon="mdi-run" :disabled="!isLoggedIn && !demoMode" to="/run">进入阳光跑</v-btn>
               <v-btn color="secondary" block variant="tonal" prepend-icon="mdi-format-list-bulleted" to="/records">
-                查看记录（{{ records.length }} 条演示记录）
+                查看记录
               </v-btn>
             </div>
-            <v-alert v-if="!isLoggedIn" type="info" variant="tonal" density="compact" class="mt-3">
-              先填 token 并读取真实数据，或点「只用演示数据」。
+            <v-alert v-if="!isLoggedIn && !demoMode" type="info" variant="tonal" density="compact" class="mt-3">
+              先填 token 并读取真实数据，或点「载入演示数据」只试界面（不发请求）。
             </v-alert>
           </v-card-text>
         </v-card>
@@ -207,7 +208,7 @@ import { formatTaskPeriod } from '~/utils/mp/taskRules'
 import { VERIFIED_SCHOOLS } from '~/utils/mp/schoolGate'
 import { DEMO_SESSION } from '~/src/mp/demo'
 
-const { isLoggedIn, task, records, session, login, logout, setTask, setLines } = useMpDemo()
+const { isLoggedIn, task, session, logout, setTask, setLines, demoMode, enableDemo } = useMpDemo()
 const {
   profileMasked: realProfileMasked,
   task: realTask,
@@ -231,10 +232,10 @@ const verifiedSchoolText = computed(() => {
 const manualToken = ref('')
 
 const isRealSession = computed(() => Boolean(session.value?.token) && !session.value?.token?.startsWith('demo-'))
-/** 跑步页现在用的是真实任务还是演示任务 */
-const usingRealTask = computed(() => Boolean(realTask.value) && task.value.paperName === realTask.value?.paperName)
-const activeTask = computed(() => (usingRealTask.value && realTask.value ? realTask.value : task.value))
-const lineNames = computed(() => (activeTask.value.runPointList ?? []).map((line) => line.pointName).join('、') || '—')
+/** 跑步页当前用的是真实任务还是演示任务 */
+const usingRealTask = computed(() => Boolean(realTask.value))
+const activeTask = computed(() => realTask.value ?? task.value)
+const lineNames = computed(() => (activeTask.value?.runPointList ?? []).map((line) => line.pointName).join('、') || '—')
 
 const switchText = (value: string | undefined, on: string, off: string) =>
   value === undefined ? '未读取' : value === '1' ? on : off
@@ -248,13 +249,13 @@ onMounted(() => {
   }
 })
 
-/** 只用演示数据：写入假会话 */
-const doLogin = () => {
-  login({})
-  showSnackbar('已切到演示模式（假数据，不发请求）', 'info')
+/** 载入演示数据（按需功能：只在"没有真实数据、只想看界面"时用） */
+const doEnableDemo = () => {
+  enableDemo()
+  showSnackbar('已载入演示数据（假数据，不发请求）。读取真实数据时会自动退出演示。', 'info')
 }
 
-/** 真实链路：用 token 建会话 → 读账号 + 任务 + 线路 + 开关 */
+/** 真实链路：用 token 建会话 → 读账号 + 任务 + 线路 + 开关（成功后自动退出演示） */
 const doLoadReal = async () => {
   const token = manualToken.value.trim()
   if (token) {

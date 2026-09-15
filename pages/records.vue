@@ -1,10 +1,11 @@
 <template>
   <div>
     <v-alert type="info" variant="tonal" density="comfortable" class="mb-4">
-      <div class="font-weight-bold">演示记录（Mock）</div>
+      <div class="font-weight-bold">成绩记录</div>
       <div class="text-body-2">
-        初始数据来自 <code>src/mp/demo.ts</code> 的 <code>DEMO_RECORDS</code>；在跑步页结算一条成绩会追加到最前面
-        （存本机 localStorage）。真实数据来自 <code>getSunrunArch</code> 的顶层 <code>data[]</code> 与汇总字段。
+        默认<b>不含任何假数据</b>：在跑步页结算一条成绩会追加到最前面（存本机 localStorage）。
+        「载入演示数据」时列表里是演示记录（Mock），会被标注；真实记录来自
+        <code>getSunrunArch</code> 的顶层 <code>data[]</code> 与汇总字段。
       </div>
     </v-alert>
 
@@ -13,7 +14,7 @@
         <v-card variant="tonal">
           <v-card-text class="text-center py-3">
             <div class="text-caption text-medium-emphasis">有效次数 / 要求</div>
-            <div class="text-h5 font-weight-bold text-success">{{ stats.passed }} / {{ stats.requireNumber }}</div>
+            <div class="text-h5 font-weight-bold text-success">{{ stats.passed }} / {{ stats.requireNumber ?? '—' }}</div>
           </v-card-text>
         </v-card>
       </v-col>
@@ -37,7 +38,7 @@
         <v-card variant="tonal">
           <v-card-text class="text-center py-3">
             <div class="text-caption text-medium-emphasis">学期</div>
-            <div class="text-body-1 font-weight-bold">{{ term.name }}</div>
+            <div class="text-body-1 font-weight-bold">{{ term?.name ?? '—' }}</div>
           </v-card-text>
         </v-card>
       </v-col>
@@ -50,13 +51,14 @@
         <v-chip size="small" variant="tonal">{{ records.length }} 条</v-chip>
         <v-spacer />
         <v-btn
+          v-if="records.length"
           size="small"
           variant="text"
           color="warning"
-          prepend-icon="mdi-restore"
+          prepend-icon="mdi-delete-sweep-outline"
           @click="doReset"
         >
-          重置演示数据
+          清空本机记录
         </v-btn>
       </v-card-title>
       <v-card-text>
@@ -87,9 +89,6 @@
                 <span v-if="record.scorePassRemark" class="text-caption text-error ml-2">
                   {{ record.scorePassRemark }}
                 </span>
-                <span v-if="isDemoRecord(record.scoreId)" class="text-caption text-medium-emphasis ml-2">
-                  （本次演示结算）
-                </span>
               </td>
             </tr>
           </tbody>
@@ -107,8 +106,6 @@
 </template>
 
 <script setup lang="ts">
-import { DEMO_RECORDS } from '~/src/mp/demo'
-
 const { records, stats, term, resetRecords } = useMpDemo()
 const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
 
@@ -117,11 +114,9 @@ const statusText = (value: number | string) =>
 const statusColor = (value: number | string) =>
   ({ 0: 'error', 1: 'success', 2: 'success', 3: 'success' })[Number(value)] ?? 'warning'
 
-const demoIds = new Set(DEMO_RECORDS.map((record) => record.scoreId))
-const isDemoRecord = (scoreId: string) => !demoIds.has(scoreId)
-
+/** 清空本机 localStorage 里的成绩记录（不影响服务端已提交的成绩） */
 const doReset = () => {
   resetRecords()
-  showSnackbar('演示记录已重置', 'info')
+  showSnackbar('已清空本机记录（服务端成绩不受影响）', 'info')
 }
 </script>

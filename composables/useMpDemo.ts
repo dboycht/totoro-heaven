@@ -1,15 +1,19 @@
 /**
- * 【演示】小程序线三页流程的共享状态与跑步模拟
+ * 【跑步机 + 演示数据注入】小程序线三页流程的共享状态与跑步模拟
  *
- * 设计原则：**页面只用它，替换数据源时不动页面**（接入点见 `src/mp/demo.ts` 文件头）。
- * 真实数据进来后，本文件的 `login()` / `start()` / `finish()` 三处换成真接口即可：
- *   - 登录 → `MpApiWrapper.resolveSchoolBaseUrl` + token 录入 / 微信 code 换 token
- *   - 开跑 → `getSunrunPaper`（任务约束）+ `getRunBegin`（scantronId）
- *   - 提交 → `saveScores` + `saveScoreDetail`（现在只生成本地报文预览，不发网络请求）
+ * ⚠️ 这个 composable 名字叫 Demo，但**它同时是真实链路的跑步引擎**：
+ *    `useMpReal` 通过 `setTask` / `setLines` 把**真实任务与真实线路**注入进来，
+ *    计时、轨迹生成（`generateCorridorRoute`）、拟合度、结算自检都由本文件提供。
+ *
+ * **1.1.3 起演示改为「按需功能」**：
+ *   - 默认 `demoMode=false`、`task=null`、`lines=[]`、`records=[]` —— **默认界面没有任何假数据**；
+ *   - 只有显式调用 `enableDemo()` 才载入 `src/mp/demo.ts` 的假任务/假线路/假开关（用于试界面与报文）；
+ *   - 真实链路进入时请调用 `disableDemo()`。
  *
  * 跑步过程是**真实计算**的：轨迹由 `generateCorridorRoute` 生成、拟合度由
  * `calculateRouteSimilarity` 计算、里程/配速/自洽校验由 `buildRunStats` 产出 —— 只是
  * 位置推进用「模拟倍速」代替真实 GPS，因此可以在几十秒内跑完 3km。
+ * 真实提交（`sunRunExercises` 等）在 `composables/useMpReal.ts`，本文件的 `finish()` 只生成本地报文预览。
  */
 import { calculateRouteSimilarity, type LatLng } from '~/utils/mp/routeSimilarity'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
@@ -22,7 +26,6 @@ import {
   DEMO_CLIENT,
   DEMO_LINES,
   DEMO_PASS_POINTS,
-  DEMO_RECORDS,
   DEMO_SESSION,
   DEMO_SWITCHES,
   DEMO_TASK,
@@ -87,8 +90,8 @@ export interface DemoRunResult {
 const createRunState = (): DemoRunState => ({
   status: 'idle',
   runType: 0,
-  lineId: DEMO_LINES[0]?.pointId ?? '',
-  targetKm: Number(DEMO_TASK.mileage),
+  lineId: '',
+  targetKm: 0,
   paceSecPerKm: 360,
   plan: null,
   speed: 60,
@@ -96,7 +99,7 @@ const createRunState = (): DemoRunState => ({
   distanceM: 0,
   points: [],
   visibleCount: 0,
-  officialRoute: DEMO_LINES[0]?.pointList ?? [],
+  officialRoute: [],
   fitDegree: 0,
   passPoints: { all: 4, done: 0, notPassed: 4 },
   result: null,
@@ -113,13 +116,34 @@ let lastFitAt = 0
 export function useMpDemo() {
   const { session, setSession, clearSession, isLoggedIn } = useMpSession()
 
-  /** 演示模式：默认开；接入真实 token 后可置 false */
-  const demoMode = useState('mpDemoMode', () => true)
-  const task = useState('mpDemoTask', () => DEMO_TASK)
-  /** 当前使用的线路集（演示默认 DEMO_LINES；真实模式由 useMpReal 注入真实线路） */
-  const lines = useState<MpRunLine[]>('mpDemoLines', () => DEMO_LINES)
+  /**
+   * 演示模式开关：**默认关**（1.1.3+）。
+   * 演示不再是页面的顶层模式，而是"试界面/试报文"的**按需功能**：只有显式调用 `enableDemo()` 才载入假数据。
+   */
+  const demoMode = useState('mpDemoMode', () => false)
+  /** 当前任务（**默认为空**：真实任务由 useMpReal 注入；演示任务由 enableDemo 注入） */
+  const task = useState<MpSunrunTask | null>('mpDemoTask', () => null)
+  /** 当前线路集（同上，默认为空数组） */
+  const lines = useState<MpRunLine[]>('mpDemoLines', () => [])
   const switches = useState('mpDemoSwitches', () => DEMO_SWITCHES)
   const run = useState<DemoRunState>('mpDemoRun', createRunState)
+
+  /**
+   * **载入演示数据**（唯一的演示入口）：填假任务 / 假线路 / 假开关并打开演示开关。
+   * 只用于"不接触真实账号也能看界面与报文"；**不发任何网络请求**。
+   */
+  const enableDemo = () => {
+    demoMode.value = true
+    setTask(DEMO_TASK)
+    setLines(DEMO_LINES)
+    switches.value = { ...DEMO_SWITCHES }
+    run.value = createRunState()
+  }
+
+  /** 退出演示（例如开始读真实数据时调用） */
+  const disableDemo = () => {
+    demoMode.value = false
+  }
 
   /** 注入真实任务（1.1.2 真实模式）：替换演示约束，跑步自检/轨迹生成都按真实值走 */
   const setTask = (next: MpSunrunTask) => {
@@ -134,6 +158,7 @@ export function useMpDemo() {
     }
   }
 
+  /** 成绩记录（**默认空**；演示记录由「载入演示数据」写入，真实记录由结算/接口写入） */
   const records = useState<MpRunRecord[]>('mpDemoRecords', () => {
     if (import.meta.client) {
       try {
@@ -143,7 +168,7 @@ export function useMpDemo() {
         /* 忽略损坏的本地缓存 */
       }
     }
-    return [...DEMO_RECORDS]
+    return []
   })
 
   const persistRecords = () => {
@@ -225,12 +250,16 @@ export function useMpDemo() {
 
   /** 开始（生成整条轨迹，与真实提交用的是同一套算法） */
   const start = () => {
+    if (!task.value) {
+      run.value.error = '尚未载入任务（请先在工作台「读取真实账号与任务」，或「载入演示数据」试界面）'
+      return
+    }
     const line = lines.value.find((item) => item.pointId === run.value.lineId) ?? lines.value[0]
     if (!line) {
       run.value.error = '线路缺失（真实模式请先在「工作台」读取真实任务与线路）'
       return
     }
-    const isRealLine = lines.value !== DEMO_LINES
+    const isRealLine = !demoMode.value
     const isSunRun = run.value.runType === 0
 
     // 真实感规划：里程**略超**任务要求（2%~9%）、配速**非整分钟**且夹紧在任务窗口内。
@@ -303,6 +332,7 @@ export function useMpDemo() {
   const finish = () => {
     stopTimer()
     if (run.value.status === 'finished' || run.value.points.length < 2) return
+    if (!task.value) return
 
     const endedAtMs = Date.now()
     const distanceKm = run.value.distanceM / 1000
@@ -317,9 +347,10 @@ export function useMpDemo() {
     // 自洽：startTime = 结束时刻 - 模拟时长（真实跑步时二者本就是同一时刻）
     const timeFields = buildTimeFields(endedAtMs - durationSeconds * 1000, endedAtMs)
     const scantronId = demoScantronId(new Date(endedAtMs))
-    const token = session.value?.token || DEMO_SESSION.token
-    const stuNumber = (session.value?.userInfo?.snCode as string) || DEMO_SESSION.userInfo.snCode
-    const schoolCode = (session.value?.userInfo?.schoolCode as string) || DEMO_SESSION.userInfo.schoolCode
+    // ⚠️ 这里只生成"报文预览"，**不再回落演示凭据**（1.1.3：没有真实会话就留空，避免预览里出现假 token）
+    const token = session.value?.token ?? ''
+    const stuNumber = (session.value?.userInfo?.snCode as string) ?? ''
+    const schoolCode = (session.value?.userInfo?.schoolCode as string) ?? ''
 
     // 实测真包里 steps 恒为 ""（源码全工程无赋值）→ 照抄该口径；估算值只作对照展示
     const stepsSubmitted = ''
@@ -403,7 +434,7 @@ export function useMpDemo() {
   }
 
   const resetRecords = () => {
-    records.value = [...DEMO_RECORDS]
+    records.value = []
     persistRecords()
   }
 
@@ -425,13 +456,18 @@ export function useMpDemo() {
     const passed = records.value.filter((r) => Number(r.scorePassType) === 1 || Number(r.scorePassType) === 2).length
     const invalid = records.value.filter((r) => Number(r.scorePassType) === 0).length
     const totalMileage = records.value.reduce((sum, r) => sum + Number(r.mileage || 0), 0)
+    // ⚠️ requireNumber 目前来自演示摘要（真实值已由 useMpReal.fetchVerdict 读回记录，但学期要求次数尚未接线）
+    const requireNumber = demoMode.value ? DEMO_ARCH_SUMMARY.requireNumber : null
     return {
-      requireNumber: DEMO_ARCH_SUMMARY.requireNumber,
+      requireNumber,
       passed,
       invalid,
       totalMileage: totalMileage.toFixed(2),
     }
   })
+
+  /** 学期信息：演示模式给假值；真实模式暂未接线（界面显示 —） */
+  const term = computed(() => (demoMode.value ? DEMO_TERM : null))
 
   return {
     // 状态
@@ -443,13 +479,15 @@ export function useMpDemo() {
     switches,
     run,
     records,
-    term: DEMO_TERM,
+    term,
     stats,
     progress,
     paceText,
     // 动作
     login,
     logout,
+    enableDemo,
+    disableDemo,
     setTask,
     setLines,
     start,

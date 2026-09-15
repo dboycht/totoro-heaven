@@ -1,26 +1,26 @@
 <template>
   <div>
     <v-alert v-if="!isLoggedIn" type="warning" variant="tonal" density="comfortable" class="mb-4">
-      未建立会话 —— 回到 <NuxtLink to="/">工作台</NuxtLink> 填 token 并「读取真实账号与任务」，或点「只用演示数据」。
+      未建立会话 —— 回到 <NuxtLink to="/">工作台</NuxtLink> 填 token 并点「读取真实账号与任务」。
     </v-alert>
 
     <v-card class="mb-4" variant="tonal">
       <v-card-text class="d-flex align-center flex-wrap ga-3 py-2">
-        <v-btn-toggle v-model="mode" mandatory divided variant="outlined" density="comfortable">
-          <v-btn value="demo" prepend-icon="mdi-flask-outline">演示模式</v-btn>
-          <v-btn value="real" prepend-icon="mdi-cellphone-link">真实模式（南航）</v-btn>
-        </v-btn-toggle>
-        <v-chip v-if="mode === 'real'" :color="realReady ? 'success' : 'warning'" size="small" variant="tonal">
+        <v-chip :color="realReady ? 'success' : demoMode ? 'accent' : 'warning'" size="small" variant="tonal">
           <v-icon start size="14">{{ realReady ? 'mdi-database-check-outline' : 'mdi-alert-outline' }}</v-icon>
-          {{ realReady ? `真实任务：${activeTask.paperName}` : '未读取真实数据（请回工作台）' }}
+          {{ realReady ? `真实任务：${activeTask?.paperName ?? ''}` : '未读取真实数据' }}
         </v-chip>
-        <v-chip v-else color="accent" size="small" variant="tonal">
+        <v-chip v-if="demoMode" color="accent" size="small" variant="tonal">
           <v-icon start size="14">mdi-flask-outline</v-icon>
           演示数据（不发任何请求）
         </v-chip>
         <v-spacer />
-        <span class="text-caption text-medium-emphasis">
-          支持范围：仅{{ SUPPORTED_SCHOOL_NAME }}（{{ SUPPORTED_SCHOOL_CODE }}）
+        <!-- 演示是「按需功能」：只在没有真实任务时提供一个入口，不再作为顶层模式 -->
+        <v-btn v-if="!realReady" size="small" variant="text" prepend-icon="mdi-flask-outline" @click="doEnableDemo">
+          载入演示数据
+        </v-btn>
+        <span v-if="realReady" class="text-caption text-medium-emphasis">
+          学校：{{ realProfile?.schoolName ?? '—' }}（{{ realProfile?.schoolCode ?? '—' }}）
         </span>
       </v-card-text>
     </v-card>
@@ -30,7 +30,7 @@
         <v-card>
           <v-card-title class="d-flex align-center flex-wrap ga-2">
             <v-icon color="primary" class="mr-2">mdi-run-fast</v-icon>
-            {{ activeTask.paperName }}
+            {{ activeTask?.paperName ?? '（未载入任务）' }}
             <v-chip size="small" variant="tonal" :color="statusColor">{{ statusText }}</v-chip>
             <v-spacer />
             <v-chip v-if="run.plan && run.status !== 'idle'" size="small" variant="tonal" color="info">
@@ -38,7 +38,7 @@
               {{ formatPace(run.paceSecPerKm) }}/km
             </v-chip>
           </v-card-title>
-          <v-card-subtitle>
+          <v-card-subtitle v-if="activeTask">
             目标 {{ activeTask.mileage }} km · 拟合度阈值 {{ activeTask.fitDegree }} · 有效期 {{ formatTaskPeriod(activeTask) }}
           </v-card-subtitle>
           <v-card-text>
@@ -157,13 +157,14 @@
             </div>
 
             <v-alert v-if="run.error" type="error" variant="tonal" density="compact" class="mt-3">{{ run.error }}</v-alert>
-            <v-alert v-if="mode === 'real' && !realReady" type="warning" variant="tonal" density="compact" class="mt-3">
-              真实模式还没读到任务：回<NuxtLink to="/">工作台</NuxtLink>粘贴 token → 点「读取真实账号与任务」。
+            <v-alert v-if="!realReady && !demoMode" type="warning" variant="tonal" density="compact" class="mt-3">
+              还没读到任务：回<NuxtLink to="/">工作台</NuxtLink>粘贴 token → 点「读取真实账号与任务」；
+              或点上方「载入演示数据」只试界面与报文（不发请求）。
             </v-alert>
             <v-alert type="info" variant="tonal" density="compact" class="mt-3">
               位置推进用「模拟倍速」代替真实 GPS；轨迹、拟合度、里程/配速都是<b>真实算法</b>算出来的
-              （{{ mode === 'real' ? '真实模式 3m/点 ≈1Hz' : '演示 20m/点' }}）；
-              里程会**略超**任务要求、配速**非整分钟**，拟合度含"GPS 精度下降期" → 数值不是整数（避免一眼假）。
+              （{{ demoMode ? '演示 20m/点' : '真实 3m/点 ≈1Hz' }}）；
+              里程会<b>略超</b>任务要求、配速<b>非整分钟</b>，拟合度含"GPS 精度下降期" → 数值不是整数（避免一眼假）。
             </v-alert>
           </v-card-text>
         </v-card>
@@ -225,14 +226,14 @@
           步数提交值 <code>"{{ run.result.stepsSubmitted }}"</code>（照实测真包口径）。
         </div>
 
-        <!-- ===== 真实提交（真实模式） ===== -->
+        <!-- ===== 真实提交 ===== -->
         <v-divider class="my-3" />
         <div class="d-flex align-center flex-wrap ga-2 mb-2">
           <v-btn
             color="error"
             variant="flat"
             prepend-icon="mdi-cloud-upload-outline"
-            :disabled="mode !== 'real' || !realReady || run.status !== 'finished' || phase === 'waiting' || phase === 'submitting' || !gateStatus.allow"
+            :disabled="!realReady || run.status !== 'finished' || phase === 'waiting' || phase === 'submitting' || !gateStatus.allow"
             @click="confirmOpen = true"
           >
             真实提交
@@ -249,11 +250,12 @@
           <v-chip v-if="phase !== 'idle'" size="small" variant="tonal" :color="phaseColor">{{ phaseMessage }}</v-chip>
         </div>
 
-        <v-alert v-if="mode !== 'real'" type="info" variant="tonal" density="compact">
-          当前是演示模式：只生成报文预览，<b>不会真提交</b>。要真提交请切到「真实模式」并先在工作台读取真实任务。
+        <v-alert v-if="!realReady" type="info" variant="tonal" density="compact">
+          尚未读取真实数据：先在<NuxtLink to="/">工作台</NuxtLink>粘贴 token 并点「读取真实账号与任务」。
+          演示数据只能用于试界面与报文预览，<b>不会</b>真实提交。
         </v-alert>
         <v-alert v-else-if="!realReady" type="warning" variant="tonal" density="compact">
-          真实模式未就绪：先在工作台读取真实账号与任务。
+          真实数据未就绪：先在工作台读取真实账号与任务。
         </v-alert>
         <!-- ⛔ 开跑前门禁：三个否决项任一开启（或状态未知）→ 从源头阻止创建场次 -->
         <v-alert
@@ -328,7 +330,7 @@
           </v-alert>
           <v-list density="compact">
             <v-list-item title="线路" :subtitle="selectedLineName" prepend-icon="mdi-map-marker-path" />
-            <v-list-item title="里程" :subtitle="`${run.result?.km.toFixed(2)} km（任务要求 ${activeTask.mileage} km）`" prepend-icon="mdi-map-marker-distance" />
+            <v-list-item title="里程" :subtitle="`${run.result?.km.toFixed(2)} km（任务要求 ${activeTask?.mileage ?? '—'} km）`" prepend-icon="mdi-map-marker-distance" />
             <v-list-item title="时长 / 配速" :subtitle="`${formatDuration(run.result?.durationSeconds ?? 0)} · ${formatPace(Math.round((run.result?.durationSeconds ?? 1) / Math.max(0.01, run.result?.km ?? 1)))}/km`" prepend-icon="mdi-timer-outline" />
             <v-list-item title="拟合度" :subtitle="`${run.result?.fitDegree.toFixed(2)}（阈值 ${activeTask.fitDegree}）`" prepend-icon="mdi-chart-bell-curve" />
             <v-list-item title="自检" :subtitle="run.result?.check.pass ? '硬性项全部通过' : '存在不通过项，建议先修正'" prepend-icon="mdi-clipboard-check-outline" />
@@ -357,15 +359,15 @@
 <script setup lang="ts">
 import { formatTaskPeriod } from '~/utils/mp/taskRules'
 import { formatDuration, formatPace } from '~/utils/mp/runData'
-import { DEMO_STEP_M, useMpDemo } from '~/composables/useMpDemo'
-import { SUPPORTED_SCHOOL_CODE, SUPPORTED_SCHOOL_NAME, useMpReal } from '~/composables/useMpReal'
+import { useMpDemo } from '~/composables/useMpDemo'
+import { useMpReal } from '~/composables/useMpReal'
 
-const { isLoggedIn, task, lines, run, progress, paceText, start, pause, resume, finish, reset } = useMpDemo()
+const { isLoggedIn, task, run, progress, paceText, start, pause, resume, finish, reset, demoMode, enableDemo } = useMpDemo()
 const {
+  profile: realProfile,
   task: realTask,
   realLines,
-  status: realStatus,
-  phase,
+  status: realStatus,  phase,
   phaseMessage,
   remainingSeconds,
   result,
@@ -378,12 +380,20 @@ const {
 } = useMpReal()
 const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
 
-const mode = ref<'demo' | 'real'>('demo')
 const confirmOpen = ref(false)
 
 const realReady = computed(() => realStatus.value === 'ready' && Boolean(realTask.value))
-const activeTask = computed(() => (mode.value === 'real' && realTask.value ? realTask.value : task.value))
+/** 当前生效的任务：真实任务优先，其次演示任务（默认都为空 = 未载入） */
+const activeTask = computed(() => realTask.value ?? task.value)
+/** 当前线路集（真实/演示任务都自带 runPointList） */
+const activeLines = computed(() => activeTask.value?.runPointList ?? [])
 const isBusy = computed(() => run.value.status === 'running' || run.value.status === 'paused')
+
+/** 载入演示数据（按需功能，不发任何请求） */
+const doEnableDemo = () => {
+  enableDemo()
+  showSnackbar('已载入演示数据（假数据，不发请求）', 'info')
+}
 
 const statusText = computed(() => ({ idle: '待开始', running: '跑步中', paused: '已暂停', finished: '已结算' })[run.value.status])
 const statusColor = computed(() => ({ idle: 'info', running: 'success', paused: 'warning', finished: 'primary' })[run.value.status])
@@ -392,22 +402,19 @@ const phaseColor = computed(
 )
 
 const fitClass = computed(() => {
-  const threshold = Number(activeTask.value.fitDegree ?? 0.6)
+  const threshold = Number(activeTask.value?.fitDegree ?? 0.6)
   if (run.value.fitDegree >= threshold) return 'text-success'
   return run.value.fitDegree > 0 ? 'text-warning' : ''
 })
 
-/** 线路下拉：真实模式用真实线路，演示模式用演示线路 */
+/** 线路下拉（真实/演示都由当前生效任务提供） */
 const lineItems = computed(() =>
-  (mode.value === 'real' ? realLines.value : lines.value).map((line) => ({
+  activeLines.value.map((line) => ({
     value: line.pointId,
     label: `${line.pointName}（${line.pointList?.length ?? 0} 点）`,
   })),
 )
-const selectedLineName = computed(() => {
-  const list = mode.value === 'real' ? realLines.value : lines.value
-  return list.find((l) => l.pointId === run.value.lineId)?.pointName ?? '—'
-})
+const selectedLineName = computed(() => activeLines.value.find((l) => l.pointId === run.value.lineId)?.pointName ?? '—')
 
 const speedItems = [
   { value: 1, label: '1× 实时（3.4km 约 21 分钟）' },
@@ -441,16 +448,7 @@ const copy = async (value: unknown) => {
 const confidenceText = (value: string) => ({ hard: '硬性', inferred: '待实测', info: '仅展示' })[value] ?? value
 const confidenceColor = (value: string) => ({ hard: 'success', inferred: 'warning', info: 'info' })[value] ?? 'info'
 
-/** 切到真实模式时，把真实任务/线路注入跑步机；未就绪则尝试加载 */
-const onModeChange = async (next: 'demo' | 'real') => {
-  if (next !== 'real') return
-  applyToRunner()
-  if (!realTask.value && isLoggedIn.value) await loadRealData()
-  applyToRunner()
-}
-
-watch(mode, (next) => void onModeChange(next))
-
+/** 页面挂载：回填缓存任务；若已有真实会话则尝试注入真实数据 */
 onMounted(() => {
   restoreTaskFromCache()
   applyToRunner()
@@ -465,7 +463,7 @@ const doRealSubmit = async () => {
     return
   }
   const r = run.value.result
-  const line = (mode.value === 'real' ? realLines.value : lines.value).find((l) => l.pointId === run.value.lineId)
+  const line = activeLines.value.find((l) => l.pointId === run.value.lineId)
   if (!r || !line) {
     showSnackbar('缺少线路或结算数据', 'error')
     return

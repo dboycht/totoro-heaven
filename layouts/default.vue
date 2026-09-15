@@ -12,15 +12,15 @@
       <v-btn to="/records" variant="text" prepend-icon="mdi-format-list-bulleted" class="text-none">记录</v-btn>
       <v-spacer />
 
-      <v-chip :color="isRealSession ? 'success' : 'accent'" variant="tonal" size="small" class="mr-2">
-        <v-icon start size="16">{{ isRealSession ? 'mdi-cellphone-link' : 'mdi-flask-outline' }}</v-icon>
-        {{ isRealSession ? '真实数据 · 南航' : '演示数据' }}
+      <v-chip :color="isRealSession ? 'success' : 'default'" variant="tonal" size="small" class="mr-2">
+        <v-icon start size="16">{{ isRealSession ? 'mdi-cellphone-link' : 'mdi-information-outline' }}</v-icon>
+        {{ isRealSession ? '真实数据' : '未连接' }}
       </v-chip>
-      <v-chip v-if="isLoggedIn" color="primary" variant="tonal" size="small" class="mr-2">
+      <v-chip v-if="isLoggedIn && isRealSession" color="primary" variant="tonal" size="small" class="mr-2">
         <v-icon start size="16">mdi-cellphone-check</v-icon>
-        {{ isRealSession ? '真实会话已就绪' : '演示会话' }}
+        真实会话已就绪
       </v-chip>
-      <v-btn v-if="isLoggedIn" icon="mdi-logout" title="清除小程序会话" @click="clearSession" />
+      <v-btn v-if="isLoggedIn && isRealSession" icon="mdi-logout" title="清除小程序会话" @click="clearSession" />
 
       <v-btn icon="mdi-information-outline" title="关于" @click="aboutOpen = true" />
       <AboutDialog v-model="aboutOpen" />

@@ -72,7 +72,7 @@ const TASK_CACHE_KEY = 'mp_real_task_v1'
 
 export function useMpReal() {
   const { session } = useMpSession()
-  const { setTask, setLines, task: currentTask, run } = useMpDemo()
+  const { setTask, setLines, task: currentTask, run, disableDemo } = useMpDemo()
 
   const profile = useState<MpRealProfile | null>('mpRealProfile', () => null)
   const task = useState<MpSunrunTask | null>('mpRealTask', () => null)
@@ -91,8 +91,10 @@ export function useMpReal() {
   const remainingSeconds = useState('mpRealRemaining', () => 0)
   const result = useState<RealSubmitResult | null>('mpRealResult', () => null)
 
-  /** 把真实任务/线路注入到跑步页（演示机器照旧跑，但按真实约束与真实线路） */
+  /** 把真实任务/线路注入到跑步页（跑步引擎照旧跑，但按真实约束与真实线路） */
   const applyToRunner = () => {
+    // 1.1.3：进入真实数据即退出演示（演示是"按需功能"，不再与真实并列）
+    disableDemo()
     if (task.value) setTask(task.value)
     const list = (task.value?.runPointList ?? []) as MpRunLine[]
     if (!list.length) return
