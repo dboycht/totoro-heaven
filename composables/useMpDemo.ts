@@ -150,12 +150,13 @@ export function useMpDemo() {
     task.value = next
   }
 
-  /** 注入真实线路（1.1.2 真实模式）：替换演示假环线 */
+  /**
+   * 注入真实线路（1.1.2 真实模式）：替换演示假环线。
+   * ⚠️ 1.1.3 起**不再在这里盲选第一条** —— 选线交给调用方（`useMpReal.applyToRunner` 的
+   *     "缓存 → 校区名 → 坐标分组默认" 三级优先级）与跑步页的校正 watch，避免此处覆盖面更优的选择。
+   */
   const setLines = (next: MpRunLine[]) => {
     lines.value = next
-    if (run.value.status === 'idle' && !next.some((l) => l.pointId === run.value.lineId)) {
-      run.value.lineId = next[0]?.pointId ?? ''
-    }
   }
 
   /** 成绩记录（**默认空**；演示记录由「载入演示数据」写入，真实记录由结算/接口写入） */

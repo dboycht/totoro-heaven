@@ -27,6 +27,7 @@ import {
   isSchoolSupported,
   unsupportedSchoolMessage,
 } from '~/utils/mp/schoolGate'
+import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
 
 /**
  * 支持范围来自**已验证学校登记表**（`utils/mp/schoolGate.ts`）。
@@ -99,10 +100,15 @@ export function useMpReal() {
     const list = (task.value?.runPointList ?? []) as MpRunLine[]
     if (!list.length) return
     setLines(list)
-    // 默认选中**与本人校区同名**的线路（如校区「天目湖」→ 线路「天目湖-西操场」），否则用第一条
+    // 选线优先级（1.1.3 起）：① 本次会话已选且仍有效 → 保留；② 与本人校区同名的线路；
+    // ③ 按坐标分组的本校区第一条（不再盲选数据里的第一条 —— 实测数据第一条常在别的校区）。
     const campus = profile.value?.campusName || profile.value?.campusId || ''
+    const cached = readCachedLineId()
+    const keepCached = cached && list.some((l) => String(l.pointId) === String(cached))
     const preferred = campus ? list.find((l) => String(l.pointName ?? '').includes(campus)) : undefined
-    if (preferred?.pointId) run.value.lineId = preferred.pointId
+    const fallback = groupRoutesByCampus(list, campus).defaultLineId
+    const chosen = (keepCached ? cached : '') || preferred?.pointId || fallback
+    if (chosen) run.value.lineId = chosen
   }
 
   /**
@@ -169,13 +175,43 @@ export function useMpReal() {
 
     if (import.meta.client) {
       try {
-        localStorage.setItem(TASK_CACHE_KEY, JSON.stringify({ at: loadedAt.value, task: task.value }))
+        localStorage.setItem(
+          TASK_CACHE_KEY,
+          JSON.stringify({ at: loadedAt.value, task: task.value, lineId: String(run.value.lineId || '') }),
+        )
       } catch {
         /* 忽略配额错误 */
       }
     }
     applyToRunner()
     return true
+  }
+
+  /** 读缓存里「上次选中的线路 id」（刷新后保持选线；无则空串） */
+  function readCachedLineId(): string {
+    if (!import.meta.client) return ''
+    try {
+      const raw = localStorage.getItem(TASK_CACHE_KEY)
+      if (!raw) return ''
+      const parsed = JSON.parse(raw) as { lineId?: string }
+      return String(parsed?.lineId || '')
+    } catch {
+      return ''
+    }
+  }
+
+  /** 把当前选中的线路写回缓存（用户换线路时调用；刷新页面后仍保持） */
+  function persistSelectedLine(): void {
+    if (!import.meta.client) return
+    try {
+      const raw = localStorage.getItem(TASK_CACHE_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as { at?: number; task?: MpSunrunTask; lineId?: string }
+      if (!parsed?.task) return
+      localStorage.setItem(TASK_CACHE_KEY, JSON.stringify({ ...parsed, lineId: String(run.value.lineId || '') }))
+    } catch {
+      /* 忽略配额/解析错误 */
+    }
   }
 
   /** 用本地缓存回填任务（刷新页面后不用重新拉；点「刷新任务」可更新） */
@@ -441,6 +477,7 @@ export function useMpReal() {
     loadRealData,
     restoreTaskFromCache,
     applyToRunner,
+    persistSelectedLine,
     submitRealRun,
     fetchVerdict,
     refreshCameraFlag,

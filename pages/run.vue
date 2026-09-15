@@ -109,13 +109,20 @@
             <v-select
               v-model="run.lineId"
               :items="lineItems"
-              item-title="label"
+              item-title="title"
               item-value="value"
-              label="线路"
+              label="线路（按校区自动分组，本校区优先）"
               density="comfortable"
               :disabled="isBusy"
               class="mb-2"
             />
+            <!-- 跨校区提示：选了别的校区的线路（按坐标判定，不看名称） -->
+            <v-alert v-if="crossCampusWarning" type="warning" variant="tonal" density="compact" class="mb-2">
+              {{ crossCampusWarning }}
+            </v-alert>
+            <div v-if="routeGroups.clusters.length > 1" class="text-caption text-medium-emphasis mb-2">
+              {{ routeGroups.note }}
+            </div>
             <v-select
               v-model="run.speed"
               :items="speedItems"
@@ -368,6 +375,7 @@ import { formatTaskPeriod } from '~/utils/mp/taskRules'
 import { formatDuration, formatPace } from '~/utils/mp/runData'
 import { useMpDemo } from '~/composables/useMpDemo'
 import { useMpReal } from '~/composables/useMpReal'
+import { groupRoutesByCampus, toSelectItems, warnForSelection } from '~/utils/mp/routeGroups'
 
 const { isLoggedIn, task, run, progress, paceText, start, pause, resume, finish, reset, demoMode, enableDemo } = useMpDemo()
 const {
@@ -383,6 +391,7 @@ const {
   submitRealRun,
   fetchVerdict,
   restoreTaskFromCache,
+  persistSelectedLine,
   gateStatus,
 } = useMpReal()
 const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
@@ -414,14 +423,33 @@ const fitClass = computed(() => {
   return run.value.fitDegree > 0 ? 'text-warning' : ''
 })
 
-/** 线路下拉（真实/演示都由当前生效任务提供） */
-const lineItems = computed(() =>
-  activeLines.value.map((line) => ({
-    value: line.pointId,
-    label: `${line.pointName}（${line.pointList?.length ?? 0} 点）`,
-  })),
-)
+/** 线路下拉（真实/演示都由当前生效任务提供；按坐标校区分组，本校区优先） */
+const routeGroups = computed(() => groupRoutesByCampus(activeLines.value, realProfile.value?.campusName))
+const lineItems = computed(() => toSelectItems(routeGroups.value))
+/** 选了其他校区线路时的提示（未跨校区为空串） */
+const crossCampusWarning = computed(() => warnForSelection(routeGroups.value, run.value.lineId))
 const selectedLineName = computed(() => activeLines.value.find((l) => l.pointId === run.value.lineId)?.pointName ?? '—')
+
+// 线路集变化后校正选中项：
+//   - 已选线路仍在新列表里 → **保持不动**（不覆盖用户选择，也不覆盖服务器/缓存给的默认）；
+//   - 未选或已选线路消失 → 落到分组默认（本校区第一条）。
+watch(
+  () => routeGroups.value,
+  (g) => {
+    if (!g.ordered.length) return
+    const stillValid = g.ordered.some((r) => String(r.line.pointId) === String(run.value.lineId))
+    if (!stillValid && g.defaultLineId) run.value.lineId = g.defaultLineId
+  },
+  { immediate: true },
+)
+
+// 用户换线路 → 写回任务缓存（刷新页面后保持所选线路）
+watch(
+  () => run.value.lineId,
+  (id) => {
+    if (id) persistSelectedLine()
+  },
+)
 
 const speedItems = [
   { value: 1, label: '1× 实时（3.4km 约 21 分钟）' },
