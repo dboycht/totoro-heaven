@@ -159,7 +159,9 @@ export function evaluateRunAgainstTask(input: TaskCheckInput): TaskCheckResult {
       ok,
       detail: `实际 ${paceText(pace)} / 要求 ${paceText(lower)} ~ ${paceText(upper)}`,
       confidence: 'inferred',
-      note: 'minSpeed/maxSpeed 的单位与语义未实测（推断为配速上下限，未标准化前后已按小/大取值）',
+      note:
+        '单位已实测=时速 km/h（字段名 minSpeedHour/maxSpeedHour，2026-09-14）；' +
+        '中段数值已随真实提交验证（9-14/9-15 判有效）；服务端对【边界】是否强校验未实测（不做贴边实验）',
     })
   }
 
@@ -184,7 +186,8 @@ export function evaluateRunAgainstTask(input: TaskCheckInput): TaskCheckResult {
       ok,
       detail: `实际 ${hhmmss(durationSeconds)} / 要求 ${hhmmss(lower)} ~ ${hhmmss(upper)}`,
       confidence: 'inferred',
-      note: 'minTime/maxTime 单位未实测（≤120 时按分钟解释）',
+      note:
+        'minTime/maxTime 单位推断为分钟（≤120 按分钟解释）；中段数值已随真实提交验证（9-14/9-15 判有效）；边界未验证',
     })
   }
 
@@ -214,7 +217,7 @@ export function evaluateRunAgainstTask(input: TaskCheckInput): TaskCheckResult {
       ok: inWindow,
       detail: `当前 ${hhmmss(nowSeconds)} / 允许 ${windows.map((w) => `${hhmmss(w.start!)}-${hhmmss(w.end!)}`).join('、')}`,
       confidence: 'inferred',
-      note: '服务端是否强校验时段未实测',
+      note: '服务端是否强校验时段未实测；中段时刻（如 18:14）已随真实提交验证（9-15 判有效）',
     })
   }
 

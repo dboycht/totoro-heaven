@@ -222,7 +222,12 @@
                 <v-icon v-else color="warning" size="18">mdi-help</v-icon>
               </td>
               <td>
-                <v-chip size="x-small" variant="tonal" :color="confidenceColor(item.confidence)">
+                <v-chip
+                  size="x-small"
+                  variant="tonal"
+                  :color="confidenceColor(item.confidence)"
+                  :title="item.note || undefined"
+                >
                   {{ confidenceText(item.confidence) }}
                 </v-chip>
               </td>
@@ -236,7 +241,9 @@
           自洽校验告警：{{ run.result.statsProblems.join('；') }}
         </div>
         <div class="text-caption text-medium-emphasis mb-3">
-          口径说明：<b>硬性</b> = 本地能确定判的（参与预判）；<b>待实测</b> = 单位/语义尚未验证的项，只提示、<b>不阻断</b>。
+          口径说明：<b>硬性</b> = 本地能确定判的（参与预判）；<b>待实测</b> = 单位或"服务端是否强校验"的<b>边界</b>未验证的项，
+          只提示、<b>不阻断</b>（这类项的中段数值已随真实提交验证过；边界要验证得做"贴边提交"，会在账号留异常记录，故故意不做）。
+          把鼠标停在「口径」标签上可看各项的具体依据。
           步数提交值 <code>"{{ run.result.stepsSubmitted }}"</code>（照实测真包口径）。
         </div>
 
