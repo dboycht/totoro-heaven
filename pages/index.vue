@@ -60,6 +60,9 @@
               </v-btn>
               <v-btn variant="text" prepend-icon="mdi-flask-outline" @click="doEnableDemo">载入演示数据（试界面）</v-btn>
               <v-btn v-if="isLoggedIn" variant="text" prepend-icon="mdi-logout" @click="doLogout">清除会话</v-btn>
+              <v-btn variant="text" color="warning" prepend-icon="mdi-broom" @click="confirmClearOpen = true">
+                清空本机数据
+              </v-btn>
             </div>
 
             <v-chip v-if="isLoggedIn" color="success" variant="tonal" size="small" class="mr-2">
@@ -76,6 +79,19 @@
             </v-alert>
             <v-alert v-else-if="manualToken.trim() && !isRealSession" type="info" variant="tonal" density="compact" class="mt-3">
               已填入 token —— 点「读取真实账号与任务」即可校验并拉取真实数据（自动识别学校；非已验证学校会被拒绝）。
+            </v-alert>
+
+            <!-- 上次读取的任务：**刷新后不自动恢复**（默认干净），这里给显式入口 -->
+            <v-alert v-if="hasCachedTask && !realTask" type="info" variant="tonal" density="compact" class="mt-3">
+              <div class="text-body-2">本机存有<b>上次读取的任务</b>：{{ cachedTaskLabel }}</div>
+              <div class="d-flex flex-wrap ga-2 mt-2">
+                <v-btn size="small" variant="tonal" prepend-icon="mdi-history" @click="doRestoreCached">
+                  恢复上次任务
+                </v-btn>
+                <v-btn size="small" variant="text" prepend-icon="mdi-delete-outline" @click="clearCachedTask()">
+                  忽略并清除
+                </v-btn>
+              </div>
             </v-alert>
           </v-card-text>
         </v-card>
@@ -235,6 +251,25 @@
         </v-card>
       </v-col>
     </v-row>
+
+    <!-- 清空本机数据 确认框 -->
+    <v-dialog v-model="confirmClearOpen" max-width="460">
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon color="warning" class="mr-2">mdi-broom</v-icon>
+          清空本机数据？
+        </v-card-title>
+        <v-card-text>
+          这会清掉：<b>会话（token）</b>、<b>上次读取的任务缓存</b>、<b>本机成绩记录</b>、演示数据。
+          清完后界面回到全新状态，需要重新粘贴 token 再读取。<b>不会</b>影响学校服务端已有的成绩。
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="confirmClearOpen = false">取消</v-btn>
+          <v-btn color="warning" variant="flat" prepend-icon="mdi-broom" @click="doClearAll">确认清空</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -253,8 +288,12 @@ const {
   switches: realSwitches,
   cameraFlag,
   loadRealData,
-  restoreTaskFromCache,
   applyToRunner,
+  restoreCachedTask,
+  hasCachedTask,
+  cachedTaskLabel,
+  clearCachedTask,
+  clearAllLocalData,
   gateStatus,
   schoolNotice: realSchoolNotice,
   cameraFlagError,
@@ -269,6 +308,7 @@ const verifiedSchoolText = computed(() => {
 })
 
 const manualToken = ref('')
+const confirmClearOpen = ref(false)
 
 const isRealSession = computed(() => Boolean(session.value?.token) && !session.value?.token?.startsWith('demo-'))
 /** 跑步页当前用的是真实任务还是演示任务 */
@@ -285,10 +325,8 @@ const switchText = (value: string | undefined, on: string, off: string) =>
   value === undefined ? '未读取' : value === '1' ? on : off
 
 onMounted(() => {
-  restoreTaskFromCache()
-  // 已存过真实 token 时，把缓存任务注入跑步机（**统一走 applyToRunner**：它会定好选线、
-  // 退出演示，并触发"当前线路摄像头杆开关"的自动读取 —— 见 useMpReal 的幂等 watch）
-  if (realTask.value) applyToRunner()
+  // ⚠️ 2026-09-15 用户要求：**刷新后默认是干净状态** —— 不再自动回填上次读取的任务。
+  //    需要时用界面上的「恢复上次任务」按钮显式恢复（见下方提示条）。
 })
 
 /** 载入演示数据（按需功能：只在"没有真实数据、只想看界面"时用） */
@@ -320,5 +358,19 @@ const doLoadReal = async () => {
 const doLogout = () => {
   logout()
   showSnackbar('会话已清除', 'info')
+}
+
+/** 恢复"上次读取的任务"（刷新后默认不自动恢复，这是显式入口） */
+const doRestoreCached = () => {
+  if (restoreCachedTask()) showSnackbar('已恢复上次读取的任务（含当时选中的线路）', 'success')
+  else showSnackbar('没有可恢复的任务', 'warning')
+}
+
+/** 一键清空本机数据（会话 + 任务缓存 + 记录） */
+const doClearAll = () => {
+  clearAllLocalData()
+  manualToken.value = ''
+  confirmClearOpen.value = false
+  showSnackbar('已清空本机数据：会话 / 任务缓存 / 本机记录（服务端成绩不受影响）', 'info')
 }
 </script>

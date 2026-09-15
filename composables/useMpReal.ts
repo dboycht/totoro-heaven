@@ -67,8 +67,8 @@ export interface RealSubmitResult {
 const TASK_CACHE_KEY = 'mp_real_task_v1'
 
 export function useMpReal() {
-  const { session } = useMpSession()
-  const { setTask, setLines, task: currentTask, run, disableDemo } = useMpDemo()
+  const { session, clearSession } = useMpSession()
+  const { setTask, setLines, task: currentTask, run, disableDemo, clearLocalData } = useMpDemo()
 
   const profile = useState<MpRealProfile | null>('mpRealProfile', () => null)
   const task = useState<MpSunrunTask | null>('mpRealTask', () => null)
@@ -84,10 +84,18 @@ export function useMpReal() {
   /** 读取摄像头杆开关失败/异常时的原因（界面展示；空串=无异常） */
   const cameraFlagError = useState('mpRealCameraFlagErr', () => '')
 
+  // 「上次读取的任务」缓存的界面状态（**刷新后不再自动回填**；只作为可选的显式恢复入口）
+  const cacheAt = useState('mpRealCacheAt', () => 0)
+  const cachePaperName = useState('mpRealCachePaper', () => '')
+  const cacheLineId = useState('mpRealCacheLine', () => '')
+
   const phase = useState<RealPhase>('mpRealPhase', () => 'idle')
   const phaseMessage = useState('mpRealPhaseMessage', () => '')
   const remainingSeconds = useState('mpRealRemaining', () => 0)
   const result = useState<RealSubmitResult | null>('mpRealResult', () => null)
+
+  // 只在客户端读一次缓存的元信息（用于是否显示"恢复上次任务"入口）——**不自动恢复数据**
+  if (import.meta.client) syncCacheState()
 
   /**
    * 把**真实**任务/线路注入到跑步页（跑步引擎照旧跑，但按真实约束与真实线路）。
@@ -96,22 +104,22 @@ export function useMpReal() {
    *    它在跑步页 `onMounted` 也会被调用；若在这里无条件 `disableDemo()`，
    *    用户"在工作台载入演示数据 → 进跑步页"时演示模式会被误关（数据还在、但标识/步长口径全变），
    *    所以 `disableDemo()` 只在**确实要应用真实数据**时执行。
+   * @param overrideLineId 指定选线（"恢复上次任务"时传入缓存里记住的那条）；不传则按下面优先级自动选
    */
-  const applyToRunner = () => {
+  const applyToRunner = (overrideLineId?: string) => {
     if (!task.value) return
     disableDemo()
     setTask(task.value)
     const list = (task.value?.runPointList ?? []) as MpRunLine[]
     if (!list.length) return
     setLines(list)
-    // 选线优先级（1.1.3 起）：① 本次会话已选且仍有效 → 保留；② 与本人校区同名的线路；
+    // 选线优先级：① 显式指定（恢复缓存时）且仍有效 → 用它；② 与本人校区同名的线路；
     // ③ 按坐标分组的本校区第一条（不再盲选数据里的第一条 —— 实测数据第一条常在别的校区）。
     const campus = profile.value?.campusName || profile.value?.campusId || ''
-    const cached = readCachedLineId()
-    const keepCached = cached && list.some((l) => String(l.pointId) === String(cached))
+    const valid = (id?: string) => (id && list.some((l) => String(l.pointId) === String(id)) ? String(id) : '')
     const preferred = campus ? list.find((l) => String(l.pointName ?? '').includes(campus)) : undefined
     const fallback = groupRoutesByCampus(list, campus).defaultLineId
-    const chosen = (keepCached ? cached : '') || preferred?.pointId || fallback
+    const chosen = valid(overrideLineId) || preferred?.pointId || fallback
     if (chosen) run.value.lineId = chosen
   }
 
@@ -200,20 +208,28 @@ export function useMpReal() {
     return true
   }
 
-  /** 读缓存里「上次选中的线路 id」（刷新后保持选线；无则空串） */
-  function readCachedLineId(): string {
-    if (!import.meta.client) return ''
+  /** 读整个缓存负载（不存在/损坏返回 null） */
+  function readCachePayload(): { at?: number; task?: MpSunrunTask; lineId?: string } | null {
+    if (!import.meta.client) return null
     try {
       const raw = localStorage.getItem(TASK_CACHE_KEY)
-      if (!raw) return ''
-      const parsed = JSON.parse(raw) as { lineId?: string }
-      return String(parsed?.lineId || '')
+      if (!raw) return null
+      const parsed = JSON.parse(raw) as { at?: number; task?: MpSunrunTask; lineId?: string }
+      return parsed?.task ? parsed : null
     } catch {
-      return ''
+      return null
     }
   }
 
-  /** 把当前选中的线路写回缓存（用户换线路时调用；刷新页面后仍保持） */
+  /** 刷新"是否存在可恢复的上次任务"这个界面状态（非响应式存储，需手动同步） */
+  function syncCacheState(): void {
+    const p = readCachePayload()
+    cacheAt.value = p ? (p.at ?? 1) : 0
+    cachePaperName.value = p?.task?.paperName ?? ''
+    cacheLineId.value = p?.lineId ?? ''
+  }
+
+  /** 把当前选中的线路写回缓存（用户换线路时调用；"恢复上次任务"时保持选线） */
   function persistSelectedLine(): void {
     if (!import.meta.client) return
     try {
@@ -222,27 +238,70 @@ export function useMpReal() {
       const parsed = JSON.parse(raw) as { at?: number; task?: MpSunrunTask; lineId?: string }
       if (!parsed?.task) return
       localStorage.setItem(TASK_CACHE_KEY, JSON.stringify({ ...parsed, lineId: String(run.value.lineId || '') }))
+      syncCacheState()
     } catch {
       /* 忽略配额/解析错误 */
     }
   }
-
-  /** 用本地缓存回填任务（刷新页面后不用重新拉；点「刷新任务」可更新） */
-  function restoreTaskFromCache() {
-    if (task.value || !import.meta.client) return
-    try {
-      const raw = localStorage.getItem(TASK_CACHE_KEY)
-      if (!raw) return
-      const parsed = JSON.parse(raw) as { at: number; task: MpSunrunTask }
-      if (parsed?.task?.runPointList?.length) {
-        task.value = parsed.task
-        loadedAt.value = parsed.at
-        status.value = 'ready'
-      }
-    } catch {
-      /* 忽略损坏缓存 */
-    }
+  /**
+   * **显式**恢复上次读取的任务（刷新页面后**不再自动回填** —— 用户要求"刷新默认是干净状态"）。
+   * 任务/线路/开关会恢复到缓存时的样子，并沿用当时选中的线路。
+   */
+  function restoreCachedTask(): boolean {
+    if (task.value) return false
+    const p = readCachePayload()
+    const cachedTask = p?.task
+    if (!cachedTask?.runPointList?.length) return false
+    task.value = cachedTask
+    loadedAt.value = p?.at ?? Date.now()
+    status.value = 'ready'
+    applyToRunner(p?.lineId)
+    return true
   }
+
+  /** 清掉"上次任务"缓存（界面"忽略并清除"用） */
+  function clearCachedTask(): void {
+    if (import.meta.client) {
+      try {
+        localStorage.removeItem(TASK_CACHE_KEY)
+      } catch {
+        /* 忽略 */
+      }
+    }
+    syncCacheState()
+  }
+
+  /**
+   * **一键清空本机数据**（界面按钮）：会话 token + 任务/线路/开关/记录 + 跑步机状态 + "上次任务"缓存。
+   * 清完后界面回到全新状态（需要重新粘贴 token 并读取）。
+   */
+  function clearAllLocalData(): void {
+    clearSession()
+    clearLocalData() // useMpDemo：任务/线路/开关/记录/跑步机 + 退出演示
+    clearCachedTask()
+    profile.value = null
+    task.value = null
+    status.value = 'idle'
+    error.value = ''
+    loadedAt.value = 0
+    switches.value = null
+    cameraFlag.value = null
+    cameraFlagLineId.value = ''
+    cameraFlagError.value = ''
+    phase.value = 'idle'
+    phaseMessage.value = ''
+    remainingSeconds.value = 0
+    result.value = null
+  }
+
+  /** 是否存在"可恢复的上次任务"（界面据此显示恢复入口） */
+  const hasCachedTask = computed(() => cacheAt.value > 0)
+  /** 上次任务的展示信息（时间 + 任务名），用于恢复入口的文案 */
+  const cachedTaskLabel = computed(() => {
+    if (!hasCachedTask.value) return ''
+    const t = cacheAt.value === 1 ? '' : new Date(cacheAt.value).toLocaleString('zh-CN')
+    return `${cachePaperName.value || '（未命名任务）'}${t ? ` · ${t}` : ''}`
+  })
 
   // ---------- 真实提交 ----------
 
@@ -534,7 +593,14 @@ export function useMpReal() {
     isRealApplied,
     // 动作
     loadRealData,
-    restoreTaskFromCache,
+    /** 显式恢复"上次读取的任务"（刷新后**不会**自动恢复） */
+    restoreCachedTask,
+    /** 是否存在可恢复的上次任务 */
+    hasCachedTask,
+    cachedTaskLabel,
+    clearCachedTask,
+    /** 一键清空本机数据（会话 + 任务 + 记录 + 缓存） */
+    clearAllLocalData,
     applyToRunner,
     persistSelectedLine,
     submitRealRun,

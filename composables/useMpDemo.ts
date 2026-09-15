@@ -124,7 +124,8 @@ export function useMpDemo() {
   const task = useState<MpSunrunTask | null>('mpDemoTask', () => null)
   /** 当前线路集（同上，默认为空数组） */
   const lines = useState<MpRunLine[]>('mpDemoLines', () => [])
-  const switches = useState('mpDemoSwitches', () => DEMO_SWITCHES)
+  /** 当前学校的开跑开关（**默认 null = 未读取**；由 enableDemo 或真实链路注入） */
+  const switches = useState<Record<string, string> | null>('mpDemoSwitches', () => null)
   const run = useState<DemoRunState>('mpDemoRun', createRunState)
 
   /**
@@ -142,6 +143,21 @@ export function useMpDemo() {
   /** 退出演示（例如开始读真实数据时调用） */
   const disableDemo = () => {
     demoMode.value = false
+  }
+
+  /**
+   * **清空本机数据**：任务 / 线路 / 开关 / 跑步机状态 / 本机记录 全部归零，并退出演示。
+   * （会话 token 由调用方决定是否清 —— `useMpReal.clearAllLocalData()` 会一并清掉。）
+   * 目的：让"刷新/重置后是干净状态"，不再把上次读到的任务一直摊在界面上。
+   */
+  const clearLocalData = () => {
+    demoMode.value = false
+    task.value = null
+    lines.value = []
+    switches.value = null
+    run.value = createRunState()
+    records.value = []
+    persistRecords()
   }
 
   /** 注入真实任务（1.1.2 真实模式）：替换演示约束，跑步自检/轨迹生成都按真实值走 */
@@ -478,6 +494,7 @@ export function useMpDemo() {
     logout,
     enableDemo,
     disableDemo,
+    clearLocalData,
     setTask,
     setLines,
     start,

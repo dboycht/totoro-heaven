@@ -37,8 +37,6 @@ export const DEMO_SWITCHES = {
   sunrunPointShowOff: '1',
   sunrunStartFace: '0',
   sunrunPointRandom: '0',
-  /** 人脸建档：真实环境是服务端硬门槛（getRunBegin 未建档返回 code:"888"），用户已完成建档 */
-  faceRegistered: true,
 }
 
 /** 【演示】客户端上报用的基础信息（实测真包为 version "4.1.12.55"、phoneInfo 纯品牌串） */

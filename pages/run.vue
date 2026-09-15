@@ -174,6 +174,12 @@
             <v-alert v-if="!realReady && !demoMode" type="warning" variant="tonal" density="compact" class="mt-3">
               还没读到任务：回<NuxtLink to="/">工作台</NuxtLink>粘贴 token → 点「读取真实账号与任务」；
               或点上方「载入演示数据」只试界面与报文（不发请求）。
+              <!-- 刷新后默认不自动恢复缓存，这里给显式入口 -->
+              <div v-if="hasCachedTask" class="d-flex flex-wrap ga-2 mt-2">
+                <v-btn size="small" variant="tonal" prepend-icon="mdi-history" @click="doRestoreCached">
+                  恢复上次任务{{ cachedTaskLabel ? `（${cachedTaskLabel}）` : '' }}
+                </v-btn>
+              </div>
             </v-alert>
             <v-alert type="info" variant="tonal" density="compact" class="mt-3">
               位置推进用「模拟倍速」代替真实 GPS；轨迹、拟合度、里程/配速都是<b>真实算法</b>算出来的
@@ -408,7 +414,9 @@ const {
   applyToRunner,
   submitRealRun,
   fetchVerdict,
-  restoreTaskFromCache,
+  restoreCachedTask,
+  hasCachedTask,
+  cachedTaskLabel,
   persistSelectedLine,
   gateStatus,
   cameraFlagError,
@@ -429,6 +437,12 @@ const isBusy = computed(() => run.value.status === 'running' || run.value.status
 const doEnableDemo = () => {
   enableDemo()
   showSnackbar('已载入演示数据（假数据，不发请求）', 'info')
+}
+
+/** 恢复"上次读取的任务"（刷新后默认不自动恢复） */
+const doRestoreCached = () => {
+  if (restoreCachedTask()) showSnackbar('已恢复上次读取的任务（含当时选中的线路）', 'success')
+  else showSnackbar('没有可恢复的任务', 'warning')
 }
 
 const statusText = computed(() => ({ idle: '待开始', running: '跑步中', paused: '已暂停', finished: '已结算' })[run.value.status])
@@ -503,9 +517,8 @@ const copy = async (value: unknown) => {
 const confidenceText = (value: string) => ({ hard: '硬性', inferred: '待实测', info: '仅展示' })[value] ?? value
 const confidenceColor = (value: string) => ({ hard: 'success', inferred: 'warning', info: 'info' })[value] ?? 'info'
 
-/** 页面挂载：回填缓存任务；若已有真实会话则尝试注入真实数据 */
+/** 页面挂载：把当前任务（若已有）注入跑步机；**不再自动回填缓存**（刷新后默认干净） */
 onMounted(() => {
-  restoreTaskFromCache()
   applyToRunner()
 })
 
