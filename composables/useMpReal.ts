@@ -445,18 +445,31 @@ export function useMpReal() {
   /** 界面按钮用：强制重查「当前选中线路」的摄像头杆开关（失败不再永久卡住） */
   const retryCameraFlag = (): Promise<void> => refreshCameraFlag(String(run.value.lineId || ''), true)
 
-  // ⚠️ 摄像头杆是**按线路**下发的：选中线路变化时自动重新查询（不再显示"第一条线路"的值）
-  watch(
-    () => run.value.lineId,
-    (id) => {
-      if (id && status.value === 'ready') void refreshCameraFlag(id)
-    },
-  )
-
   /** 当前选中线路对象（门禁需要它的 pointId） */
   const selectedLine = computed<MpRunLine | undefined>(() =>
     (task.value?.runPointList ?? []).find((l) => String(l.pointId) === String(run.value.lineId)) ??
     (task.value?.runPointList ?? [])[0],
+  )
+
+  /**
+   * **自动确保**「当前选中线路」的摄像头杆开关已读取（幂等 + 覆盖所有进入路径）。
+   *
+   * 为什么需要它（2026-09-15，E29 的第二半修复）：上一版只做到"失败不再永久卡住"，
+   * 但**没有任何东西会主动去读** —— 工作台打开（缓存回填任务）时不会触发，
+   * 于是门禁一直显示"摄像头杆尚未读取"，用户只能刷新页面或手动点重试。
+   *
+   * 覆盖：① 页面加载/缓存回填（status 变 ready）；② 选线变化；③ token 就绪。
+   * 不会死循环：依赖里**不含** `cameraFlagLineId`（成功记账不会自触发）；失败时依赖不变，也不会连发。
+   */
+  watch(
+    [() => status.value, () => run.value.lineId, () => session.value?.token],
+    () => {
+      if (status.value !== 'ready' || !session.value?.token) return
+      const id = String(run.value.lineId || selectedLine.value?.pointId || '')
+      if (!id || id === cameraFlagLineId.value) return
+      void refreshCameraFlag(id)
+    },
+    { immediate: true },
   )
 
   /**

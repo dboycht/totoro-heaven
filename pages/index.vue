@@ -244,17 +244,17 @@ import { VERIFIED_SCHOOLS } from '~/utils/mp/schoolGate'
 import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
 import { DEMO_SESSION } from '~/src/mp/demo'
 
-const { isLoggedIn, task, session, logout, setTask, setLines, demoMode, enableDemo } = useMpDemo()
+const { isLoggedIn, task, session, logout, demoMode, enableDemo } = useMpDemo()
 const {
   profileMasked: realProfileMasked,
   task: realTask,
-  realLines,
   status: realStatus,
   error: realError,
   switches: realSwitches,
   cameraFlag,
   loadRealData,
   restoreTaskFromCache,
+  applyToRunner,
   gateStatus,
   schoolNotice: realSchoolNotice,
   cameraFlagError,
@@ -286,11 +286,9 @@ const switchText = (value: string | undefined, on: string, off: string) =>
 
 onMounted(() => {
   restoreTaskFromCache()
-  // 已存过真实 token 时，自动把缓存任务注入跑步页
-  if (realTask.value) {
-    setTask(realTask.value)
-    if (realLines.value.length) setLines(realLines.value)
-  }
+  // 已存过真实 token 时，把缓存任务注入跑步机（**统一走 applyToRunner**：它会定好选线、
+  // 退出演示，并触发"当前线路摄像头杆开关"的自动读取 —— 见 useMpReal 的幂等 watch）
+  if (realTask.value) applyToRunner()
 })
 
 /** 载入演示数据（按需功能：只在"没有真实数据、只想看界面"时用） */
@@ -311,9 +309,8 @@ const doLoadReal = async () => {
   }
   const ok = await loadRealData()
   if (ok) {
+    // loadRealData() 内部已 applyToRunner()（定选线 + 退出演示 + 触发摄像头杆开关读取），此处不再重复注入
     const t = realTask.value!
-    setTask(t)
-    if (realLines.value.length) setLines(realLines.value)
     showSnackbar(`真实数据已就绪：${t.paperName}（${t.runPointList?.length ?? 0} 条线路）`, 'success')
   } else {
     showSnackbar(realError.value || '读取失败', 'error')
