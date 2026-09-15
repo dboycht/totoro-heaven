@@ -17,28 +17,32 @@
  *         `getTermList` / `getSchoolMonthByTerm` / `getSunrunArch`
  *   写入：`getRunBegin` / `sunRunExercises` / `sunRunExercisesDetail`
  */
-import { MpApiWrapper } from '~/src/wrappers/MpApiWrapper'
+import { MpApiWrapper, MP_DEFAULT_BASE_URL } from '~/src/wrappers/MpApiWrapper'
 import type { MpRunLine, MpSunrunTask } from '~/src/mp/types'
 import { buildRunBeginRequest, buildScoreDetailRequest, buildScoreRequest, toSubmitPoints } from '~/utils/mp/submitPayload'
 import {
   VERIFIED_SCHOOLS,
   evaluateRunGate,
   findVerifiedSchool,
-  isSchoolSupported,
-  unsupportedSchoolMessage,
+  isSchoolVerified,
+  isSharedDomain,
+  nonSharedDomainMessage,
+  unverifiedSchoolNotice,
 } from '~/utils/mp/schoolGate'
 import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
 
 /**
- * 支持范围来自**已验证学校登记表**（`utils/mp/schoolGate.ts`）。
- * ⚠️ 兼容旧常量：界面仍用这两个名字展示"当前唯一已验证学校"，新增学校请改登记表而非此处。
+ * 支持范围 = **条件式**（1.1.3，2026-09-15 用户确认）：
+ *   ① 与南航共享同一个 API 域（`wxxcx.xtotoro.com`）；且
+ *   ② 该校未开启开场人脸 / 随机抽查 / 摄像头杆校验（运行时由门禁判定）。
+ * ⚠️ 兼容旧常量：仍导出"首个已验证学校"，**仅用于界面文案兜底**，不再作为放行条件。
  */
 export const SUPPORTED_SCHOOL_CODE = VERIFIED_SCHOOLS.find((s) => s.verified)?.schoolCode ?? ''
 export const SUPPORTED_SCHOOL_NAME = VERIFIED_SCHOOLS.find((s) => s.verified)?.schoolName ?? ''
 
-/** 当前账号的学校是否在已验证名单内（多校：登记表驱动，不再是单校硬编码） */
-export function isSchoolVerified(schoolCode: string | undefined | null): boolean {
-  return isSchoolSupported(schoolCode)
+/** 该校判分口径是否已被实测验证（界面软提示用；**不影响放行**） */
+export function isSchoolVerifiedCode(schoolCode: string | undefined | null): boolean {
+  return isSchoolVerified(schoolCode)
 }
 
 export interface MpRealProfile {
@@ -125,12 +129,8 @@ export function useMpReal() {
     status.value = 'loading'
     error.value = ''
 
-    // ① 多租户基址（南航是共享域，但仍按域名解析，避免硬编码）
-    const baseUrl = (await MpApiWrapper.resolveSchoolBaseUrl(SUPPORTED_SCHOOL_CODE, { token })) || undefined
-    const options = { token, baseUrl }
-
-    // ② 学生档案
-    const info = await MpApiWrapper.getStudentInfoByToken(options)
+    // ① 先拉学生档案（此刻还不知道 schoolCode，走共享域；token 自身标识身份）
+    const info = await MpApiWrapper.getStudentInfoByToken({ token })
     if (!info.ok || !info.data?.snCode) {
       status.value = 'error'
       error.value = `读取学生档案失败：${info.message}`
@@ -138,11 +138,19 @@ export function useMpReal() {
     }
     const raw = info.data as Record<string, unknown>
     const schoolCode = String(raw.schoolCode ?? '')
-    if (!isSchoolSupported(schoolCode)) {
+
+    // ② 按**真实 schoolCode** 解析该校基址（多租户），校验是否共享域（支持范围判据①）
+    const resolved = (await MpApiWrapper.resolveSchoolBaseUrl(schoolCode, { token })) || undefined
+    if (resolved && !isSharedDomain(resolved)) {
       status.value = 'error'
-      error.value = unsupportedSchoolMessage(schoolCode, String(raw.schoolName ?? ''))
+      error.value = nonSharedDomainMessage(resolved)
       return false
     }
+    const baseUrl = resolved || MP_DEFAULT_BASE_URL
+    // ⚠️ 必须写回会话：后续 getRunBegin / 提交 / 读判定都走 session.value.baseUrl
+    if (session.value) session.value = { ...session.value, baseUrl }
+    const options = { token, baseUrl }
+
     profile.value = {
       snCode: String(raw.snCode ?? ''),
       studentName: String(raw.studentName ?? ''),
@@ -439,6 +447,14 @@ export function useMpReal() {
     }),
   )
 
+  /**
+   * 未验证学校的软提示（不阻断开跑，只提醒"判分口径未实测"；已验证学校为空串）。
+   * 支持范围已改为条件式（共享域 + 无风控校验），登记表只承担这个提示职责。
+   */
+  const schoolNotice = computed(() =>
+    unverifiedSchoolNotice(profile.value?.schoolCode, profile.value?.schoolName),
+  )
+
   const profileMasked = computed(() => {
     if (!profile.value) return null
     const mask = (s: string) => (s.length <= 4 ? s[0] + '***' : `${s.slice(0, 2)}***${s.slice(-2)}`)
@@ -468,6 +484,8 @@ export function useMpReal() {
     selectedLine,
     /** 开跑前三合一否决门禁状态（allow / reason / blockedBy） */
     gateStatus,
+    /** 未验证学校的软提示（非阻断） */
+    schoolNotice,
     phase,
     phaseMessage,
     remainingSeconds,

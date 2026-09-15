@@ -1,8 +1,9 @@
 /**
- * 学校登记表 + 开跑前三合一否决门禁测试（1.1.3 新增）
+ * 学校登记表 + 开跑前三合一否决门禁测试（1.1.3 新增 / 同日改为条件式支持）
  *
  * 锁住的核心语义：
- *   - 支持范围由「已验证学校登记表」驱动，不再写死单校；
+ *   - **支持范围 = 条件式**：与南航共享同一 API 域 + 该校未开启三类风控校验 ⇒ 即可用；
+ *     **不再有学校白名单**（登记表只用于"判分口径是否实测过"的软提示）；
  *   - 门禁「宁可挡住，不可放行」：三个开关任一开启、或**未知**（未读取/线路切了没重查）都拒绝，
  *     且拒绝必须发生在创建场次（getRunBegin）之前。
  */
@@ -10,10 +11,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   VERIFIED_SCHOOLS,
+  SHARED_DOMAIN_HOST,
   evaluateRunGate,
   findVerifiedSchool,
-  isSchoolSupported,
-  unsupportedSchoolMessage,
+  isSchoolVerified,
+  isSharedDomain,
+  nonSharedDomainMessage,
+  unverifiedSchoolNotice,
   type RunGateInput,
 } from '../../utils/mp/schoolGate.ts'
 import type { MpRunLine } from '../../src/mp/types.ts'
@@ -29,38 +33,52 @@ const base = (overrides: Partial<RunGateInput> = {}): RunGateInput => ({
   ...overrides,
 })
 
-test('登记表：南航在表内且已验证', () => {
+test('登记表：南航在表内且已验证判分口径', () => {
   const s = findVerifiedSchool('98765')
   assert.ok(s)
   assert.equal(s.schoolName, '南京航空航天大学')
   assert.equal(s.verified, true)
   assert.equal(s.verifiedAt, '2026-09-14')
-  assert.equal(isSchoolSupported('98765'), true)
+  assert.equal(isSchoolVerified('98765'), true)
 })
 
-test('登记表：未登记学校不支持', () => {
+test('登记表：未登记学校 = 未验证（但仍可用，不再被拒绝）', () => {
   assert.equal(findVerifiedSchool('99999'), undefined)
-  assert.equal(isSchoolSupported('99999'), false)
-  assert.equal(isSchoolSupported(null), false)
-  assert.equal(isSchoolSupported(''), false)
+  assert.equal(isSchoolVerified('99999'), false)
+  assert.equal(isSchoolVerified(null), false)
 })
 
-test('未支持学校的提示语包含支持名单（防文案漂移）', () => {
-  const msg = unsupportedSchoolMessage('99999')
-  assert.match(msg, /不在已验证学校名单内/)
-  assert.match(msg, /南京航空航天大学/)
+test('共享域判定：同域通过；独立域/非法串不通过', () => {
+  assert.equal(isSharedDomain(`https://${SHARED_DOMAIN_HOST}`), true)
+  assert.equal(isSharedDomain(`https://${SHARED_DOMAIN_HOST}/wxxcx`), true)
+  assert.equal(isSharedDomain(`https://${SHARED_DOMAIN_HOST.toUpperCase()}`), true)
+  assert.equal(isSharedDomain('https://zhygp.just.edu.cn'), false) // 江苏科技大学专属域
+  assert.equal(isSharedDomain('https://app.xtotoro.com'), false) // 另一个域
+  assert.equal(isSharedDomain(''), false)
+  assert.equal(isSharedDomain(null), false)
 })
 
-test('门禁：全关 + 已读 → 放行', () => {
+test('非共享域提示语点明"只支持共享域"', () => {
+  const msg = nonSharedDomainMessage('https://zhygp.just.edu.cn')
+  assert.match(msg, /独立域/)
+  assert.match(msg, new RegExp(SHARED_DOMAIN_HOST.replace(/\./g, '\\.')))
+})
+
+test('未验证学校：给软提示（含已验证名单），已验证学校不给提示', () => {
+  const notice = unverifiedSchoolNotice('99999', '某某大学')
+  assert.match(notice, /不在我们实测验证过的名单内/)
+  assert.match(notice, /判分口径未经实测/)
+  assert.match(notice, /南京航空航天大学/)
+  assert.equal(unverifiedSchoolNotice('98765', '南京航空航天大学'), '')
+})
+
+test('门禁：全关 + 已读 → 放行（且不再因学校未登记而拒绝）', () => {
   const r = evaluateRunGate(base())
   assert.equal(r.allow, true)
   assert.equal(r.reason, '')
-})
-
-test('门禁：学校未登记 → 拒绝（school_unverified）', () => {
-  const r = evaluateRunGate(base({ schoolCode: '99999' }))
-  assert.equal(r.allow, false)
-  assert.equal(r.blockedBy, 'school_unverified')
+  // 关键：未登记的学校代码也能放行（支持范围改条件式）
+  const other = evaluateRunGate(base({ schoolCode: '88888' }))
+  assert.equal(other.allow, true)
 })
 
 test('门禁：开关未读取（未知≠关闭）→ 拒绝', () => {

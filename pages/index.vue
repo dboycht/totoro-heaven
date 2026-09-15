@@ -1,16 +1,19 @@
 <template>
   <div>
-    <v-alert type="warning" variant="flat" class="mb-4" density="comfortable">
+    <v-alert type="info" variant="flat" class="mb-4" density="comfortable">
       <template #prepend>
-        <v-icon>mdi-shield-alert-outline</v-icon>
+        <v-icon>mdi-shield-check-outline</v-icon>
       </template>
-      <div class="font-weight-bold">支持范围：{{ verifiedSchoolText }}</div>
+      <div class="font-weight-bold">支持范围：共享域 + 无风控校验的学校（运行时自动判定）</div>
       <div class="text-body-2">
-        真实打卡链路（读取任务 → 生成轨迹 → 真实提交）<strong>只对「已验证学校登记表」里的学校实现并实测通过</strong>。
-        其他学校 —— 尤其是会弹「服务迁移升级通知」并跳转到<strong>学校专属小程序</strong>的学校 ——
-        <strong>不在支持范围，请勿使用</strong>。非登记表内的账号读取真实数据时会被直接拒绝。<br />
+        只要同时满足两点即可使用：<br />
+        ① 学校与南航<b>共享同一个 API 域</b>（<code>wxxcx.xtotoro.com</code>）——
+        独立域/学校专属小程序的学校<b>不支持</b>（那等于另一套后端）；<br />
+        ② 该校<b>未开启</b>开场人脸 / 随机抽查 / 摄像头杆校验 ——
+        任一开启时门禁会<b>在创建场次前阻止</b>，不会留下无效记录。<br />
         <span class="text-caption">
-          新增学校 = 先按「逐校取证清单」实测该校任务约束与三个开关，再登记入库（见 <code>utils/mp/schoolGate.ts</code>）。
+          当前 {{ verifiedSchoolText }}（我们实测验证过判分口径）；其他学校可以直接用，
+          但判分口径未经验证 → 首次提交后请看「记录」页核对是否判为「有效」。
         </span>
       </div>
     </v-alert>
@@ -106,6 +109,11 @@
             </template>
             <v-alert v-else type="info" variant="tonal" density="compact">
               还没读取真实账号。填入 token 后点左侧「读取真实账号与任务」。
+            </v-alert>
+
+            <!-- 未验证学校：只提示"判分口径未实测"，不阻断（**读到档案后才显示**，否则还不知道是哪所学校） -->
+            <v-alert v-if="realProfileMasked && realSchoolNotice" type="info" variant="tonal" density="compact" class="mt-3">
+              {{ realSchoolNotice }}
             </v-alert>
 
             <v-divider class="my-3" />
@@ -220,13 +228,14 @@ const {
   loadRealData,
   restoreTaskFromCache,
   gateStatus,
+  schoolNotice: realSchoolNotice,
 } = useMpReal()
 const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
 
-/** 已验证学校名单（登记表驱动，新增学校只改登记表） */
+/** 已验证学校名单（登记表仅用于"判分口径是否实测过"的提示） */
 const verifiedSchoolText = computed(() => {
-  const list = VERIFIED_SCHOOLS.filter((s) => s.verified).map((s) => `「${s.schoolName}」（schoolCode ${s.schoolCode}）`)
-  return list.length ? `目前仅支持 ${list.join('、')}` : '目前没有已验证的学校'
+  const list = VERIFIED_SCHOOLS.filter((s) => s.verified).map((s) => `「${s.schoolName}」（${s.schoolCode}）`)
+  return list.length ? `已验证判分口径的学校：${list.join('、')}` : '目前还没有实测验证过的学校'
 })
 
 const manualToken = ref('')
