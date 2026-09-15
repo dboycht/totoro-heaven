@@ -281,6 +281,18 @@
         >
           <div class="font-weight-bold">已阻止真实提交（不会创建场次）</div>
           <div class="text-body-2">{{ gateStatus.reason }}</div>
+          <div v-if="cameraFlagError" class="text-caption mt-1">读取异常：{{ cameraFlagError }}</div>
+          <!-- 线路开关读取失败/切换线路后未重查 → 给一个显式重试入口（不必刷新页面） -->
+          <v-btn
+            v-if="gateStatus.blockedBy === 'camera_unknown'"
+            size="small"
+            variant="tonal"
+            class="mt-2"
+            prepend-icon="mdi-refresh"
+            @click="retryCameraFlag()"
+          >
+            重新读取该线路的开关
+          </v-btn>
         </v-alert>
 
         <v-alert v-if="phase === 'waiting'" type="info" variant="tonal" class="mt-2">
@@ -392,6 +404,8 @@ const {
   restoreTaskFromCache,
   persistSelectedLine,
   gateStatus,
+  cameraFlagError,
+  retryCameraFlag,
 } = useMpReal()
 const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
 

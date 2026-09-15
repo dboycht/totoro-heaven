@@ -138,6 +138,17 @@
             <v-alert v-if="!gateStatus.allow" type="error" variant="tonal" density="compact" class="mt-2">
               <div class="font-weight-bold">⛔ 开跑前门禁未通过（真实提交会被阻止，不会创建场次）</div>
               <div class="text-body-2">{{ gateStatus.reason }}</div>
+              <div v-if="cameraFlagError" class="text-caption mt-1">读取异常：{{ cameraFlagError }}</div>
+              <v-btn
+                v-if="gateStatus.blockedBy === 'camera_unknown'"
+                size="small"
+                variant="tonal"
+                class="mt-2"
+                prepend-icon="mdi-refresh"
+                @click="retryCameraFlag()"
+              >
+                重新读取该线路的开关
+              </v-btn>
             </v-alert>
             <v-alert v-else type="success" variant="tonal" density="compact" class="mt-2">
               ✅ 开跑前门禁通过：三项（开场人脸 / 随机抽查 / 摄像头杆）均无阻碍。
@@ -246,6 +257,8 @@ const {
   restoreTaskFromCache,
   gateStatus,
   schoolNotice: realSchoolNotice,
+  cameraFlagError,
+  retryCameraFlag,
 } = useMpReal()
 const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
 

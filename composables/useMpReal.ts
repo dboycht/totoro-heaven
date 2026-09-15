@@ -81,6 +81,8 @@ export function useMpReal() {
   const cameraFlag = useState<boolean | null>('mpRealCameraFlag', () => null)
   /** 上面那个 flag 对应的线路 id（避免切线路后显示旧线路的值） */
   const cameraFlagLineId = useState('mpRealCameraFlagLine', () => '')
+  /** 读取摄像头杆开关失败/异常时的原因（界面展示；空串=无异常） */
+  const cameraFlagError = useState('mpRealCameraFlagErr', () => '')
 
   const phase = useState<RealPhase>('mpRealPhase', () => 'idle')
   const phaseMessage = useState('mpRealPhaseMessage', () => '')
@@ -176,8 +178,11 @@ export function useMpReal() {
     // ④ 顺带把「一票否决项」也读出来（只读，30 秒内出结果）：人脸 / 抽查开关 + 摄像头杆
     const cfg = await MpApiWrapper.getSunRunStartConfiguration(profile.value.snCode, options)
     switches.value = cfg.ok ? ((cfg.data as Record<string, string>) ?? null) : null
-    const firstLine = (task.value.runPointList ?? [])[0]
-    if (firstLine?.pointId) await refreshCameraFlag(firstLine.pointId)
+
+    // 先定好"本次选中哪条线路"（缓存 → 校区名 → 坐标分组默认），再查**该线路**的摄像头杆开关。
+    // ⚠️ 顺序很重要：摄像头杆是按线路下发的；早先这里查的是 runPointList[0]，
+    //    而 applyToRunner 之后选中的可能是**另一条**（如与本人校区同名的），导致门禁拿不到当前线路的值。
+    applyToRunner()
 
     if (import.meta.client) {
       try {
@@ -189,7 +194,9 @@ export function useMpReal() {
         /* 忽略配额错误 */
       }
     }
-    applyToRunner()
+
+    const selectedId = String(run.value.lineId || (task.value.runPointList ?? [])[0]?.pointId || '')
+    if (selectedId) await refreshCameraFlag(selectedId, true)
     return true
   }
 
@@ -403,19 +410,40 @@ export function useMpReal() {
     return mine
   }
 
-  /** 查询某条线路的摄像头杆开关（只读；换线路时由 watch 自动跟随） */
-  async function refreshCameraFlag(lineId?: string): Promise<void> {
+  /**
+   * 查询某条线路的摄像头杆开关（只读；换线路时由 watch 自动跟随）。
+   *
+   * ⚠️ 2026-09-15 修 bug：**只有请求成功才记 `cameraFlagLineId`**。
+   *    原实现在请求失败时也把该线路标记为"已查询"，而本函数开头又用
+   *    `id === cameraFlagLineId.value` 做去重 → **一次失败就永久不再重试**，
+   *    门禁会一直显示"摄像头杆尚未读取"，必须刷新页面才能恢复。
+   * @param force 忽略去重、强制重查（界面"重新读取"按钮用）
+   */
+  async function refreshCameraFlag(lineId?: string, force = false): Promise<void> {
     const id = lineId || (task.value?.runPointList?.[0]?.pointId ?? '')
-    if (!id || !session.value?.token || id === cameraFlagLineId.value) return
+    if (!id || !session.value?.token) return
+    if (!force && id === cameraFlagLineId.value) return
     const cam = await MpApiWrapper.call<Record<string, unknown>>(
       'cameraConfig',
       { lineId: id, token: session.value.token },
       { token: session.value.token, baseUrl: session.value.baseUrl },
     )
+    if (!cam.ok) {
+      // 失败：保持"未知"（门禁继续拦），但**不记 lineId**，以便下次重试
+      cameraFlag.value = null
+      cameraFlagLineId.value = ''
+      cameraFlagError.value = `读取该线路的摄像头杆开关失败：${cam.message}`
+      return
+    }
     const flag = (cam.data as Record<string, unknown> | undefined)?.flag
     cameraFlag.value = typeof flag === 'boolean' ? flag : null
     cameraFlagLineId.value = id
+    cameraFlagError.value =
+      typeof flag === 'boolean' ? '' : `该线路的 getCameraConfig 未返回布尔 flag（实际 ${JSON.stringify(flag)}），按"未知"处理`
   }
+
+  /** 界面按钮用：强制重查「当前选中线路」的摄像头杆开关（失败不再永久卡住） */
+  const retryCameraFlag = (): Promise<void> => refreshCameraFlag(String(run.value.lineId || ''), true)
 
   // ⚠️ 摄像头杆是**按线路**下发的：选中线路变化时自动重新查询（不再显示"第一条线路"的值）
   watch(
@@ -479,6 +507,8 @@ export function useMpReal() {
     loadedAt,
     switches,
     cameraFlag,
+    /** 摄像头杆开关读取失败的原因（空串=正常） */
+    cameraFlagError,
     selectedLine,
     /** 开跑前三合一否决门禁状态（allow / reason / blockedBy） */
     gateStatus,
@@ -497,6 +527,7 @@ export function useMpReal() {
     submitRealRun,
     fetchVerdict,
     refreshCameraFlag,
+    retryCameraFlag,
     stopWait,
   }
 }
