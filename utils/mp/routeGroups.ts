@@ -197,8 +197,12 @@ export function groupRoutesByCampus(
         }
       })
       const isHome = i === homeRawIndex
+      // ⚠️ 措辞必须区分"确认"与"推断"：档案没加载（如刷新后只有缓存任务）时无法知道本校区，
+      //    此时把线路最多的簇叫"本校区"是误导 → 明确写成"推断"。
       const label = isHome
-        ? `本校区${campusName ? `（${campusName}）` : ''} · ${routes.length} 条`
+        ? inferred
+          ? `线路最多的一组（推断为本校区） · ${routes.length} 条`
+          : `本校区${campusName ? `（${campusName}）` : ''} · ${routes.length} 条`
         : `其他校区（约 ${kmText(distanceFromHomeM)}） · ${routes.length} 条`
       return { index: i, kind: (isHome ? 'home' : 'other') as RouteCampusKind, count: routes.length, centroid: c.centroid, distanceFromHomeM, label, routes }
     })

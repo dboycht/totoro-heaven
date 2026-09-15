@@ -173,7 +173,23 @@
                 prepend-icon="mdi-timer-outline"
               />
               <v-list-item title="有效期" :subtitle="activeTask ? formatTaskPeriod(activeTask) : '—'" prepend-icon="mdi-calendar-range" />
-              <v-list-item title="线路" :subtitle="lineNames" prepend-icon="mdi-map-outline" />
+              <!-- 线路：按坐标校区分组展示（本校区在前；跨校区标距离），避免"名称看不出是哪个校区" -->
+              <template v-if="routeGroups.clusters.length">
+                <v-list-item
+                  v-for="c in routeGroups.clusters"
+                  :key="c.index"
+                  :title="c.label"
+                  :subtitle="c.routes.map((r) => r.line.pointName).join('、')"
+                  :prepend-icon="c.kind === 'home' ? 'mdi-map-marker-check-outline' : 'mdi-map-marker-distance'"
+                />
+                <v-list-item
+                  v-if="routeGroups.inferred"
+                  title="分组提示"
+                  :subtitle="routeGroups.note"
+                  prepend-icon="mdi-alert-circle-outline"
+                />
+              </template>
+              <v-list-item v-else title="线路" :subtitle="lineNames" prepend-icon="mdi-map-outline" />
             </v-list>
             <v-alert v-if="!usingRealTask" type="warning" variant="tonal" density="compact" class="mt-2">
               当前是<b>演示取值</b>。点「读取真实账号与任务」换成真实约束（自动识别学校）。
@@ -214,6 +230,7 @@
 <script setup lang="ts">
 import { formatTaskPeriod } from '~/utils/mp/taskRules'
 import { VERIFIED_SCHOOLS } from '~/utils/mp/schoolGate'
+import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
 import { DEMO_SESSION } from '~/src/mp/demo'
 
 const { isLoggedIn, task, session, logout, setTask, setLines, demoMode, enableDemo } = useMpDemo()
@@ -245,6 +262,11 @@ const isRealSession = computed(() => Boolean(session.value?.token) && !session.v
 const usingRealTask = computed(() => Boolean(realTask.value))
 const activeTask = computed(() => realTask.value ?? task.value)
 const lineNames = computed(() => (activeTask.value?.runPointList ?? []).map((line) => line.pointName).join('、') || '—')
+
+/** 线路按校区分组（与跑步页同一套纯函数；用本人校区名识别本校区簇） */
+const routeGroups = computed(() =>
+  groupRoutesByCampus(activeTask.value?.runPointList ?? [], realProfileMasked.value?.campusName),
+)
 
 const switchText = (value: string | undefined, on: string, off: string) =>
   value === undefined ? '未读取' : value === '1' ? on : off

@@ -48,11 +48,20 @@ test('跨校区距离标注：其他簇与本校区距离 ≥ 10km（坐标判�
   assert.ok(maxAway >= 90000, `最远簇 ${maxAway}m 应 ≥ 90km`)
 })
 
-test('无校区名匹配时：取线路最多的簇为 home 并置 inferred', () => {
+test('无校区名匹配时：取线路最多的簇为 home 并置 inferred，且标签明确写"推断"', () => {
   const g = groupRoutesByCampus(REAL_LINES, '未知校区名')
   assert.equal(g.inferred, true)
   assert.equal(g.homeCluster!.count, 4) // A 簇 4 条最多
   assert.ok(g.note.includes('推断'))
+  // 关键：**推断**时不许自称"本校区"（否则刷新后误导用户）
+  assert.ok(g.homeCluster!.label.includes('推断'), `home 标签：${g.homeCluster!.label}`)
+  assert.ok(!g.homeCluster!.label.startsWith('本校区'), `不得写成本校区：${g.homeCluster!.label}`)
+})
+
+test('有校区名匹配时：标签直接写"本校区（校区名）"', () => {
+  const g = groupRoutesByCampus(REAL_LINES, '天目湖')
+  assert.equal(g.inferred, false)
+  assert.ok(g.homeCluster!.label.startsWith('本校区（天目湖）'), `home 标签：${g.homeCluster!.label}`)
 })
 
 test('无坐标线路被剔除；全空返回空结果', () => {
