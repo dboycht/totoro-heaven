@@ -4,11 +4,14 @@
       <template #prepend>
         <v-icon>mdi-shield-alert-outline</v-icon>
       </template>
-      <div class="font-weight-bold">支持范围：目前仅支持「南京航空航天大学」（schoolCode 98765）</div>
+      <div class="font-weight-bold">支持范围：{{ verifiedSchoolText }}</div>
       <div class="text-body-2">
-        真实打卡链路（读取任务 → 生成轨迹 → 真实提交）<strong>只为南航实现并实测通过</strong>。
+        真实打卡链路（读取任务 → 生成轨迹 → 真实提交）<strong>只对「已验证学校登记表」里的学校实现并实测通过</strong>。
         其他学校 —— 尤其是会弹「服务迁移升级通知」并跳转到<strong>学校专属小程序</strong>的学校 ——
-        <strong>不在支持范围，请勿使用</strong>。非南航账号读取真实数据时会被直接拒绝。
+        <strong>不在支持范围，请勿使用</strong>。非登记表内的账号读取真实数据时会被直接拒绝。<br />
+        <span class="text-caption">
+          新增学校 = 先按「逐校取证清单」实测该校任务约束与三个开关，再登记入库（见 <code>utils/mp/schoolGate.ts</code>）。
+        </span>
       </div>
     </v-alert>
 
@@ -123,8 +126,12 @@
                 prepend-icon="mdi-video-outline"
               />
             </v-list>
-            <v-alert v-if="realSwitches?.sunrunStartFace === '1' || realSwitches?.sunrunPointRandom === '1'" type="warning" variant="tonal" density="compact" class="mt-2">
-              学校开启了人脸校验：随机抽查无法本地完成，必须真人配合；请谨慎使用。
+            <v-alert v-if="!gateStatus.allow" type="error" variant="tonal" density="compact" class="mt-2">
+              <div class="font-weight-bold">⛔ 开跑前门禁未通过（真实提交会被阻止，不会创建场次）</div>
+              <div class="text-body-2">{{ gateStatus.reason }}</div>
+            </v-alert>
+            <v-alert v-else type="success" variant="tonal" density="compact" class="mt-2">
+              ✅ 开跑前门禁通过：三项（开场人脸 / 随机抽查 / 摄像头杆）均无阻碍。
             </v-alert>
           </v-card-text>
         </v-card>
@@ -197,6 +204,7 @@
 
 <script setup lang="ts">
 import { formatTaskPeriod } from '~/utils/mp/taskRules'
+import { VERIFIED_SCHOOLS } from '~/utils/mp/schoolGate'
 import { DEMO_SESSION } from '~/src/mp/demo'
 
 const { isLoggedIn, task, records, session, login, logout, setTask, setLines } = useMpDemo()
@@ -210,8 +218,15 @@ const {
   cameraFlag,
   loadRealData,
   restoreTaskFromCache,
+  gateStatus,
 } = useMpReal()
 const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
+
+/** 已验证学校名单（登记表驱动，新增学校只改登记表） */
+const verifiedSchoolText = computed(() => {
+  const list = VERIFIED_SCHOOLS.filter((s) => s.verified).map((s) => `「${s.schoolName}」（schoolCode ${s.schoolCode}）`)
+  return list.length ? `目前仅支持 ${list.join('、')}` : '目前没有已验证的学校'
+})
 
 const manualToken = ref('')
 

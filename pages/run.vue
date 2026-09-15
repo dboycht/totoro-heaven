@@ -225,17 +225,17 @@
           步数提交值 <code>"{{ run.result.stepsSubmitted }}"</code>（照实测真包口径）。
         </div>
 
-        <!-- ===== 真实提交（仅南航；真实模式） ===== -->
+        <!-- ===== 真实提交（真实模式） ===== -->
         <v-divider class="my-3" />
         <div class="d-flex align-center flex-wrap ga-2 mb-2">
           <v-btn
             color="error"
             variant="flat"
             prepend-icon="mdi-cloud-upload-outline"
-            :disabled="mode !== 'real' || !realReady || run.status !== 'finished' || phase === 'waiting' || phase === 'submitting'"
+            :disabled="mode !== 'real' || !realReady || run.status !== 'finished' || phase === 'waiting' || phase === 'submitting' || !gateStatus.allow"
             @click="confirmOpen = true"
           >
-            真实提交（南航）
+            真实提交
           </v-btn>
           <v-btn
             v-if="result?.scantronId"
@@ -254,6 +254,17 @@
         </v-alert>
         <v-alert v-else-if="!realReady" type="warning" variant="tonal" density="compact">
           真实模式未就绪：先在工作台读取真实账号与任务。
+        </v-alert>
+        <!-- ⛔ 开跑前门禁：三个否决项任一开启（或状态未知）→ 从源头阻止创建场次 -->
+        <v-alert
+          v-else-if="!gateStatus.allow"
+          type="error"
+          variant="tonal"
+          density="compact"
+          class="mt-2"
+        >
+          <div class="font-weight-bold">已阻止真实提交（不会创建场次）</div>
+          <div class="text-body-2">{{ gateStatus.reason }}</div>
         </v-alert>
 
         <v-alert v-if="phase === 'waiting'" type="info" variant="tonal" class="mt-2">
@@ -313,7 +324,7 @@
         </v-card-title>
         <v-card-text>
           <v-alert type="warning" variant="tonal" density="compact" class="mb-3">
-            这会在你的账号上**真实生成一条成绩**（会计入本学期的跑步次数）。请确认下列数值无误。
+            这会在你的账号上<b>真实生成一条成绩</b>（会计入本学期的跑步次数）。请确认下列数值无误。
           </v-alert>
           <v-list density="compact">
             <v-list-item title="线路" :subtitle="selectedLineName" prepend-icon="mdi-map-marker-path" />
@@ -321,6 +332,11 @@
             <v-list-item title="时长 / 配速" :subtitle="`${formatDuration(run.result?.durationSeconds ?? 0)} · ${formatPace(Math.round((run.result?.durationSeconds ?? 1) / Math.max(0.01, run.result?.km ?? 1)))}/km`" prepend-icon="mdi-timer-outline" />
             <v-list-item title="拟合度" :subtitle="`${run.result?.fitDegree.toFixed(2)}（阈值 ${activeTask.fitDegree}）`" prepend-icon="mdi-chart-bell-curve" />
             <v-list-item title="自检" :subtitle="run.result?.check.pass ? '硬性项全部通过' : '存在不通过项，建议先修正'" prepend-icon="mdi-clipboard-check-outline" />
+            <v-list-item
+              title="开跑前门禁（人脸 / 抽查 / 摄像头杆）"
+              :subtitle="gateStatus.allow ? '三项均关闭或无阻碍，可开跑' : gateStatus.reason"
+              prepend-icon="mdi-shield-check-outline"
+            />
             <v-list-item
               title="提交前需真实等待"
               :subtitle="`${formatDuration(run.result?.durationSeconds ?? 0)}（保证时间线一致）`"
@@ -358,6 +374,7 @@ const {
   submitRealRun,
   fetchVerdict,
   restoreTaskFromCache,
+  gateStatus,
 } = useMpReal()
 const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
 
@@ -439,9 +456,14 @@ onMounted(() => {
   applyToRunner()
 })
 
-/** 真实提交：确认后走 useMpReal 的完整流程（开跑 → 真实等待 → 提交 → 读判定） */
+/** 真实提交：确认后走 useMpReal 的完整流程（门禁 → 开跑 → 真实等待 → 提交 → 读判定） */
 const doRealSubmit = async () => {
   confirmOpen.value = false
+  // 门禁失守直接返回（不调 getRunBegin，避免创建场次后才发现被拦）
+  if (!gateStatus.value.allow) {
+    showSnackbar(gateStatus.value.reason || '当前不允许真实提交', 'error')
+    return
+  }
   const r = run.value.result
   const line = (mode.value === 'real' ? realLines.value : lines.value).find((l) => l.pointId === run.value.lineId)
   if (!r || !line) {

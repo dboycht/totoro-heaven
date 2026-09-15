@@ -20,10 +20,25 @@
 import { MpApiWrapper } from '~/src/wrappers/MpApiWrapper'
 import type { MpRunLine, MpSunrunTask } from '~/src/mp/types'
 import { buildRunBeginRequest, buildScoreDetailRequest, buildScoreRequest, toSubmitPoints } from '~/utils/mp/submitPayload'
+import {
+  VERIFIED_SCHOOLS,
+  evaluateRunGate,
+  findVerifiedSchool,
+  isSchoolSupported,
+  unsupportedSchoolMessage,
+} from '~/utils/mp/schoolGate'
 
-/** 当前唯一支持的学校：南京航空航天大学 */
-export const SUPPORTED_SCHOOL_CODE = '98765'
-export const SUPPORTED_SCHOOL_NAME = '南京航空航天大学'
+/**
+ * 支持范围来自**已验证学校登记表**（`utils/mp/schoolGate.ts`）。
+ * ⚠️ 兼容旧常量：界面仍用这两个名字展示"当前唯一已验证学校"，新增学校请改登记表而非此处。
+ */
+export const SUPPORTED_SCHOOL_CODE = VERIFIED_SCHOOLS.find((s) => s.verified)?.schoolCode ?? ''
+export const SUPPORTED_SCHOOL_NAME = VERIFIED_SCHOOLS.find((s) => s.verified)?.schoolName ?? ''
+
+/** 当前账号的学校是否在已验证名单内（多校：登记表驱动，不再是单校硬编码） */
+export function isSchoolVerified(schoolCode: string | undefined | null): boolean {
+  return isSchoolSupported(schoolCode)
+}
 
 export interface MpRealProfile {
   snCode: string
@@ -115,16 +130,16 @@ export function useMpReal() {
     }
     const raw = info.data as Record<string, unknown>
     const schoolCode = String(raw.schoolCode ?? '')
-    if (schoolCode !== SUPPORTED_SCHOOL_CODE) {
+    if (!isSchoolSupported(schoolCode)) {
       status.value = 'error'
-      error.value = `目前仅支持${SUPPORTED_SCHOOL_NAME}（${SUPPORTED_SCHOOL_CODE}），你的学校是 ${schoolCode || '未知'} —— 本项目暂不支持`
+      error.value = unsupportedSchoolMessage(schoolCode, String(raw.schoolName ?? ''))
       return false
     }
     profile.value = {
       snCode: String(raw.snCode ?? ''),
       studentName: String(raw.studentName ?? ''),
       schoolCode,
-      schoolName: String(raw.schoolName ?? SUPPORTED_SCHOOL_NAME),
+      schoolName: String(raw.schoolName ?? findVerifiedSchool(schoolCode)?.schoolName ?? ''),
       campusId: String(raw.schoolCampusCode ?? ''),
       campusName: String(raw.schoolCampusName ?? raw.schoolCampusCode ?? ''),
       className: String(raw.className ?? ''),
@@ -191,6 +206,9 @@ export function useMpReal() {
   /**
    * 真实提交一次成绩。
    * @param input points/km/fitDegree 来自跑步页生成的真实轨迹；plannedSeconds = 报备时长（= 模拟跑完的时长）
+   *
+   * ⚠️ **第一件事是过三合一否决门禁**（`utils/mp/schoolGate.ts`）：学校登记表 + 开场人脸 + 随机抽查 + 摄像头杆。
+   *    任一不通过都**不会调用 `getRunBegin`**（即不创建场次、不留脏数据）。
    */
   async function submitRealRun(input: {
     line: MpRunLine
@@ -205,6 +223,21 @@ export function useMpReal() {
       phaseMessage.value = '缺少真实会话/档案/任务，请先在工作台读取真实数据'
       return null
     }
+
+    // ⓪ 三合一否决门禁（必须在任何写操作之前）
+    const gate = evaluateRunGate({
+      schoolCode: profile.value.schoolCode,
+      switches: switches.value,
+      line: input.line,
+      cameraFlag: cameraFlag.value,
+      cameraFlagLineId: cameraFlagLineId.value,
+    })
+    if (!gate.allow) {
+      phase.value = 'error'
+      phaseMessage.value = `已停止（未创建场次）：${gate.reason}`
+      return null
+    }
+
     const options = { token, baseUrl: session.value?.baseUrl }
 
     // ① 开跑：getRunBegin（写）
@@ -348,6 +381,26 @@ export function useMpReal() {
     },
   )
 
+  /** 当前选中线路对象（门禁需要它的 pointId） */
+  const selectedLine = computed<MpRunLine | undefined>(() =>
+    (task.value?.runPointList ?? []).find((l) => String(l.pointId) === String(run.value.lineId)) ??
+    (task.value?.runPointList ?? [])[0],
+  )
+
+  /**
+   * 开跑前门禁的实时状态（**界面用它禁用「真实提交」按钮并说明原因**）。
+   * 与 `submitRealRun` 内那道门禁调用同一个纯函数，保证"按钮说能点"与"点了真能提交"一致。
+   */
+  const gateStatus = computed(() =>
+    evaluateRunGate({
+      schoolCode: profile.value?.schoolCode,
+      switches: switches.value,
+      line: selectedLine.value,
+      cameraFlag: cameraFlag.value,
+      cameraFlagLineId: cameraFlagLineId.value,
+    }),
+  )
+
   const profileMasked = computed(() => {
     if (!profile.value) return null
     const mask = (s: string) => (s.length <= 4 ? s[0] + '***' : `${s.slice(0, 2)}***${s.slice(-2)}`)
@@ -374,6 +427,9 @@ export function useMpReal() {
     loadedAt,
     switches,
     cameraFlag,
+    selectedLine,
+    /** 开跑前三合一否决门禁状态（allow / reason / blockedBy） */
+    gateStatus,
     phase,
     phaseMessage,
     remainingSeconds,
