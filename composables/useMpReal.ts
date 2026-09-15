@@ -21,10 +21,8 @@ import { MpApiWrapper, MP_DEFAULT_BASE_URL } from '~/src/wrappers/MpApiWrapper'
 import type { MpRunLine, MpSunrunTask } from '~/src/mp/types'
 import { buildRunBeginRequest, buildScoreDetailRequest, buildScoreRequest, toSubmitPoints } from '~/utils/mp/submitPayload'
 import {
-  VERIFIED_SCHOOLS,
   evaluateRunGate,
   findVerifiedSchool,
-  isSchoolVerified,
   isSharedDomain,
   nonSharedDomainMessage,
   unverifiedSchoolNotice,
@@ -35,15 +33,8 @@ import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
  * 支持范围 = **条件式**（1.1.3，2026-09-15 用户确认）：
  *   ① 与南航共享同一个 API 域（`wxxcx.xtotoro.com`）；且
  *   ② 该校未开启开场人脸 / 随机抽查 / 摄像头杆校验（运行时由门禁判定）。
- * ⚠️ 兼容旧常量：仍导出"首个已验证学校"，**仅用于界面文案兜底**，不再作为放行条件。
+ * 学校是否"判分口径已被实测验证"只作**软提示**（`schoolNotice`），不影响放行。
  */
-export const SUPPORTED_SCHOOL_CODE = VERIFIED_SCHOOLS.find((s) => s.verified)?.schoolCode ?? ''
-export const SUPPORTED_SCHOOL_NAME = VERIFIED_SCHOOLS.find((s) => s.verified)?.schoolName ?? ''
-
-/** 该校判分口径是否已被实测验证（界面软提示用；**不影响放行**） */
-export function isSchoolVerifiedCode(schoolCode: string | undefined | null): boolean {
-  return isSchoolVerified(schoolCode)
-}
 
 export interface MpRealProfile {
   snCode: string
@@ -96,11 +87,18 @@ export function useMpReal() {
   const remainingSeconds = useState('mpRealRemaining', () => 0)
   const result = useState<RealSubmitResult | null>('mpRealResult', () => null)
 
-  /** 把真实任务/线路注入到跑步页（跑步引擎照旧跑，但按真实约束与真实线路） */
+  /**
+   * 把**真实**任务/线路注入到跑步页（跑步引擎照旧跑，但按真实约束与真实线路）。
+   *
+   * ⚠️ 语义边界（2026-09-15 修 bug）：**没有真实任务时本函数必须什么都不做**。
+   *    它在跑步页 `onMounted` 也会被调用；若在这里无条件 `disableDemo()`，
+   *    用户"在工作台载入演示数据 → 进跑步页"时演示模式会被误关（数据还在、但标识/步长口径全变），
+   *    所以 `disableDemo()` 只在**确实要应用真实数据**时执行。
+   */
   const applyToRunner = () => {
-    // 1.1.3：进入真实数据即退出演示（演示是"按需功能"，不再与真实并列）
+    if (!task.value) return
     disableDemo()
-    if (task.value) setTask(task.value)
+    setTask(task.value)
     const list = (task.value?.runPointList ?? []) as MpRunLine[]
     if (!list.length) return
     setLines(list)

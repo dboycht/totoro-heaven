@@ -20,13 +20,12 @@ import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import { buildRunStats, buildTimeFields } from '~/utils/mp/runData'
 import { evaluateRunAgainstTask, type TaskCheckResult } from '~/utils/mp/taskRules'
 import { newRunSeed, planRealisticRun, type RunPlan } from '~/utils/mp/realism'
-import { toSubmitRunType, type MpRunLine, type MpRunRecord, type MpScoreDetailRequest, type MpScoreRequest, type MpSunrunTask, type MpUserInfo } from '~/src/mp/types'
+import { toSubmitRunType, type MpRunLine, type MpRunRecord, type MpScoreDetailRequest, type MpScoreRequest, type MpSunrunTask } from '~/src/mp/types'
 import {
   DEMO_ARCH_SUMMARY,
   DEMO_CLIENT,
   DEMO_LINES,
   DEMO_PASS_POINTS,
-  DEMO_SESSION,
   DEMO_SWITCHES,
   DEMO_TASK,
   DEMO_TERM,
@@ -114,7 +113,7 @@ let timer: ReturnType<typeof setInterval> | null = null
 let lastFitAt = 0
 
 export function useMpDemo() {
-  const { session, setSession, clearSession, isLoggedIn } = useMpSession()
+  const { session, clearSession, isLoggedIn } = useMpSession()
 
   /**
    * 演示模式开关：**默认关**（1.1.3+）。
@@ -180,15 +179,6 @@ export function useMpDemo() {
         /* 忽略配额错误 */
       }
     }
-  }
-
-  /** 演示登录：写入假会话（真实登录走 token 录入 / 微信 code 换 token） */
-  const login = (overrides: Partial<MpUserInfo> = {}) => {
-    setSession({
-      token: DEMO_SESSION.token,
-      baseUrl: DEMO_SESSION.baseUrl,
-      userInfo: { ...DEMO_SESSION.userInfo, ...overrides },
-    })
   }
 
   const logout = () => {
@@ -485,7 +475,6 @@ export function useMpDemo() {
     progress,
     paceText,
     // 动作
-    login,
     logout,
     enableDemo,
     disableDemo,

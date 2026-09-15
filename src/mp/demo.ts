@@ -14,10 +14,9 @@
  * | 3 | `DEMO_TASK` | `MpApiWrapper.getSunrunPaper({stuNumber, campusId, token})` → `getSunrunPaperResponseList[0]` |
  * | 4 | `DEMO_LINES[].pointList` | `getSunrunPaper` 的 `runPointList[].pointList`（官方路线点列） |
  * | 5 | `DEMO_SWITCHES` | `selectSunRunStartConfiguration` 的 `body`（人脸 / 抽查开关） |
- * | 6 | `DEMO_RECORDS` | `getSunrunArch` 的顶层 `data[]` + 汇总字段 |
- * | 7 | 跑步页的「模拟倍速」 | 真实跑步时去掉（改为真实 GPS / 计时） |
+ * | 6 | 跑步页的「模拟倍速」 | 真实跑步时去掉（改为真实 GPS / 计时） |
  */
-import { MP_HOST, type MpRunRecord, type MpRunLine, type MpSunrunTask } from './types'
+import { MP_HOST, type MpRunLine, type MpSunrunTask } from './types'
 
 /** 【演示】会话：假 token + 共享域基址 */
 export const DEMO_SESSION = {
@@ -32,18 +31,6 @@ export const DEMO_SESSION = {
     schoolCampusName: '演示校区',
   },
 }
-
-/** 【演示】学校清单（真实清单是公开信息，这里只留 3 所示意） */
-export const DEMO_SCHOOLS = [
-  { schoolCode: '98765', schoolName: '南京航空航天大学', domainUrl: 'https://wxxcx.xtotoro.com', supported: true },
-  { schoolCode: '13905', schoolName: '浦江学院', domainUrl: 'https://wxxcx.xtotoro.com', supported: true },
-  {
-    schoolCode: '10289',
-    schoolName: '江苏科技大学（有专属小程序）',
-    domainUrl: 'https://zhygp.just.edu.cn',
-    supported: false,
-  },
-]
 
 /** 【演示】人脸 / 抽查开关（真实值 2026-09-11 实测为 "0"/"0"，9-14 需复验） */
 export const DEMO_SWITCHES = {
@@ -143,79 +130,6 @@ export const DEMO_TASK: MpSunrunTask = {
   faceFlag: '0',
   ifHasRun: '0',
 }
-
-/**
- * 【演示】历史成绩（`getSunrunArch` 的 `data[]` 形态；含无效/有效/申诉有效各一条）。
- * 注意 `startTmie` / `endTmie` 是**服务端的拼写错误**，逐字保留。
- */
-export const DEMO_RECORDS: MpRunRecord[] = [
-  {
-    scoreId: 'demo_score_005',
-    paperId: 'demo_task_2026F',
-    runTime: '2026-09-12',
-    startTmie: '17:55:40',
-    endTmie: '18:16:05',
-    scorePassType: 1,
-    mileage: '3.02',
-    usedTime: '00:20:25',
-    trajectorySimilary: '0.94',
-    runType: 0,
-    flag: 2,
-  },
-  {
-    scoreId: 'demo_score_004',
-    paperId: 'demo_task_2026F',
-    runTime: '2026-09-11',
-    startTmie: '19:22:10',
-    endTmie: '19:44:02',
-    scorePassType: 2,
-    mileage: '3.10',
-    usedTime: '00:21:52',
-    trajectorySimilary: '0.96',
-    runType: 0,
-    flag: 2,
-  },
-  {
-    scoreId: 'demo_score_003',
-    paperId: 'demo_task_2026F',
-    runTime: '2026-09-10',
-    startTmie: '07:02:33',
-    endTmie: '07:05:10',
-    scorePassType: 0,
-    scorePassRemark: '里程未达标（0.62 / 3.00）',
-    mileage: '0.62',
-    usedTime: '00:02:37',
-    trajectorySimilary: '0.42',
-    runType: 0,
-    flag: 2,
-  },
-  {
-    scoreId: 'demo_score_002',
-    paperId: 'demo_task_2026F',
-    runTime: '2026-09-09',
-    startTmie: '18:10:05',
-    endTmie: '18:29:47',
-    scorePassType: 1,
-    mileage: '3.05',
-    usedTime: '00:19:42',
-    trajectorySimilary: '0.95',
-    runType: 0,
-    flag: 2,
-  },
-  {
-    scoreId: 'demo_score_001',
-    paperId: 'demo_task_2026F',
-    runTime: '2026-09-08',
-    startTmie: '06:41:12',
-    endTmie: '07:03:30',
-    scorePassType: 1,
-    mileage: '3.21',
-    usedTime: '00:22:18',
-    trajectorySimilary: '0.97',
-    runType: 0,
-    flag: 2,
-  },
-]
 
 /** 【演示】成绩页汇总（真实值来自 `getSunrunArch` 的顶层汇总字段） */
 export const DEMO_ARCH_SUMMARY = {

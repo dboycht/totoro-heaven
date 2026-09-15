@@ -24,7 +24,6 @@ import {
   type MpSchool,
   type MpScoreDetailRequest,
   type MpScoreRequest,
-  type MpSession,
 } from '../mp/types'
 import { buildBearerValue, judgeMpResponse, unwrapMpResponse, type MpVerdict } from '../mp/envelope'
 
@@ -106,12 +105,6 @@ async function rawRequest(
     return { error: err instanceof Error ? err.message : '请求失败' }
   }
 }
-
-/** 便捷：从会话取 token / baseUrl 发起请求 */
-export const mpFetchWithSession = <T>(
-  session: MpSession | null | undefined,
-  fn: (options: MpRequestOptions) => Promise<T>,
-): Promise<T> => fn({ token: session?.token, baseUrl: session?.baseUrl })
 
 // ---------- 多租户基址解析（免鉴权，可在拿到 token 之前调用） ----------
 
@@ -307,12 +300,6 @@ export const MpApiWrapper = {
   async submitPhoneCheck(body: { faceBase64: string; scantronId: string }, options: MpRequestOptions = {}) {
     return this.call('submitshoujidaka', body, options)
   },
-}
-
-/** 便捷：拼接手机信息（源码是 `brand&model&system`；实测真包为纯品牌串——`||` 优先级 bug）。
- *  这里按**正确三段式**发送：另 3 条补传路径即如此，服务端应期望三段式。 */
-export function buildPhoneInfo(brand: string, model: string, system: string): string {
-  return [brand, model, system].filter(Boolean).join('&')
 }
 
 /** 便捷：默认共享域基址（`header.bizCode == -199` 时可用于回落重登） */

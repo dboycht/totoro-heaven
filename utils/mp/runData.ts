@@ -154,10 +154,7 @@ export function buildTimeFields(startMs: number, endMs: number): TimeFields {
     const d = new Date(ms)
     return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
   }
-  const iso = (ms: number) => {
-    const d = new Date(ms)
-    return `${fmtDate(ms)}T${fmtTime(ms)}`
-  }
+  const iso = (ms: number) => `${fmtDate(ms)}T${fmtTime(ms)}`
   return {
     evaluateDate: fmtDate(startMs),
     startTime: fmtTime(startMs),

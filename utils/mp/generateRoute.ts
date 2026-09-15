@@ -166,11 +166,6 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
       arc: p,
     }
   }
-  const pointAt = (position: number) => {
-    const { lat, lng } = locate(position)
-    return { latitude: lat, longitude: lng }
-  }
-
   const maxPosition = loop ? targetM * 3 : Math.min(targetM, pathTotal)
 
   // 时间相关抖动（OU/AR(1) 过程）：

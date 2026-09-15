@@ -84,13 +84,10 @@ export function isSchoolVerified(schoolCode: string | undefined | null): boolean
 }
 
 /**
- * 支持范围说明（统一文案，界面与提示共用）——
- * 支持条件 = ① 与南航共享同一个 API 域 + ② 该校未开启人脸/抽查/摄像头校验。
+ * 未验证学校的软披露（不阻断，只提示"判分口径未实测"；已验证或已登记返回空串）。
+ * ℹ️ 支持范围本身是**条件式**的（共享域 + 无三类风控校验，见 `isSharedDomain` 与 `evaluateRunGate`），
+ *    本函数只负责"这所学校的判分口径我们实测过没有"这一条**非阻断**提示。
  */
-export const SUPPORT_SCOPE_TEXT =
-  '支持范围：与南航**共享同一个 API 域**、且**未开启**开场人脸 / 随机抽查 / 摄像头杆校验的学校（运行时自动判定，不需要白名单）'
-
-/** 未验证学校的软披露（不阻断，只提示"判分口径未实测"；已验证或已登记返回空串） */
 export function unverifiedSchoolNotice(schoolCode: string | undefined | null, schoolName?: string): string {
   const code = String(schoolCode ?? '').trim()
   const registered = findVerifiedSchool(code)
