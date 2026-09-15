@@ -58,12 +58,47 @@
               >
                 读取真实账号与任务
               </v-btn>
+              <v-btn
+                color="success"
+                prepend-icon="mdi-radar"
+                :loading="tokenScanState.running"
+                @click="doTokenScan"
+              >
+                一键获取 token
+              </v-btn>
               <v-btn variant="text" prepend-icon="mdi-flask-outline" @click="doEnableDemo">载入演示数据（试界面）</v-btn>
               <v-btn v-if="isLoggedIn" variant="text" prepend-icon="mdi-logout" @click="doLogout">清除会话</v-btn>
               <v-btn variant="text" color="warning" prepend-icon="mdi-broom" @click="confirmClearOpen = true">
                 清空本机数据
               </v-btn>
             </div>
+
+            <!-- 一键获取 token 的状态（扫描中 / 验活 / 就绪 / 失败） -->
+            <v-alert
+              v-if="tokenScanState.phase === 'scanning' || tokenScanState.phase === 'validating'"
+              type="info"
+              variant="tonal"
+              density="compact"
+              class="mt-2"
+            >
+              <div class="d-flex align-center ga-2">
+                <v-progress-circular indeterminate size="20" />
+                <span>{{ tokenScanState.message }}</span>
+              </div>
+              <div class="text-caption mt-1">
+                请确认：电脑版微信已打开并登录「龙猫体育锻炼」（扫描器只读它自己的进程内存，不需要管理员）。
+              </div>
+            </v-alert>
+            <v-alert v-else-if="tokenScanState.phase === 'ready'" type="success" variant="tonal" density="compact" class="mt-2">
+              ✅ 已获取 token：{{ tokenScanState.masked }} —— 会话已写入，正在读取真实数据…
+            </v-alert>
+            <v-alert v-else-if="tokenScanState.phase === 'error'" type="error" variant="tonal" density="compact" class="mt-2">
+              {{ tokenScanState.message }}
+              <div class="text-caption mt-1">
+                仍不行就回到「抓包粘贴」路线：Fiddler 抓一条 <code>wxxcx.xtotoro.com</code> 请求，把
+                <code>Authorization: Bearer …</code> 粘到上面的输入框。
+              </div>
+            </v-alert>
 
             <v-chip v-if="isLoggedIn" color="success" variant="tonal" size="small" class="mr-2">
               <v-icon start size="14">mdi-account-check</v-icon>
@@ -372,5 +407,73 @@ const doClearAll = () => {
   manualToken.value = ''
   confirmClearOpen.value = false
   showSnackbar('已清空本机数据：会话 / 任务缓存 / 本机记录（服务端成绩不受影响）', 'info')
+}
+
+// ---------- 一键获取 token（扫 PC 微信小程序进程内存 → 服务端验活 → 自动写入会话） ----------
+const tokenScanState = reactive({ running: false, phase: 'idle' as 'idle' | 'scanning' | 'validating' | 'ready' | 'error', message: '', masked: '' })
+let scanTimer: ReturnType<typeof setInterval> | null = null
+const stopScanPolling = () => {
+  if (scanTimer !== null) {
+    clearInterval(scanTimer)
+    scanTimer = null
+  }
+}
+onUnmounted(stopScanPolling)
+
+const doTokenScan = async () => {
+  if (tokenScanState.running) return
+  tokenScanState.running = true
+  tokenScanState.phase = 'scanning'
+  tokenScanState.message = '正在启动扫描器…'
+  try {
+    const started = await $fetch<{ ok: boolean; nonce?: string; message?: string }>('/api/local/token-scan/start', {
+      method: 'POST',
+    })
+    if (!started?.ok || !started.nonce) throw new Error(started?.message || '启动扫描失败')
+    const nonce = started.nonce
+    tokenScanState.message = started.message || '正在扫描微信小程序进程内存…'
+    const startedAt = Date.now()
+
+    stopScanPolling()
+    scanTimer = setInterval(() => {
+      void (async () => {
+        try {
+          const st = await $fetch<{
+            phase: 'idle' | 'scanning' | 'validating' | 'ready' | 'error'
+            message?: string
+            token?: string
+            masked?: string
+          }>(`/api/local/token-scan/status?nonce=${encodeURIComponent(nonce)}`)
+
+          tokenScanState.phase = st.phase
+          tokenScanState.message = st.message || ''
+
+          if (st.phase === 'ready' && st.token) {
+            stopScanPolling()
+            tokenScanState.masked = st.masked || ''
+            // 写入会话（只存本机 localStorage）；随后自动读取真实数据
+            session.value = { token: st.token, baseUrl: session.value?.baseUrl ?? DEMO_SESSION.baseUrl, userInfo: session.value?.userInfo }
+            tokenScanState.running = false
+            showSnackbar(`已获取 token（${st.masked}），正在读取真实数据…`, 'success')
+            await doLoadReal()
+          } else if (st.phase === 'error' || st.phase === 'idle') {
+            stopScanPolling()
+            tokenScanState.running = false
+          } else if (Date.now() - startedAt > 70_000) {
+            stopScanPolling()
+            tokenScanState.phase = 'error'
+            tokenScanState.message = '扫描超时：请确认电脑版微信已打开并登录小程序，然后重试'
+            tokenScanState.running = false
+          }
+        } catch {
+          /* 本地端点偶发失败 → 下一轮继续 */
+        }
+      })()
+    }, 1200)
+  } catch (err) {
+    tokenScanState.phase = 'error'
+    tokenScanState.message = err instanceof Error ? err.message : '启动扫描失败'
+    tokenScanState.running = false
+  }
 }
 </script>

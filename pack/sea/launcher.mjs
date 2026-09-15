@@ -10,6 +10,15 @@ const RUNTIME_DIR = path.join(os.tmpdir(), 'totoro-heaven-runtime')
 const PORT = Number(process.env.TOTORO_PORT || 3000)
 const ASSET_KEY = 'app.tar.gz'
 
+/**
+ * 🔒 只绑本机 loopback：这个工具会读写**你本人的校园跑凭据**，绝不能被局域网访问。
+ * Nitro 的 node-server 预设默认可能绑 0.0.0.0 → 这里显式收紧（用户显式设置 HOST 时不覆盖）。
+ */
+process.env.NITRO_HOST = process.env.NITRO_HOST || '127.0.0.1'
+process.env.HOST = process.env.HOST || '127.0.0.1'
+process.env.NITRO_PORT = process.env.NITRO_PORT || String(PORT)
+process.env.PORT = process.env.PORT || String(PORT)
+
 // 打包脚本会把这行占位符替换为实际版本号
 const APP_VERSION = '__APP_VERSION__'
 
