@@ -224,6 +224,31 @@ test('真实报文：selectSunRunStartConfiguration 的人脸开关在 body', ()
   assert.equal(body?.sunrunPointRandom, '0')
 })
 
+test('真实报文：getCameraConfig 的 flag 在 body（2026-09-15 修正，E30）', () => {
+  // 依据小程序源码：CameraConfigFlag: t.body?.flag（逐字）；摄像头列表在同级 data[]
+  const res = {
+    status: '00',
+    body: { flag: false },
+    data: [{ pointPoleTime: 30, cameraPoleTime: 30, cameraPoleDistance: 10 }],
+  }
+  assert.equal(MP_ENDPOINTS.cameraConfig.payload, 'body', 'cameraConfig 的负载位置必须是 body（曾误标 top）')
+  const v = judgeMpResponse(res, MP_ENDPOINTS.cameraConfig.payload)
+  assert.equal(v.ok, true)
+  const body = unwrapMpResponse<{ flag?: boolean }>(res, MP_ENDPOINTS.cameraConfig.payload)
+  assert.equal(body?.flag, false, 'body.flag 应能取到（false = 未启用摄像头杆）')
+  // 反向锁定：拿整个响应当负载时取不到 flag（这正是修复前的错误读法）
+  const asTop = unwrapMpResponse<{ flag?: boolean }>(res, 'top')
+  assert.equal(asTop?.flag, undefined, 'top 层没有 flag —— 说明旧读法必然拿到 undefined')
+})
+
+test('真实报文：getCameraConfig 未传 lineId 时服务端报"入参路线id为空！"', () => {
+  // 9-14 探针的真实 dump（status 01）—— 提醒：这条端点的 lineId 是必填，缺了不会报 HTTP 错
+  const res = { status: '01', message: '入参路线id为空！', body: null, data: null, wxLoginStatus: 0 }
+  const v = judgeMpResponse(res, MP_ENDPOINTS.cameraConfig.payload)
+  assert.equal(v.ok, false)
+  assert.equal(v.kind, 'business')
+})
+
 test('真实报文：学校清单负载在 body（/wxapi 端点）', () => {
   const res = { body: [{ schoolCode: '98765', schoolName: '南京航空航天大学', domainUrl: 'https://wxxcx.xtotoro.com' }] }
   const v = judgeMpResponse(res, MP_ENDPOINTS.schoolList.payload)
