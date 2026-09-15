@@ -22,6 +22,8 @@ DEVELOPMENT.md
 ERROR.md
 HANDOVER.md
 _mp-analyze/
+# 第三方同目标项目研究材料（含厂商版权解包源码）——仅本地留档，绝不入库/分发
+Totoro-main*
 capture/
 .mp-test-build/
 *.local
