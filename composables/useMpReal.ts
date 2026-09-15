@@ -187,7 +187,7 @@ export function useMpReal() {
     const cfg = await MpApiWrapper.getSunRunStartConfiguration(profile.value.snCode, options)
     switches.value = cfg.ok ? ((cfg.data as Record<string, string>) ?? null) : null
 
-    // 先定好"本次选中哪条线路"（缓存 → 校区名 → 坐标分组默认），再查**该线路**的摄像头杆开关。
+    // 先定好"本次选中哪条线路"（校区名 → 坐标分组默认），再查**该线路**的摄像头杆开关。
     // ⚠️ 顺序很重要：摄像头杆是按线路下发的；早先这里查的是 runPointList[0]，
     //    而 applyToRunner 之后选中的可能是**另一条**（如与本人校区同名的），导致门禁拿不到当前线路的值。
     applyToRunner()
@@ -198,6 +198,7 @@ export function useMpReal() {
           TASK_CACHE_KEY,
           JSON.stringify({ at: loadedAt.value, task: task.value, lineId: String(run.value.lineId || '') }),
         )
+        syncCacheState() // 同步"可恢复上次任务"的界面状态（否则要等下次刷新才显示）
       } catch {
         /* 忽略配额错误 */
       }
