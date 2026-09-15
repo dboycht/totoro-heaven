@@ -177,6 +177,24 @@ export const isMpOk = (res: unknown, spec: MpPayloadSpec = 'none'): boolean => j
 /** 是否为「登录过期」（header.bizCode == -199） */
 export const isMpExpired = (res: unknown): boolean => judgeMpResponse(res, 'none').kind === 'expired'
 
+/**
+ * 是否是「token 过期 / 失效」类响应（用于给用户**可操作**的提示）。
+ *
+ * 覆盖两种实测表达（缺一不可）：
+ *   ① 新式拦截：`header.bizCode == -199`（`kind === 'expired'`）；
+ *   ② **业务失败**：`status:"01"` / `code:"1"` 且 `msg` 含"失效/过期" ——
+ *      `GetStudentInfoByToken` 实测回的是 `{"status":"01","code":"1","msg":"token失效，注册失败"}`（2026-09-15）。
+ */
+export function looksLikeTokenExpired(res: unknown): boolean {
+  if (isMpExpired(res)) return true
+  if (!res || typeof res !== 'object') return false
+  const r = res as MpResponse
+  const text = `${r.msg ?? ''} ${r.message ?? ''}`
+  const statusFail = r.status != null && String(r.status) !== '00' && String(r.status) !== '200'
+  const codeFail = r.code != null && String(r.code) !== '0' && String(r.code) !== '200'
+  return (statusFail || codeFail) && /(失效|过期|重新登录|expire|invalid token)/i.test(text)
+}
+
 /** 是否为「学生人脸数据为空，请补充」（getRunBegin 的建档硬门槛，code=="888"） */
 export const isFaceNotRegistered = (verdict: MpVerdict): boolean => verdict.code === MP_CODES.faceMissing
 

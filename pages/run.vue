@@ -186,6 +186,13 @@
               （{{ demoMode ? '演示 20m/点' : '真实 3m/点 ≈1Hz' }}）；
               里程会<b>略超</b>任务要求、配速<b>非整分钟</b>，拟合度含"GPS 精度下降期" → 数值不是整数（避免一眼假）。
             </v-alert>
+            <!-- 用户要求（2026-09-15）：把"模拟配速"的性质说清楚，避免误以为它本身就是最终结果 -->
+            <v-alert type="warning" variant="tonal" density="compact" class="mt-2">
+              <b>「模拟倍速 / 配速策略」不是最终结果</b> —— 它们只决定<b>本地如何生成这次的轨迹数据</b>
+              （里程/时长/配速/拟合度都按任务约束算出来）。
+              正确顺序是：<b>先「开始跑步」生成并结算出数据</b> → 看下方自检表 → 再点「<b>真实提交</b>」。
+              提交的数值就是自检表里那一组（提交前还会再按报备时长真实等待）。
+            </v-alert>
           </v-card-text>
         </v-card>
       </v-col>
@@ -317,6 +324,10 @@
                 为保证 <code>endTime - startTime</code> 与服务器观测一致（避免"秒级完成长距离"的破绽），
                 提交前必须真等够报备时长。可以切到别的页面，倒计时会继续。
               </div>
+              <!-- 用户要求：等待期间明确提醒三条 -->
+              <div class="text-body-2 mt-2 font-weight-bold">
+                ⛔ 等待期间请勿在<b>任意端</b>登录「龙猫」相关账号；🚫 请勿关闭此网页/程序；⏳ 请等到倒计时结束。
+              </div>
             </div>
           </div>
         </v-alert>
@@ -364,6 +375,15 @@
           确认真实提交？
         </v-card-title>
         <v-card-text>
+          <!-- 🔴 用户要求（2026-09-15）：提交时明确弹出三条警告 -->
+          <v-alert type="error" variant="flat" density="comfortable" class="mb-3">
+            <div class="font-weight-bold">提交前请务必确认以下三条</div>
+            <ol class="text-body-2 pl-4 mt-1 mb-0">
+              <li><b>请勿在任意端登录「龙猫」相关账号</b>（手机 / 电脑 / 其他浏览器都别登）——避免会话被顶掉或触发风控；</li>
+              <li><b>请勿关闭此网页或本程序</b>——提交与真实等待都发生在这里，关掉就中断了；</li>
+              <li><b>请等待倒计时结束</b>（约 20 分钟），期间<b>不要刷新页面</b>。</li>
+            </ol>
+          </v-alert>
           <v-alert type="warning" variant="tonal" density="compact" class="mb-3">
             这会在你的账号上<b>真实生成一条成绩</b>（会计入本学期的跑步次数）。请确认下列数值无误。
           </v-alert>

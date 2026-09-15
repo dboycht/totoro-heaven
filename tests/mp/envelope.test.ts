@@ -15,6 +15,7 @@ import {
   isMpOk,
   isStudentUnregistered,
   judgeMpResponse,
+  looksLikeTokenExpired,
   parsePayloadSpec,
   unwrapMpResponse,
 } from '../../src/mp/envelope.ts'
@@ -247,6 +248,19 @@ test('真实报文：getCameraConfig 未传 lineId 时服务端报"入参路线i
   const v = judgeMpResponse(res, MP_ENDPOINTS.cameraConfig.payload)
   assert.equal(v.ok, false)
   assert.equal(v.kind, 'business')
+})
+
+test('looksLikeTokenExpired：识别两种真实表达（-199 拦截 / status 01 + "失效"）', () => {
+  // ① 新式拦截：header.bizCode == -199
+  assert.equal(looksLikeTokenExpired({ header: { bizCode: -199 } }), true)
+  assert.equal(looksLikeTokenExpired({ header: { bizCode: 0 } }), false)
+  // ② 业务失败 + 文案含"失效"（GetStudentInfoByToken 2026-09-15 实测）
+  assert.equal(looksLikeTokenExpired({ status: '01', code: '1', msg: 'token失效，注册失败' }), true)
+  assert.equal(looksLikeTokenExpired({ status: '00', msg: 'token失效，注册失败' }), false, 'status=00 不是失败')
+  // 不含"失效/过期"的业务失败 → false
+  assert.equal(looksLikeTokenExpired({ status: '01', message: '入参路线id为空！' }), false)
+  assert.equal(looksLikeTokenExpired(null), false)
+  assert.equal(looksLikeTokenExpired(undefined), false)
 })
 
 test('真实报文：学校清单负载在 body（/wxapi 端点）', () => {

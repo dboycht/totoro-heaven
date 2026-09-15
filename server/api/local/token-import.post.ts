@@ -60,10 +60,10 @@ export default defineEventHandler(async (event) => {
   if (!candidates.length) {
     const hint =
       body?.error === 'NO_PROCESS'
-        ? '未找到微信小程序进程：请先用**电脑版微信**打开并登录「龙猫体育锻炼」，保持开着再点一次'
+        ? '未找到微信小程序进程：请先用**电脑版微信**打开并登录「龙猫体育锻炼」，保持小程序窗口开着，再点一次「一键获取 token」'
         : body?.error === 'NO_TOKEN'
-          ? '进程里没找到 token：请在小程序里点开任意页面（触发一次请求）后重试；若刚重新登录过，稍等几秒'
-          : '扫描器没有回传可用候选（可能被杀软拦截或微信版本不兼容）'
+          ? '进程里没找到 token：请在小程序里点开任意页面（触发一次请求）后重试；**务必保持小程序窗口开着**（关掉后内存里就没有新 token 了）'
+          : '扫描器没有回传可用候选（可能被杀软拦截或微信版本不兼容）——可改用 Fiddler 抓包粘贴 token'
     patchScan({ phase: 'error', message: hint })
     return { ok: true, validated: 0 }
   }
@@ -85,7 +85,11 @@ export default defineEventHandler(async (event) => {
 
   patchScan({
     phase: 'error',
-    message: `${candidates.length} 个候选都没通过验活（很可能都是内存里残留的过期 token）——请在小程序里**删除小程序→重开→重新登录**后再试（切勿点解绑）`,
+    message:
+      `扫到 ${candidates.length} 个候选，但都没通过验活（多半是内存里残留的旧串）。` +
+      '请在「龙猫校园（龙猫体育锻炼）」小程序里【退出登录】→ 用**学号 + 姓名**重新登录 → ' +
+      '**保持小程序窗口开着** → 回到本页再点一次「一键获取 token」。' +
+      '（等价且更稳：在微信里删除该小程序→重新打开→登录；两者都会解除微信绑定，请确认记得学号）',
   })
   return { ok: true, validated: 0, candidates: candidates.length }
 })

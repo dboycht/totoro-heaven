@@ -28,6 +28,8 @@ import {
   unverifiedSchoolNotice,
 } from '~/utils/mp/schoolGate'
 import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
+import { TOKEN_EXPIRED_HINT } from '~/utils/mp/tokenScan'
+import { looksLikeTokenExpired } from '~/src/mp/envelope'
 
 /**
  * 支持范围 = **条件式**（1.1.3，2026-09-15 用户确认）：
@@ -141,7 +143,8 @@ export function useMpReal() {
     const info = await MpApiWrapper.getStudentInfoByToken({ token })
     if (!info.ok || !info.data?.snCode) {
       status.value = 'error'
-      error.value = `读取学生档案失败：${info.message}`
+      // token 过期/失效 → 给**可操作**提示（用户 2026-09-15 指定：提示退出登录并重新登录小程序）
+      error.value = looksLikeTokenExpired(info.raw) ? TOKEN_EXPIRED_HINT : `读取学生档案失败：${info.message}`
       return false
     }
     const raw = info.data as Record<string, unknown>
@@ -361,7 +364,10 @@ export function useMpReal() {
     const scantronId = (begin.data as { scantronId?: string } | undefined)?.scantronId
     if (!begin.ok || !scantronId) {
       phase.value = 'error'
-      phaseMessage.value = `开跑失败：${begin.message}`
+      // 若失败原因是 token 过期 → 给"退出登录并重新登录小程序"的可操作提示
+      phaseMessage.value = looksLikeTokenExpired(begin.raw)
+        ? TOKEN_EXPIRED_HINT
+        : `开跑失败：${begin.message}`
       return null
     }
     const startedAt = Date.now()
@@ -426,7 +432,9 @@ export function useMpReal() {
     phase.value = score.ok ? 'done' : 'error'
     phaseMessage.value = score.ok
       ? `提交完成：${out.scoreMessage}${out.detailOk ? '；轨迹已提交' : ''}`
-      : `提交失败：${out.scoreMessage}`
+      : looksLikeTokenExpired(score.raw)
+        ? TOKEN_EXPIRED_HINT
+        : `提交失败：${out.scoreMessage}`
     return out
   }
 

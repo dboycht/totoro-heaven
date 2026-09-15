@@ -29,6 +29,11 @@
         <b>演示</b>：只是想先看界面/报文、不想碰真实账号时，点「载入演示数据」——数据来自
         <code>src/mp/demo.ts</code>，<b>不发任何网络请求</b>，也不会真实提交。
       </div>
+      <div class="mt-2">
+        <v-btn size="small" variant="tonal" prepend-icon="mdi-school-outline" @click="guideOpen = true">
+          查看上手教程
+        </v-btn>
+      </div>
     </v-alert>
 
     <v-row>
@@ -305,6 +310,47 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <!-- 首次启动教程（用户要求：第一次启动弹教程） -->
+    <v-dialog v-model="guideOpen" max-width="640" persistent>
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon color="primary" class="mr-2">mdi-school-outline</v-icon>
+          三步上手（第一次使用请看这里）
+        </v-card-title>
+        <v-card-text>
+          <ol class="text-body-2 pl-4">
+            <li class="mb-2">
+              <b>打开电脑版微信</b>并登录（本软件只能从<b>电脑版</b>微信里取 token，手机端取不到）。
+            </li>
+            <li class="mb-2">
+              <b>用手机微信打开「龙猫体育锻炼」（龙猫校园）小程序</b>，确认已登录、能看到阳光跑页面。
+            </li>
+            <li class="mb-2">
+              在手机上点右上角「<b>…</b>」→ 选择「<b>在电脑上打开</b>」→ 电脑微信会弹出小程序窗口，<b>保持开着别关</b>。
+              <span class="text-medium-emphasis">（若电脑微信里已能直接搜到该小程序，也可直接在电脑上打开。）</span>
+            </li>
+            <li class="mb-2">
+              回到本页，点「<b>一键获取 token</b>」→ 自动登录并读取你的任务与线路（约 5 秒）。
+            </li>
+            <li class="mb-2">
+              进「<b>阳光跑</b>」→ 选线路 → 「开始跑步」（本地生成数据并结算）→ 看自检表 → 点「<b>真实提交</b>」→
+              <b>等到倒计时结束</b>（约 20 分钟：别关页面、别刷新、别在别的端登录账号）。
+            </li>
+          </ol>
+          <v-alert type="info" variant="tonal" density="compact" class="mt-2">
+            token 只有<b>几天</b>有效期。过期时软件会提示：在小程序里<b>退出登录 → 用学号+姓名重新登录</b>，
+            回到本页再点一次「一键获取 token」即可。
+            <br />（等价且更稳的做法：在微信里删除该小程序 → 重新打开 → 登录。两者都会解除微信绑定，请确认记得学号。）
+          </v-alert>
+        </v-card-text>
+        <v-card-actions>
+          <v-btn variant="text" prepend-icon="mdi-radar" @click="doTokenScanAndCloseGuide">知道了，立即获取 token</v-btn>
+          <v-spacer />
+          <v-btn color="primary" variant="flat" @click="closeGuide">知道了</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -345,6 +391,23 @@ const verifiedSchoolText = computed(() => {
 const manualToken = ref('')
 const confirmClearOpen = ref(false)
 
+// ---------- 首次启动教程（用户要求：第一次启动弹教程） ----------
+const GUIDE_KEY = 'totoro_guide_seen_v1'
+const guideOpen = ref(false)
+const closeGuide = () => {
+  guideOpen.value = false
+  try {
+    localStorage.setItem(GUIDE_KEY, '1')
+  } catch {
+    /* 忽略隐私模式等写入失败 */
+  }
+}
+/** 教程里的"立即获取 token"：关教程并直接开始一键获取 */
+const doTokenScanAndCloseGuide = () => {
+  closeGuide()
+  void doTokenScan()
+}
+
 const isRealSession = computed(() => Boolean(session.value?.token) && !session.value?.token?.startsWith('demo-'))
 /** 跑步页当前用的是真实任务还是演示任务 */
 const usingRealTask = computed(() => Boolean(realTask.value))
@@ -360,8 +423,12 @@ const switchText = (value: string | undefined, on: string, off: string) =>
   value === undefined ? '未读取' : value === '1' ? on : off
 
 onMounted(() => {
-  // ⚠️ 2026-09-15 用户要求：**刷新后默认是干净状态** —— 不再自动回填上次读取的任务。
-  //    需要时用界面上的「恢复上次任务」按钮显式恢复（见下方提示条）。
+  // 首次启动弹教程（用户要求）；已看过则不再自动弹，可用页面上的「查看教程」再打开
+  try {
+    if (!localStorage.getItem(GUIDE_KEY)) guideOpen.value = true
+  } catch {
+    /* 忽略隐私模式等读取失败 */
+  }
 })
 
 /** 载入演示数据（按需功能：只在"没有真实数据、只想看界面"时用） */
