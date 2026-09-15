@@ -138,7 +138,14 @@
             />
 
             <div class="d-flex flex-column ga-2">
-              <v-btn v-if="run.status === 'idle' || run.status === 'finished'" color="primary" block prepend-icon="mdi-play" @click="start">
+              <v-btn
+                v-if="run.status === 'idle' || run.status === 'finished'"
+                color="primary"
+                block
+                prepend-icon="mdi-play"
+                :disabled="!activeTask"
+                @click="start"
+              >
                 开始跑步
               </v-btn>
               <v-btn v-if="run.status === 'running'" color="warning" block prepend-icon="mdi-pause" @click="pause">暂停</v-btn>
@@ -332,7 +339,7 @@
             <v-list-item title="线路" :subtitle="selectedLineName" prepend-icon="mdi-map-marker-path" />
             <v-list-item title="里程" :subtitle="`${run.result?.km.toFixed(2)} km（任务要求 ${activeTask?.mileage ?? '—'} km）`" prepend-icon="mdi-map-marker-distance" />
             <v-list-item title="时长 / 配速" :subtitle="`${formatDuration(run.result?.durationSeconds ?? 0)} · ${formatPace(Math.round((run.result?.durationSeconds ?? 1) / Math.max(0.01, run.result?.km ?? 1)))}/km`" prepend-icon="mdi-timer-outline" />
-            <v-list-item title="拟合度" :subtitle="`${run.result?.fitDegree.toFixed(2)}（阈值 ${activeTask.fitDegree}）`" prepend-icon="mdi-chart-bell-curve" />
+            <v-list-item title="拟合度" :subtitle="`${run.result?.fitDegree.toFixed(2)}（阈值 ${activeTask?.fitDegree ?? '—'}）`" prepend-icon="mdi-chart-bell-curve" />
             <v-list-item title="自检" :subtitle="run.result?.check.pass ? '硬性项全部通过' : '存在不通过项，建议先修正'" prepend-icon="mdi-clipboard-check-outline" />
             <v-list-item
               title="开跑前门禁（人脸 / 抽查 / 摄像头杆）"

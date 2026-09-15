@@ -151,7 +151,7 @@
           </v-card-title>
           <v-card-text>
             <v-list density="compact">
-              <v-list-item title="任务" :subtitle="activeTask.paperName" prepend-icon="mdi-clipboard-text-outline" />
+              <v-list-item title="任务" :subtitle="activeTask?.paperName ?? '—'" prepend-icon="mdi-clipboard-text-outline" />
               <v-list-item title="目标里程" :subtitle="`${activeTask?.mileage ?? '—'} km`" prepend-icon="mdi-map-marker-distance" />
               <v-list-item title="拟合度阈值" :subtitle="String(activeTask?.fitDegree ?? '—')" prepend-icon="mdi-chart-bell-curve" />
               <v-list-item

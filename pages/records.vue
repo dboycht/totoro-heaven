@@ -4,7 +4,7 @@
       <div class="font-weight-bold">成绩记录</div>
       <div class="text-body-2">
         默认<b>不含任何假数据</b>：在跑步页结算一条成绩会追加到最前面（存本机 localStorage）。
-        「载入演示数据」时列表里是演示记录（Mock），会被标注；真实记录来自
+        点工作台/跑步页的「载入演示数据」后，列表里是演示记录（Mock）；真实记录来自
         <code>getSunrunArch</code> 的顶层 <code>data[]</code> 与汇总字段。
       </div>
     </v-alert>
