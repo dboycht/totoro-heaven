@@ -35,6 +35,29 @@
         <v-alert type="info" variant="tonal" density="compact" class="mt-3">
           仅用于教育与研究目的，请遵守所在学校的规章制度，作者不对任何违规使用负责。
         </v-alert>
+
+        <!-- 求 Star（用户 2026-09-16 要求） -->
+        <v-alert type="success" variant="tonal" density="comfortable" class="mt-3">
+          <div class="d-flex align-center flex-wrap ga-2">
+            <v-icon color="amber" size="22">mdi-star-four-points-outline</v-icon>
+            <span class="text-body-2">
+              <b>如果喜欢这个产品，欢迎到 GitHub 给仓库点个 Star ⭐</b>
+              <br /><span class="text-caption text-medium-emphasis">你的一颗星是继续维护与更新的最大动力～</span>
+            </span>
+            <v-spacer />
+            <v-btn
+              size="small"
+              color="amber"
+              variant="flat"
+              prepend-icon="mdi-github"
+              :href="repoUrl"
+              target="_blank"
+              rel="noopener"
+            >
+              去 Star
+            </v-btn>
+          </div>
+        </v-alert>
       </v-card-text>
 
       <v-card-actions>
@@ -50,4 +73,6 @@ const model = defineModel<boolean>({ default: false })
 
 const appConfig = useAppConfig()
 const version = computed(() => (appConfig.version as string) || 'dev')
+// 仓库地址（与「版本提示」组件同一来源）
+const { repoUrl } = useUpdateCheck()
 </script>
