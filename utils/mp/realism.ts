@@ -31,7 +31,7 @@ export interface RunPlan {
   targetKm: number
   /** 实际配速（秒/公里，整数） */
   paceSecPerKm: number
-  /** 超跑比例（0.02~0.09） */
+  /** 超跑比例（0.003~0.04；3.2km 任务 → 3.21~3.33km） */
   overshootRatio: number
   /** 预计时长（秒）= targetKm × paceSecPerKm（只作展示/规划，实际以模拟推进为准） */
   durationSeconds: number
@@ -58,8 +58,10 @@ export function planRealisticRun(input: RunPlanInput): RunPlan {
   const rng = createRng(input.seed ?? newRunSeed())
   const required = Math.max(0.1, Number(input.requiredKm) || 3)
 
-  // 1) 超跑 2%~9%（真实学生常多跑一段才停）
-  const overshootRatio = 0.02 + rng() * 0.07
+  // 1) 超跑 **+0.3%~+4.0%**（2026-09-16 用户要求：3.2 km 任务 → 实跑 **3.21~3.33 km**，更贴近真跑）
+  //    ⚠️ 真实提交的 km 是"轨迹累计长度"，会在 target 基础上再溢出几米（收尾最后一步），
+  //       所以上限留了点余量；实际产物落在 3.21~3.34 km（用户要的区间是 3.21~3.35）。
+  const overshootRatio = 0.003 + rng() * 0.037
   const targetKm = Number((required * (1 + overshootRatio)).toFixed(2))
 
   // 2) 配速基线：用户策略 or 5'50"~6'20"

@@ -27,13 +27,25 @@ const planWith = (seed: number, basePaceSecPerKm?: number) =>
     seed,
   })
 
-test('planRealisticRun：里程略超要求（2%~9%），而不是正好等于要求', () => {
+test('planRealisticRun：里程略超要求（+0.3%~+4.0% → 3.2km 任务落在 3.21~3.33km）', () => {
   for (const seed of [1, 7, 42, 20260914, 99999]) {
     const plan = planWith(seed)
     assert.ok(plan.targetKm > NUAA_TASK.mileage, `seed=${seed} 应超跑，实际 ${plan.targetKm}`)
-    assert.ok(plan.overshootRatio >= 0.02 && plan.overshootRatio <= 0.09, `超跑比例 ${plan.overshootRatio}`)
+    // 2026-09-16 用户要求：里程定为 3.21~3.35km（更贴近真跑；真跑实测 3.21km）
+    assert.ok(plan.overshootRatio >= 0.003 && plan.overshootRatio <= 0.04, `超跑比例 ${plan.overshootRatio}`)
     assert.equal(plan.targetKm, Number((NUAA_TASK.mileage * (1 + plan.overshootRatio)).toFixed(2)))
+    assert.ok(plan.targetKm >= 3.21 && plan.targetKm <= 3.33, `目标里程 ${plan.targetKm} 超出 3.21~3.33`)
   }
+})
+
+test('planRealisticRun：100 个种子的目标里程都落在 3.21~3.33（不含收尾溢出）', () => {
+  const targets = new Set<number>()
+  for (let seed = 0; seed < 100; seed++) {
+    const plan = planWith(seed)
+    assert.ok(plan.targetKm >= 3.21 && plan.targetKm <= 3.33, `seed=${seed} → ${plan.targetKm}`)
+    targets.add(plan.targetKm)
+  }
+  assert.ok(targets.size >= 8, `100 个种子只产生 ${targets.size} 种里程，多样性不足`)
 })
 
 test('planRealisticRun：配速与时长都落在任务窗口内（速度 3~15 km/h、10~25 分钟）', () => {
