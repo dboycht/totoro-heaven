@@ -420,6 +420,7 @@ import { formatTaskPeriod } from '~/utils/mp/taskRules'
 import { formatDuration, formatPace } from '~/utils/mp/runData'
 import { useMpDemo } from '~/composables/useMpDemo'
 import { useMpReal } from '~/composables/useMpReal'
+import { logInfo, logWarn } from '~/composables/useEventLog'
 import { groupRoutesByCampus, toSelectItems, warnForSelection } from '~/utils/mp/routeGroups'
 
 const { isLoggedIn, task, run, progress, paceText, start, pause, resume, finish, reset, demoMode, enableDemo } = useMpDemo()
@@ -505,6 +506,39 @@ watch(
   },
 )
 
+// 跑步状态变化 → 记事件日志（开始 / 暂停 / 结算，含结算数值，便于事后核对）
+watch(
+  () => run.value.status,
+  (s, prev) => {
+    if (s === prev) return
+    const line = activeLines.value.find((l) => l.pointId === run.value.lineId)
+    if (s === 'running' && prev === 'idle') {
+      logInfo('run', '开始跑步', {
+        mode: demoMode.value ? '演示' : '真实',
+        lineId: line?.pointId,
+        lineName: line?.pointName,
+        speed: run.value.speed,
+      })
+    } else if (s === 'paused') {
+      logInfo('run', '暂停', { km: Number((run.value.distanceM / 1000).toFixed(2)) })
+    } else if (s === 'running' && prev === 'paused') {
+      logInfo('run', '继续', { km: Number((run.value.distanceM / 1000).toFixed(2)) })
+    } else if (s === 'finished' && run.value.result) {
+      const r = run.value.result
+      logInfo('run', '结算完成（本地预判）', {
+        km: Number(r.km.toFixed(2)),
+        durationSeconds: r.durationSeconds,
+        fitDegree: r.fitDegree,
+        paceSecPerKm: Math.round(r.durationSeconds / Math.max(0.01, r.km)),
+        steps: r.stepsSubmitted,
+        hardPass: r.check.pass,
+        problems: r.check.problems,
+      })
+      if (!r.check.pass) logWarn('run', '硬性自检未通过', { problems: r.check.problems })
+    }
+  },
+)
+
 const speedItems = [
   { value: 1, label: '1× 实时（3.4km 约 21 分钟）' },
   { value: 10, label: '10×（约 2 分钟）' },
@@ -547,6 +581,7 @@ const doRealSubmit = async () => {
   confirmOpen.value = false
   // 门禁失守直接返回（不调 getRunBegin，避免创建场次后才发现被拦）
   if (!gateStatus.value.allow) {
+    logWarn('submit', '点了真实提交但门禁未通过', { blockedBy: gateStatus.value.blockedBy ?? '', reason: gateStatus.value.reason })
     showSnackbar(gateStatus.value.reason || '当前不允许真实提交', 'error')
     return
   }
@@ -556,6 +591,13 @@ const doRealSubmit = async () => {
     showSnackbar('缺少线路或结算数据', 'error')
     return
   }
+  logInfo('submit', '用户确认真实提交', {
+    lineId: line.pointId,
+    km: Number(r.km.toFixed(2)),
+    durationSeconds: r.durationSeconds,
+    fitDegree: r.fitDegree,
+    checkPass: r.check.pass,
+  })
   const out = await submitRealRun({
     line,
     points: run.value.points,

@@ -358,6 +358,7 @@
 import { formatTaskPeriod } from '~/utils/mp/taskRules'
 import { VERIFIED_SCHOOLS } from '~/utils/mp/schoolGate'
 import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
+import { logError, logInfo, logWarn } from '~/composables/useEventLog'
 import { DEMO_SESSION } from '~/src/mp/demo'
 
 const { isLoggedIn, task, session, logout, demoMode, enableDemo } = useMpDemo()
@@ -459,6 +460,7 @@ const doLoadReal = async () => {
 
 const doLogout = () => {
   logout()
+  logInfo('real', '清除会话（token 已移除）')
   showSnackbar('会话已清除', 'info')
 }
 
@@ -492,6 +494,7 @@ const doTokenScan = async () => {
   tokenScanState.running = true
   tokenScanState.phase = 'scanning'
   tokenScanState.message = '正在启动扫描器…'
+  logInfo('token', '点击「一键获取 token」')
   try {
     const started = await $fetch<{ ok: boolean; nonce?: string; message?: string }>('/api/local/token-scan/start', {
       method: 'POST',
@@ -510,6 +513,8 @@ const doTokenScan = async () => {
             message?: string
             token?: string
             masked?: string
+            fingerprint?: string
+            candidates?: number
           }>(`/api/local/token-scan/status?nonce=${encodeURIComponent(nonce)}`)
 
           tokenScanState.phase = st.phase
@@ -521,16 +526,23 @@ const doTokenScan = async () => {
             // 写入会话（只存本机 localStorage）；随后自动读取真实数据
             session.value = { token: st.token, baseUrl: session.value?.baseUrl ?? DEMO_SESSION.baseUrl, userInfo: session.value?.userInfo }
             tokenScanState.running = false
+            logInfo('token', 'token 就绪，已写入会话', {
+              masked: st.masked,
+              fingerprint: st.fingerprint,
+              candidates: st.candidates,
+            })
             showSnackbar(`已获取 token（${st.masked}），正在读取真实数据…`, 'success')
             await doLoadReal()
           } else if (st.phase === 'error' || st.phase === 'idle') {
             stopScanPolling()
             tokenScanState.running = false
+            logWarn('token', `取 token 失败：${st.message ?? ''}`, { phase: st.phase })
           } else if (Date.now() - startedAt > 70_000) {
             stopScanPolling()
             tokenScanState.phase = 'error'
             tokenScanState.message = '扫描超时：请确认电脑版微信已打开并登录小程序，然后重试'
             tokenScanState.running = false
+            logWarn('token', '取 token 超时（70 秒）')
           }
         } catch {
           /* 本地端点偶发失败 → 下一轮继续 */
@@ -541,6 +553,7 @@ const doTokenScan = async () => {
     tokenScanState.phase = 'error'
     tokenScanState.message = err instanceof Error ? err.message : '启动扫描失败'
     tokenScanState.running = false
+    logError('token', '启动扫描失败', { message: tokenScanState.message })
   }
 }
 </script>

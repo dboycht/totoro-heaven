@@ -24,6 +24,9 @@
  *   兼容旧写法：`/api/mp/sunrun/getRunBegin` → `<base>/wxxcx/sunrun/getRunBegin`（自动补 `/wxxcx`）
  */
 import { MP_HOST, MP_UPSTREAM_HEADER } from '../../../src/mp/types'
+import { summarizeUpstream } from '../../../utils/mp/logFormat'
+import { logError, logInfo, summarizeRequestBody, logWarn } from '../../utils/logger'
+import { fingerprintOf } from '../../utils/tokenScanState'
 
 /** 上游路径的已知命名空间前缀（不在其中则按旧写法自动补 `/wxxcx`） */
 const KNOWN_PREFIXES = ['/wxxcx/', '/wxapi/', '/oss/']
@@ -88,16 +91,53 @@ export default defineEventHandler(async (event) => {
     body = typeof rawBody === 'string' ? rawBody : undefined
   }
 
-  const res = await fetch(target, { method, headers, body })
-  const text = await res.text()
+  // 日志用：token 只留指纹，请求体只留字段摘要（见 logger.ts，绝不落盘 token）
+  const authHeader = String(headers.Authorization || '')
+  const tokenRaw = authHeader.replace(/^Bearer\s+/i, '').trim()
+  const authFp = tokenRaw && tokenRaw !== 'null' ? fingerprintOf(tokenRaw) : '(无 token)'
+  const startedAt = Date.now()
+
+  let res: Response
+  let text: string
+  try {
+    res = await fetch(target, { method, headers, body })
+    text = await res.text()
+  } catch (err) {
+    logError('proxy', `${method} ${suffix} 请求失败`, {
+      upstream: new URL(base).hostname,
+      ms: Date.now() - startedAt,
+      auth: authFp,
+      body: summarizeRequestBody(suffix, body),
+      error: err instanceof Error ? err.message : String(err),
+    })
+    throw err
+  }
+
+  let parsed: unknown = undefined
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    parsed = undefined
+  }
+  const upstream = parsed !== undefined ? summarizeUpstream(parsed) : { kind: 'non-json', bytes: text.length }
+  const line = {
+    endpoint: suffix,
+    http: res.status,
+    ms: Date.now() - startedAt,
+    bytes: text.length,
+    auth: authFp,
+    upstream,
+    body: summarizeRequestBody(suffix, body),
+  }
+  // 上游明确的业务失败或网络层错误 → warn/error，正常 → info（便于在日志里一眼筛出问题）
+  const bizFail = upstream && typeof upstream === 'object' && 'status' in upstream && String((upstream as Record<string, unknown>).status) !== '00'
+  if (res.status >= 400 || (parsed === undefined && text.length > 0)) logError('proxy', `${method} ${suffix}`, line)
+  else if (bizFail) logWarn('proxy', `${method} ${suffix}`, line)
+  else logInfo('proxy', `${method} ${suffix}`, line)
 
   setResponseStatus(event, res.status)
   setResponseHeader(event, 'Content-Type', res.headers.get('content-type') || 'application/json; charset=utf-8')
 
   // 尽量按 JSON 返回，失败则原样返回文本
-  try {
-    return JSON.parse(text)
-  } catch {
-    return text
-  }
+  return parsed !== undefined ? parsed : text
 })

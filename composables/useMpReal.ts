@@ -30,6 +30,7 @@ import {
 import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
 import { TOKEN_EXPIRED_HINT } from '~/utils/mp/tokenScan'
 import { looksLikeTokenExpired } from '~/src/mp/envelope'
+import { logError, logInfo, logWarn } from './useEventLog'
 
 /**
  * 支持范围 = **条件式**（1.1.3，2026-09-15 用户确认）：
@@ -138,6 +139,7 @@ export function useMpReal() {
     }
     status.value = 'loading'
     error.value = ''
+    logInfo('real', '开始读取真实数据', { tokenLen: token.length })
 
     // ① 先拉学生档案（此刻还不知道 schoolCode，走共享域；token 自身标识身份）
     const info = await MpApiWrapper.getStudentInfoByToken({ token })
@@ -145,6 +147,8 @@ export function useMpReal() {
       status.value = 'error'
       // token 过期/失效 → 给**可操作**提示（用户 2026-09-15 指定：提示退出登录并重新登录小程序）
       error.value = looksLikeTokenExpired(info.raw) ? TOKEN_EXPIRED_HINT : `读取学生档案失败：${info.message}`
+      if (looksLikeTokenExpired(info.raw)) logWarn('real', 'token 已过期/失效', { raw: info.message })
+      else logError('real', '读取学生档案失败', { message: info.message })
       return false
     }
     const raw = info.data as Record<string, unknown>
@@ -155,6 +159,7 @@ export function useMpReal() {
     if (resolved && !isSharedDomain(resolved)) {
       status.value = 'error'
       error.value = nonSharedDomainMessage(resolved)
+      logWarn('real', '学校不在共享域，已拒绝', { schoolCode })
       return false
     }
     const baseUrl = resolved || MP_DEFAULT_BASE_URL
@@ -171,6 +176,12 @@ export function useMpReal() {
       campusName: String(raw.schoolCampusName ?? raw.schoolCampusCode ?? ''),
       className: String(raw.className ?? ''),
     }
+    logInfo('real', '读到学生档案', {
+      schoolCode,
+      school: profile.value.schoolName,
+      campus: profile.value.campusName,
+      baseUrl,
+    })
 
     // ③ 任务与线路（campusId 是必填，否则必报「该校区阳光跑任务未设置」）
     const paper = await MpApiWrapper.getSunrunPaper(
@@ -180,15 +191,35 @@ export function useMpReal() {
     if (!paper.ok || !paper.data) {
       status.value = 'error'
       error.value = `读取任务失败：${paper.message}（任务可能尚未下发）`
+      logError('real', '读取任务失败', { message: paper.message })
       return false
     }
     task.value = paper.data as MpSunrunTask
     loadedAt.value = Date.now()
     status.value = 'ready'
+    logInfo('real', '读到任务与线路', {
+      paperName: task.value.paperName,
+      lines: task.value.runPointList?.length ?? 0,
+      mileage: task.value.mileage,
+      minSpeed: task.value.minSpeed,
+      maxSpeed: task.value.maxSpeed,
+      minTime: task.value.minTime,
+      maxTime: task.value.maxTime,
+      fitDegree: task.value.fitDegree,
+    })
 
     // ④ 顺带把「一票否决项」也读出来（只读，30 秒内出结果）：人脸 / 抽查开关 + 摄像头杆
     const cfg = await MpApiWrapper.getSunRunStartConfiguration(profile.value.snCode, options)
     switches.value = cfg.ok ? ((cfg.data as Record<string, string>) ?? null) : null
+    if (cfg.ok) {
+      logInfo('gate', '开跑开关已读取', {
+        sunrunStartFace: switches.value?.sunrunStartFace,
+        sunrunPointRandom: switches.value?.sunrunPointRandom,
+        sunrunPointShowOff: switches.value?.sunrunPointShowOff,
+      })
+    } else {
+      logWarn('gate', '开跑开关读取失败', { message: cfg.message })
+    }
 
     // 先定好"本次选中哪条线路"（校区名 → 坐标分组默认），再查**该线路**的摄像头杆开关。
     // ⚠️ 顺序很重要：摄像头杆是按线路下发的；早先这里查的是 runPointList[0]，
@@ -209,6 +240,11 @@ export function useMpReal() {
 
     const selectedId = String(run.value.lineId || (task.value.runPointList ?? [])[0]?.pointId || '')
     if (selectedId) await refreshCameraFlag(selectedId, true)
+
+    // 门禁终值（日志）：方便事后核对"为什么拦住 / 为什么放行"
+    const gate = gateStatus.value
+    if (gate.allow) logInfo('gate', '门禁通过（三类开关均无阻碍）', { blockedBy: gate.blockedBy ?? '' })
+    else logWarn('gate', `门禁拦住：${gate.reason}`, { blockedBy: gate.blockedBy ?? '' })
     return true
   }
 
@@ -368,15 +404,25 @@ export function useMpReal() {
       phaseMessage.value = looksLikeTokenExpired(begin.raw)
         ? TOKEN_EXPIRED_HINT
         : `开跑失败：${begin.message}`
+      logError('submit', '开跑失败（getRunBegin）', { message: begin.message, lineId: input.line.pointId })
       return null
     }
     const startedAt = Date.now()
+    logInfo('submit', '开跑会话已创建', {
+      scantronId,
+      lineId: input.line.pointId,
+      lineName: input.line.pointName,
+      km: Number(input.km.toFixed(2)),
+      fitDegree: input.fitDegree,
+      points: input.points.length,
+    })
 
     // ② 真实等待（安全设计：让 endTime-startTime 与服务器观测一致）
     const planned = Math.max(1, Math.round(input.plannedSeconds))
     phase.value = 'waiting'
     remainingSeconds.value = planned
     phaseMessage.value = `会话已创建，正在「跑」：为了让时间线一致，需真实等待 ${Math.ceil(planned / 60)} 分钟`
+    logInfo('submit', '进入真实等待', { plannedSeconds: planned, minutes: Math.round(planned / 60) })
     await new Promise<void>((resolve) => {
       stopWait()
       waitTimer = setInterval(() => {
@@ -423,6 +469,8 @@ export function useMpReal() {
       const detail = await MpApiWrapper.saveScoreDetail(buildScoreDetailRequest(context), options)
       out.detailOk = detail.ok
       out.detailMessage = detail.message || (detail.ok ? '轨迹提交成功' : '轨迹提交失败')
+      if (detail.ok) logInfo('submit', '轨迹明细已提交', { detail: out.detailMessage })
+      else logWarn('submit', '轨迹明细提交失败', { message: out.detailMessage })
     } else {
       out.detailOk = undefined
       out.detailMessage = '成绩未成功 → 按源码行为不发轨迹，也不重试'
@@ -435,6 +483,17 @@ export function useMpReal() {
       : looksLikeTokenExpired(score.raw)
         ? TOKEN_EXPIRED_HINT
         : `提交失败：${out.scoreMessage}`
+    if (score.ok) {
+      logInfo('submit', '成绩提交成功', {
+        scantronId,
+        km: Number(input.km.toFixed(2)),
+        durationSeconds: planned,
+        fitDegree: input.fitDegree,
+        waitedSeconds: Math.round((submittedAt - startedAt) / 1000),
+      })
+    } else {
+      logError('submit', '成绩提交失败', { scantronId, message: out.scoreMessage })
+    }
     return out
   }
 
@@ -467,6 +526,19 @@ export function useMpReal() {
     )
     const data = (arch.data as { data?: Record<string, unknown>[] } | undefined)?.data ?? []
     const mine = data.find((r) => String(r.scoreId) === String(id)) ?? null
+    if (mine) {
+      logInfo('submit', '判定已读回', {
+        scantronId: id,
+        scorePassType: mine.scorePassType,
+        warnType: mine.warnType,
+        trajectorySimilary: mine.trajectorySimilary,
+        scorePassRemark: mine.scorePassRemark,
+        mileage: mine.mileage,
+        usedTime: mine.usedTime,
+      })
+    } else {
+      logWarn('submit', '判定暂未在归档中找到', { scantronId: id })
+    }
     if (result.value) {
       result.value.record = mine
       result.value.verdictText = mine
@@ -501,6 +573,7 @@ export function useMpReal() {
       cameraFlag.value = null
       cameraFlagLineId.value = ''
       cameraFlagError.value = `读取该线路的摄像头杆开关失败：${cam.message}`
+      logWarn('gate', '摄像头杆开关读取失败', { lineId: id, message: cam.message })
       return
     }
     const flag = (cam.data as Record<string, unknown> | undefined)?.flag
@@ -508,6 +581,10 @@ export function useMpReal() {
     cameraFlagLineId.value = id
     cameraFlagError.value =
       typeof flag === 'boolean' ? '' : `该线路的 getCameraConfig 未返回布尔 flag（实际 ${JSON.stringify(flag)}），按"未知"处理`
+    logInfo('gate', `摄像头杆开关：${cameraFlag.value === true ? '启用（会拦）' : cameraFlag.value === false ? '未启用（放行）' : '未知'}`, {
+      lineId: id,
+      flag: cameraFlag.value,
+    })
   }
 
   /** 界面按钮用：强制重查「当前选中线路」的摄像头杆开关（失败不再永久卡住） */

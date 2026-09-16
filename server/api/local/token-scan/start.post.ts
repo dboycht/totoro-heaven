@@ -6,6 +6,7 @@
  */
 import { assertLocalRequest, beginScan } from '../../../utils/tokenScanState'
 import { launchTokenScanner } from '../../../utils/tokenScanRunner'
+import { logInfo } from '../../../utils/logger'
 
 export default defineEventHandler((event) => {
   assertLocalRequest(event)
@@ -16,6 +17,7 @@ export default defineEventHandler((event) => {
 
   const st = beginScan()
   launchTokenScanner(endpoint, st.nonce)
+  logInfo('token', '开始扫描微信小程序进程内存', { port })
 
   return {
     ok: true,
