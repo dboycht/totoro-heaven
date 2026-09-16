@@ -121,16 +121,20 @@ test('buildScoreRequest：拟合度按两位小数提交（0.976 → "0.98"）',
   assert.equal(buildScoreRequest(makeContext({ fitDegree: 0.976 })).fitDegree, '0.98')
 })
 
-test('buildScoreDetailRequest：轨迹明细 6 字段（含空传感器数组与 cheatCode）', () => {
+test('buildScoreDetailRequest：只有 3 个字段，且每个点都带 time（HH:mm:ss）', () => {
   const req = buildScoreDetailRequest(makeContext())
-  assert.deepEqual(req, {
-    pointList: points,
-    gyroscope: [],
-    accelerometer: [],
-    cheatCode: '正常跑步',
-    scantronId: 'sunrunId202609142335',
-    token: 'TESTTOKEN',
-  })
+  // 依据：小程序源码 `data:{pointList:h.data.polyline[0].points, scantronId:w, token}`（v65/v67 逐字一致）
+  assert.deepEqual(Object.keys(req).sort(), ['pointList', 'scantronId', 'token'])
+  assert.equal(req.scantronId, 'sunrunId202609142335')
+  assert.equal(req.token, 'TESTTOKEN')
+  assert.equal(req.pointList.length, points.length)
+  // ⚠️ 服务端要求点里有 time（缺了会回 `code:"1" GPS位置为空！` 整条拒收，见 ERROR.md E33）
+  for (const p of req.pointList) {
+    assert.match(p.time, /^\d{2}:\d{2}:\d{2}$/, `点的时间格式不对：${p.time}`)
+  }
+  assert.equal(req.pointList[0]!.latitude, points[0]!.latitude)
+  assert.equal(req.pointList[0]!.time, '21:33:43', '首点=起跑时刻')
+  assert.equal(req.pointList[req.pointList.length - 1]!.time, '21:49:43', '末点=结束时刻（durationSeconds=960）')
 })
 
 test('toSubmitPoints：字符串坐标转数字（接口习惯 6 位小数）', () => {

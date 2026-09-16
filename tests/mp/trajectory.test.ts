@@ -68,7 +68,7 @@ test('generateCorridorRoute：拟合度 ≥ 0.95（走廊内抖动）', () => {
   assert.equal(g.fitDegree, Number(score).toFixed(2))
 })
 
-test('generateCorridorRoute：drift 开启后拟合度落到 0.9x（不再满分，像真实 GPS）', () => {
+test('generateCorridorRoute：drift 开启后拟合度落进 0.70~0.85（贴近真跑，2026-09-16 用户要求）', () => {
   const route = loopRoute()
   const scores = [7, 11, 42, 2026, 20260914].map((seed) => {
     const g = generateCorridorRoute(route, { targetKm: 0.6, seed, drift: true })
@@ -77,11 +77,10 @@ test('generateCorridorRoute：drift 开启后拟合度落到 0.9x（不再满分
     return calculateRouteSimilarity(route, pts)
   })
   for (const [i, score] of scores.entries()) {
-    assert.ok(score >= 0.85, `第 ${i} 个种子的拟合度 ${score} 过低（应 ≥0.85）`)
-    assert.ok(score <= 0.999, `第 ${i} 个种子的拟合度 ${score} 满分，太假`)
+    // 依据：用户真跑那条云端归档 trajectorySimilary = 0.75（判「有效」）；任务阈值 0.60，故 0.70 起仍有余量
+    assert.ok(score >= 0.7, `第 ${i} 个种子的拟合度 ${score} 低于控幅下限 0.70`)
+    assert.ok(score <= 0.85, `第 ${i} 个种子的拟合度 ${score} 高于控幅上限 0.85（不像真跑）`)
   }
-  // 至少有一个种子明显低于满分（证明 drift 真的起作用）
-  assert.ok(scores.some((s) => s < 0.995), `拟合度都接近满分：${scores.map((s) => s.toFixed(3)).join(', ')}`)
 })
 
 test('generateCorridorRoute：drift 不产生飞点（逐点速度 < 12 m/s）', () => {

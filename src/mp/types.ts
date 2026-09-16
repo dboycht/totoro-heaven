@@ -622,14 +622,10 @@ export interface MpScoreRequest {
   [key: string]: unknown
 }
 
-/** sunRunExercisesDetail（轨迹明细）入参 */
+/** sunRunExercisesDetail（轨迹明细）入参 —— 小程序只发这 3 个字段 */
 export interface MpScoreDetailRequest {
-  pointList: { latitude: number; longitude: number }[]
-  /** 客户端本就只发空数组（源码硬编码），故 cheatCode 无法被服务端复算 */
-  gyroscope: unknown[]
-  accelerometer: unknown[]
-  /** 运动分析结论（合法值见 MP_CHEAT_CODE） */
-  cheatCode: string
+  /** 轨迹点：**必须带 `time`（HH:mm:ss）**，否则服务端判「GPS位置为空！」整条拒收（2026-09-16 查实） */
+  pointList: { latitude: number; longitude: number; time: string }[]
   scantronId: string
   token: string
   [key: string]: unknown

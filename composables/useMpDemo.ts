@@ -18,6 +18,7 @@
 import { calculateRouteSimilarity, type LatLng } from '~/utils/mp/routeSimilarity'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import { buildRunStats, buildTimeFields } from '~/utils/mp/runData'
+import { buildScoreDetailRequest } from '~/utils/mp/submitPayload'
 import { evaluateRunAgainstTask, type TaskCheckResult } from '~/utils/mp/taskRules'
 import { newRunSeed, planRealisticRun, type RunPlan } from '~/utils/mp/realism'
 import { toSubmitRunType, type MpRunLine, type MpRunRecord, type MpScoreDetailRequest, type MpScoreRequest, type MpSunrunTask } from '~/src/mp/types'
@@ -383,14 +384,22 @@ export function useMpDemo() {
       flag: '1',
     }
 
-    const detailRequest: MpScoreDetailRequest = {
-      pointList: points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) })),
-      gyroscope: [],
-      accelerometer: [],
-      cheatCode: '正常跑步',
-      scantronId,
+    // 轨迹明细预览：与真实提交**同一构造器**（3 字段 + 每点带 time），避免预览与实发不一致。
+    // 该构造器只用到 points/startMs/durationSeconds/scantronId/token，其余字段是占位。
+    const detailRequest: MpScoreDetailRequest = buildScoreDetailRequest({
+      snCode: stuNumber,
+      schoolCode,
+      task: task.value,
+      line: { pointId: run.value.lineId || 'demo-line', taskId: task.value.taskId ?? '', pointName: '', pointList: [] },
+      km: distanceKm,
+      durationSeconds,
+      fitDegree,
+      points: points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) })),
       token,
-    }
+      scantronId,
+      startMs: endedAtMs - durationSeconds * 1000,
+      endMs: endedAtMs,
+    })
 
     const check = evaluateRunAgainstTask({
       task: task.value,

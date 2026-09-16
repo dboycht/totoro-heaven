@@ -3,13 +3,14 @@
  *
  * 字段口径全部来自 **2026-09-14 实测**（`_mp-analyze/9-14-实测日志.md`）：
  *   - `sunRunExercises` 18 字段逐字对齐（含 `steps:""` 实测空串、`flag:"1"`、token 在 body 再传一份）
- *   - `sunRunExercisesDetail`：`pointList + gyroscope:[] + accelerometer:[] + cheatCode:"正常跑步" + scantronId + token`
+ *   - `sunRunExercisesDetail`：**只有 3 个字段** `pointList + scantronId + token`（2026-09-16 修正；
+ *     点必须带 `time:"HH:mm:ss"`，否则服务端判「GPS位置为空！」整条拒收）
  *   - `getRunBegin`：`paperId = line.taskId`、`lineId = line.pointId`、**不带 token**（源码实测）
  *
  * ⚠️ 这些函数只负责"拼报文"；实际请求、等待与判定在 `composables/useMpReal.ts`。
  */
 import type { MpRunLine, MpScoreDetailRequest, MpScoreRequest, MpSunrunTask } from '../../src/mp/types'
-import { buildRunStats, buildTimeFields } from './runData'
+import { buildRunStats, buildTimeFields, withPointTimes } from './runData'
 
 /** 微信基础库版本（实测真包同款） */
 export const MP_CLIENT_VERSION = '4.1.12.55'
@@ -90,13 +91,18 @@ export function buildScoreRequest(context: RealSubmitContext): MpScoreRequest {
   }
 }
 
-/** sunRunExercisesDetail 报文（轨迹明细；顺序上必须在成绩成功之后） */
+/** sunRunExercisesDetail 报文（轨迹明细；顺序上必须在成绩成功之后）
+ *
+ * ⚠️ 2026-09-16 修正（用户真跑对比后查实）：小程序**只发 3 个字段**
+ *   `{ pointList: polyline[0].points, scantronId, token }`（v65/v67 逐字一致）；
+ *   且每个点形如 `{ latitude, longitude, time: "HH:mm:ss" }`。
+ *   我们此前多发 `gyroscope/accelerometer/cheatCode`（来自第三方实现，小程序并没有），
+ *   且**点里漏了 `time`** → 服务端回 `code:"1", message:"GPS位置为空！"` 整条拒收 →
+ *   云端 `pointList = null` → 详情页地图没有轨迹（见 `_mp-analyze/capture/submit-result.json` 与 ERROR.md E33）。
+ */
 export function buildScoreDetailRequest(context: RealSubmitContext): MpScoreDetailRequest {
   return {
-    pointList: context.points,
-    gyroscope: [],
-    accelerometer: [],
-    cheatCode: '正常跑步',
+    pointList: withPointTimes(context.points, context.startMs, context.durationSeconds),
     scantronId: context.scantronId,
     token: context.token,
   }

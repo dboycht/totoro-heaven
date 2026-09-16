@@ -50,6 +50,15 @@ export interface GeneratedRoute {
   driftEpisodes: number
 }
 
+/**
+ * 拟合度控幅目标区间（2026-09-16 用户要求改为 **0.70~0.85**）。
+ *
+ * 依据：用户真跑那条云端归档 `trajectorySimilary = 0.75`（判「有效」），
+ * 而我们此前控在 0.90~0.985 偏高、不像真跑；任务阈值是 0.60，故 0.70 起仍有余量。
+ */
+export const FIT_TARGET_MIN = 0.7
+export const FIT_TARGET_MAX = 0.85
+
 /** 可复现随机数（mulberry32） */
 function createRng(seed: number): () => number {
   let a = seed >>> 0
@@ -245,14 +254,19 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     }
   }
   /** 按弧长位置查偏移（米）：同路段每圈/每次折返偏移一致 → 像真实多径 */
-  const offsetAt = (arcPos: number, zoneCount: number, ampScale: number): { lat: number; lng: number } => {
+  /** 按弧长位置查偏移（米）：同路段每圈/每次折返偏移一致 → 像真实多径
+   *  `lenScale` 缩放"漂移区长度"（2026-09-16 新增）：实测发现**长度覆盖率**才是拟合度的主控杠杆
+   *  （幅度 26~44m 本就超 25m 容差；区太短则大部分采样仍被命中，拟合度压不下来）。 */
+  const offsetAt = (arcPos: number, zoneCount: number, ampScale: number, lenScale = 1): { lat: number; lng: number } => {
     let lat = 0
     let lng = 0
-    for (let zi = 0; zi < zoneCount; zi++) {
-      const z = zones[zi]!
+    for (let zi = 0; zi < Math.min(zoneCount, zones.length); zi++) {
+      const z = zones[zi]
+      if (!z) break
+      const zoneLen = z.lenM * lenScale
       const d = (((arcPos - z.startM) % pathTotal) + pathTotal) % pathTotal
-      if (d <= z.lenM) {
-        const w = Math.sin(Math.PI * (d / z.lenM)) // 平滑进出，峰值在区间中点
+      if (d <= zoneLen) {
+        const w = Math.sin(Math.PI * (d / zoneLen)) // 平滑进出，峰值在区间中点
         lat += (z.perpM * ampScale * z.perpLat + z.alongM * ampScale * z.alongLat) * w
         lng += (z.perpM * ampScale * z.perpLng + z.alongM * ampScale * z.alongLng) * w
       }
@@ -261,7 +275,7 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
   }
 
   /** 构建一条轨迹（**同一 seed** → 每次尝试的抖动完全一致，只有偏移档位不同） */
-  const buildTrajectory = (zoneCount: number, ampScale: number) => {
+  const buildTrajectory = (zoneCount: number, ampScale: number, lenScale = 1) => {
     const r = createRng(seed)
     const pts: { latitude: number; longitude: number }[] = []
     let eLat = 0
@@ -270,7 +284,7 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     let p = 0
     // ⚠️ 首点也必须走同一套"抖动 + 偏移"（否则首点与第二点之间会凭空出现一次 15~22m 跳变 —— 实测抓到的）
     const first = locate(0)
-    const off0 = driftOn ? offsetAt(first.arc, zoneCount, ampScale) : { lat: 0, lng: 0 }
+    const off0 = driftOn ? offsetAt(first.arc, zoneCount, ampScale, lenScale) : { lat: 0, lng: 0 }
     pts.push({
       latitude: first.lat + off0.lat / M_PER_DEG_LAT,
       longitude: first.lng + off0.lng * degLngPerMeter(first.lat),
@@ -280,7 +294,7 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
       const here = locate(p)
       eLat = rho * eLat + innovScale * gauss(r, 0, jitterSigmaM)
       eLng = rho * eLng + innovScale * gauss(r, 0, jitterSigmaM)
-      const off = driftOn ? offsetAt(here.arc, zoneCount, ampScale) : { lat: 0, lng: 0 }
+      const off = driftOn ? offsetAt(here.arc, zoneCount, ampScale, lenScale) : { lat: 0, lng: 0 }
       const lat = here.lat + (eLat + off.lat) / M_PER_DEG_LAT
       const lng = here.lng + (eLng + off.lng) * degLngPerMeter(here.lat)
       const prev = pts[pts.length - 1]!
@@ -295,29 +309,54 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
   let fit = calculateRouteSimilarity(route, built.pts)
   let usedZones = driftOn ? 1 : 0
 
-  // 闭环加码：用**真算法**测到拟合度落进 [0.90, 0.985]（不是满分、也不至于太离谱）
+  /**
+   * 闭环加码：用**真算法**测到拟合度落进 [FIT_TARGET_MIN, FIT_TARGET_MAX]。
+   *
+   * 为什么是 0.70~0.85（2026-09-16 用户要求 + 真跑对照）：
+   *   - 用户真跑那条云端归档 `trajectorySimilary = 0.75`（有效），而我们此前控在 0.90~0.985 → **偏高、不像真跑**；
+   *   - 任务阈值（`task.fitDegree`）是 **0.60**，控到 0.70 起仍有余量，不会被判不合格。
+   *
+   * 实现：按"偏移区数 × 幅度"做**确定性扫描**（幅度几何递增），一旦测得 ≤ 上限即停；
+   * 若某一档掉到下限以下（掉太狠、失真），保留上一档 —— 宁可略高，也不要出现"穿墙"式轨迹。
+   */
   if (driftOn) {
-    const ladder: [number, number][] = [
-      [1, 1.3],
-      [1, 1.65],
-      [2, 1.0],
-      [2, 1.3],
-      [2, 1.6],
-      [3, 1.0],
-      [3, 1.3],
-      [4, 1.0],
-      [4, 1.25],
-      [5, 1.0],
-    ]
-    for (const [zoneCount, ampScale] of ladder) {
-      if (fit <= 0.985) break
-      const attempt = buildTrajectory(zoneCount, ampScale)
-      const f = calculateRouteSimilarity(route, attempt.pts)
-      if (f < 0.88) break // 掉太狠：保留上一档（宁可略高，别失真）
-      built = attempt
-      fit = f
-      usedZones = zoneCount
+    /**
+     * 扫描顺序（**从"最不像假"到"最能把拟合度压下来"**）：
+     *   先加**区长度**（长度越长 → 偏离容忍区的采样越多），再加**区数**，最后加**幅度**。
+     * 选**第一个落进 [MIN, MAX] 的候选**；若整轮都进不了区间，退而求其次取"最接近区间"者。
+     */
+    const inRange = (f: number) => f >= FIT_TARGET_MIN && f <= FIT_TARGET_MAX
+    let best = { attempt: built, fit, zones: usedZones, ok: inRange(fit) }
+    let done = false
+    for (const lenScale of [1, 1.3, 1.7, 2.2, 2.8, 3.5, 4.5, 6]) {
+      for (const zoneCount of [1, 2, 3, 4, 5]) {
+        for (const ampScale of [1, 1.3]) {
+          const attempt = buildTrajectory(zoneCount, ampScale, lenScale)
+          const f = calculateRouteSimilarity(route, attempt.pts)
+          if (inRange(f)) {
+            best = { attempt, fit: f, zones: zoneCount, ok: true }
+            done = true
+            break
+          }
+          if (!best.ok) {
+            const better =
+              f > FIT_TARGET_MAX
+                ? best.fit > FIT_TARGET_MAX
+                  ? f < best.fit
+                  : true
+                : best.fit < FIT_TARGET_MIN
+                  ? f > best.fit
+                  : false
+            if (better) best = { attempt, fit: f, zones: zoneCount, ok: false }
+          }
+        }
+        if (done) break
+      }
+      if (done) break
     }
+    built = best.attempt
+    fit = best.fit
+    usedZones = best.zones
   }
 
   return {

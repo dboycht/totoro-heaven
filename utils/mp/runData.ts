@@ -163,3 +163,35 @@ export function buildTimeFields(startMs: number, endMs: number): TimeFields {
     endTimeISO: iso(endMs),
   }
 }
+
+/** 单点时间：`HH:mm:ss`（与 buildTimeFields 同一格式） */
+export function formatClock(ms: number): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const d = new Date(ms)
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+/**
+ * 给轨迹点补上 `time`（`HH:mm:ss`）—— **服务端要求**，缺了会被判「GPS位置为空！」整条明细被拒。
+ *
+ * 依据（2026-09-16 查实）：
+ *   - 小程序攒点时就带时间：`{latitude, longitude, time: this.getCurrentTime()}`（`HH:mm:ss`）；
+ *   - 我们 9-14 那次提交的抓包响应：`code:"1", message:"GPS位置为空！"`，而 `detailPointCount=1036`
+ *     —— 即"点有，但服务端认为无效"，根因就是**点里没有 `time`**；
+ *   - 现象：云端该条 `getSunrunArchDetail.pointList = null` → 详情页地图**没有轨迹**（真跑有 1121 个点）。
+ *
+ * 时间按「1 秒 1 点」均匀铺开（首点=起跑时刻，末点=结束时刻），与小程序 ~1Hz 的真实采样一致。
+ */
+export function withPointTimes<T extends { latitude: number; longitude: number }>(
+  points: T[],
+  startMs: number,
+  durationSeconds: number,
+): (T & { time: string })[] {
+  const n = points.length
+  if (!n) return []
+  const span = Math.max(0, Math.round(durationSeconds))
+  return points.map((p, i) => {
+    const at = n === 1 ? 0 : Math.round((span * i) / (n - 1))
+    return { ...p, time: formatClock(startMs + at * 1000) }
+  })
+}
