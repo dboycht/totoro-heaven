@@ -66,7 +66,7 @@
 withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
 
 const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
-const { latest, hasUpdate, checking, error, checkedAt, appVersion, releasesUrl, repoUrl, checkForUpdate, forceCheck, dismissUpdate } =
+const { latest, hasUpdate, checking, error, checkedAt, fromCache, appVersion, releasesUrl, repoUrl, checkForUpdate, forceCheck, dismissUpdate } =
   useUpdateCheck()
 
 /** 手动「立即检测」：强制重新请求，并把结果直接反馈给用户 */
@@ -77,13 +77,12 @@ const checkNow = async () => {
   else showSnackbar(`已是最新版本（v${appVersion.value}）${latest.value ? ` · 远端 v${latest.value}` : ''}`, 'success')
 }
 
-/** 上次检测时间的相对文案 */
+/** 上次检测时间的相对文案（⚠️ 用缓存时明确标注"本地缓存"，避免看起来像刚查过） */
 const checkedText = computed(() => {
   if (!checkedAt.value) return '未检测'
   const sec = Math.max(0, Math.round((Date.now() - checkedAt.value) / 1000))
-  if (sec < 60) return '刚刚检测'
-  if (sec < 3600) return `${Math.floor(sec / 60)} 分钟前检测`
-  return `${Math.floor(sec / 3600)} 小时前检测`
+  const age = sec < 60 ? '刚刚' : sec < 3600 ? `${Math.floor(sec / 60)} 分钟前` : `${Math.floor(sec / 3600)} 小时前`
+  return fromCache.value ? `${age}的结果（本地缓存，点「立即检测」刷新）` : `${age}检测`
 })
 
 onMounted(() => void checkForUpdate())

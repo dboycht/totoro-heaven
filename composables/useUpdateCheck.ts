@@ -15,7 +15,11 @@ export const RELEASES_URL = `https://github.com/${REPO}/releases/latest`
 export const REPO_URL = `https://github.com/${REPO}`
 const CACHE_KEY = 'totoro_update_check_v1'
 const DISMISS_KEY = 'totoro_update_dismiss_v1'
-const CACHE_TTL_MS = 12 * 3600 * 1000
+/**
+ * 缓存"新鲜期"：超过就**宁可重查**，也不给用户一个旧结论
+ * （2026-09-16 教训：原来 12 小时内直接信缓存，会让"刚发布的新版本"在用户界面里显示成旧版本）
+ */
+const FRESH_MS = 30 * 60 * 1000
 const DISMISS_TTL_MS = 24 * 3600 * 1000
 
 /** 单例状态 */
@@ -27,8 +31,10 @@ const state = reactive({
   checking: false,
   /** 检查失败原因（界面直接展示；成功时为空串） */
   error: '',
-  /** 上次检查完成时间（毫秒；0 = 还没查过） */
+  /** 上次检查完成时间（毫秒；0 = 还没查过）—— 用缓存时是**缓存时间**，界面才能诚实显示 */
   checkedAt: 0,
+  /** 本次结果是否来自缓存（界面据此提示"点立即检测刷新"） */
+  fromCache: false,
 })
 
 let started = false
@@ -46,7 +52,7 @@ async function runCheck(currentVersion: string, opts: { force?: boolean } = {}):
   state.checking = true
   state.error = ''
 
-  inflight = (async () => {
+  const task = (async () => {
     try {
       if (opts.force) {
         // 手动检测：忽略"已忽略"与缓存，强制重新请求
@@ -66,7 +72,7 @@ async function runCheck(currentVersion: string, opts: { force?: boolean } = {}):
         } catch {
           /* 忽略 */
         }
-        // 2) 缓存命中且未过期 → 直接用缓存
+        // 2) 缓存命中且未过期 → 直接用缓存（⚠️ 超过 FRESH_MS 视为"陈旧"，宁可重查也不给旧结论）
         let cached: { at: number; latest: string } | null = null
         try {
           const raw = sessionStorage.getItem(CACHE_KEY)
@@ -74,10 +80,11 @@ async function runCheck(currentVersion: string, opts: { force?: boolean } = {}):
         } catch {
           /* 忽略 */
         }
-        if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+        if (cached && Date.now() - cached.at < FRESH_MS) {
           state.latest = cached.latest
           state.hasUpdate = isNewerVersion(cached.latest, currentVersion)
-          state.checkedAt = Date.now()
+          state.checkedAt = cached.at // ← 用**缓存时间**，界面才能诚实显示"N 分钟前"
+          state.fromCache = true
           return
         }
       }
@@ -118,13 +125,22 @@ async function runCheck(currentVersion: string, opts: { force?: boolean } = {}):
       state.latest = latest
       state.hasUpdate = isNewerVersion(latest, currentVersion)
       state.checkedAt = Date.now()
+      state.fromCache = false
     } finally {
       state.checking = false
       started = true
-      inflight = null
     }
   })()
-  return inflight
+
+  // ⚠️ 必须"先赋值、再在 await 之后清理"：缓存的路径是同步完成的，
+  //    若把 inflight=null 写在 task 的 finally 里，会被这行赋值覆盖 → inflight 永远非空
+  //    → 之后「立即检测」全部被 `if (inflight) return` 挡掉（2026-09-16 真实 bug）。
+  inflight = task
+  try {
+    await task
+  } finally {
+    if (inflight === task) inflight = null
+  }
 }
 
 /** 忽略本次（24 小时内不再提示） */
