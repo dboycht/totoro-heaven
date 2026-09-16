@@ -67,13 +67,11 @@ export const VERSION_ENTRIES: VersionEntry[] = [
     date: '2026-09-16',
     channel: 'preview',
     title: '修复「立即检测」失效 + 缓存文案诚实化',
-    planned: true,
     highlights: [
       '修复「立即检测新版本」点了没反应：命中过缓存后按钮会被"并发去重"变量永久挡住（async 赋值顺序 bug）；',
       '缓存新鲜期收紧到 30 分钟：超过就重查，不再拿旧结论糊弄；',
       '缓存态文案改为「N 分钟前的结果（本地缓存，点「立即检测」刷新）」，不再假称"刚刚检测"。',
     ],
-    note: '开发中，尚未发布。',
   },
   {
     version: '1.1.5',
