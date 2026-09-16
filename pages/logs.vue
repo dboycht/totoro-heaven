@@ -80,15 +80,53 @@
         <v-btn size="small" variant="tonal" prepend-icon="mdi-folder-open-outline" @click="openLogFolder">
           打开日志文件夹
         </v-btn>
+        <v-btn size="small" variant="text" color="warning" prepend-icon="mdi-delete-sweep-outline" @click="askClear('today')">
+          清空今日
+        </v-btn>
+        <v-btn size="small" variant="text" color="error" prepend-icon="mdi-delete-forever-outline" @click="askClear('all')">
+          清空全部
+        </v-btn>
       </v-card-title>
       <v-card-subtitle v-if="serverDir" class="text-caption">
-        目录：<code>{{ serverDir }}</code>（按天切分，保留 7 天 / 上限 20MB）
+        目录：<code>{{ serverDir }}</code>（按天切分，<b>自动保留 7 天 / 上限 20MB</b>；也可手动清理）
+        <span v-if="serverFiles.length"> · 现有 {{ serverFiles.length }} 个文件：{{ serverFiles.map((f) => `${f.name}(${formatBytes(f.bytes)})`).join('、') }}</span>
       </v-card-subtitle>
       <v-card-text>
         <div v-if="serverErr" class="text-body-2 text-error mb-2">{{ serverErr }}</div>
         <pre class="text-caption log-pre">{{ serverLines.join('\n') }}</pre>
       </v-card-text>
     </v-card>
+
+    <!-- 清空服务端日志 确认框 -->
+    <v-dialog v-model="confirmClearOpen" max-width="520">
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon :color="clearMode === 'all' ? 'error' : 'warning'" class="mr-2">mdi-delete-sweep-outline</v-icon>
+          {{ clearMode === 'all' ? '清空全部服务端日志？' : '清空今日服务端日志？' }}
+        </v-card-title>
+        <v-card-text>
+          <v-alert :type="clearMode === 'all' ? 'error' : 'warning'" variant="tonal" density="compact" class="mb-3">
+            将删除 <b>{{ willDelete.length }} 个文件</b>（约 <b>{{ formatBytes(willDeleteBytes) }}</b>），<b>删了不可恢复</b>。
+          </v-alert>
+          <div class="text-body-2 mb-2">将删除：</div>
+          <ul class="text-caption pl-4 mb-2">
+            <li v-for="f in willDelete" :key="f.name">{{ f.name }}（{{ formatBytes(f.bytes) }}）</li>
+            <li v-if="!willDelete.length" class="text-medium-emphasis">（没有可删的文件）</li>
+          </ul>
+          <div class="text-caption text-medium-emphasis">
+            说明：日志目录 <code>{{ serverDir }}</code> 平时会自动清理（保留 7 天 / 上限 20MB）；
+            清空只影响<b>本机日志文件</b>，不影响任何成绩数据。
+          </div>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="confirmClearOpen = false">取消</v-btn>
+          <v-btn :color="clearMode === 'all' ? 'error' : 'warning'" variant="flat" :disabled="!willDelete.length" @click="doClear">
+            确认清空
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -189,6 +227,47 @@ const openLogFolder = async () => {
     showSnackbar(res.ok ? `已打开日志目录：${res.dir}` : `打开失败：${res.message ?? ''}`, res.ok ? 'success' : 'warning')
   } catch (err) {
     showSnackbar(`打开失败：${err instanceof Error ? err.message : String(err)}`, 'warning')
+  }
+}
+
+// ---- 手动清理服务端日志 ----
+const confirmClearOpen = ref(false)
+const clearMode = ref<'today' | 'all'>('today')
+const todayName = computed(() => {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `app-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.log`
+})
+/** 按模式算出"将被删除"的文件（用于确认框展示） */
+const willDelete = computed(() =>
+  clearMode.value === 'all' ? serverFiles.value : serverFiles.value.filter((f) => f.name === todayName.value),
+)
+const willDeleteBytes = computed(() => willDelete.value.reduce((s, f) => s + f.bytes, 0))
+
+const askClear = (mode: 'today' | 'all') => {
+  clearMode.value = mode
+  confirmClearOpen.value = true
+}
+
+const doClear = async () => {
+  const mode = clearMode.value
+  confirmClearOpen.value = false
+  try {
+    const res = await $fetch<{ ok: boolean; deleted: string[]; freedBytes: number; dir: string }>('/api/local/logs/clear', {
+      method: 'POST',
+      body: { mode },
+    })
+    logs.log('warn', 'ui', mode === 'all' ? '已清空全部服务端日志' : '已清空今日服务端日志', {
+      deleted: res.deleted,
+      freedBytes: res.freedBytes,
+    })
+    showSnackbar(
+      res.deleted.length ? `已删除 ${res.deleted.length} 个日志文件，释放 ${formatBytes(res.freedBytes)}` : '没有可删的日志文件',
+      res.deleted.length ? 'success' : 'info',
+    )
+    await loadServerLog()
+  } catch (err) {
+    showSnackbar(`清空失败：${err instanceof Error ? err.message : String(err)}`, 'warning')
   }
 }
 

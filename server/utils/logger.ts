@@ -65,7 +65,39 @@ function readFileSafe(p: string): string {
   }
 }
 
-/** 清一次过期/超额日志（模块加载时调用一次） */
+/** 清理模式：`today` 只删今天的日志文件；`all` 删全部日志文件 */
+export type ClearLogMode = 'today' | 'all'
+
+/**
+ * 手动清理日志（界面「清空今日 / 清空全部」用）。
+ * - 只动 `app-*.log`，不动目录里其它文件；
+ * - 返回删了哪些、释放了多少字节；**清理动作本身会被记进新日志**（便于追溯）。
+ */
+export function clearLogs(mode: ClearLogMode = 'today'): { deleted: string[]; dir: string; freedBytes: number } {
+  const deleted: string[] = []
+  let freedBytes = 0
+  try {
+    if (!existsSync(LOG_DIR)) return { deleted, dir: LOG_DIR, freedBytes }
+    const today = `app-${dateTag(new Date())}.log`
+    for (const f of readdirSync(LOG_DIR)) {
+      if (!f.startsWith('app-') || !f.endsWith('.log')) continue
+      if (mode === 'today' && f !== today) continue
+      const p = join(LOG_DIR, f)
+      try {
+        freedBytes += statSync(p).size
+        unlinkSync(p)
+        deleted.push(f)
+      } catch {
+        /* 单个文件删不掉就跳过（可能被占用） */
+      }
+    }
+  } catch {
+    /* 忽略 */
+  }
+  return { deleted, dir: LOG_DIR, freedBytes }
+}
+
+/** 清一天前的日志（保留 7 天 / 上限 20MB）——自动策略的入口，见文件头 */
 export function rotateOldLogs(): void {
   try {
     if (!existsSync(LOG_DIR)) return
