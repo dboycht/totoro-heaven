@@ -1,0 +1,115 @@
+/**
+ * 「版本信息」板块的数据（网页上展示 **贺图 + 更新日志**）
+ *
+ * 用途：用户会为每个版本做一张**贺图**，放进 `public/version-art/<版本号>.png`；
+ * 本文件负责把"版本、日期、渠道、更新要点、贺图路径"列出来，页面（`pages/version-info.vue`）渲染。
+ *
+ * 约定：
+ *   - **最新版本排在最前**（数组顺序 = 展示顺序）；
+ *   - `channel: 'preview'` = 预览测试版（1.1.*），`'stable'` = 建议使用的正式版（1.2.*）；
+ *   - 贺图路径统一由 `versionArtPath(version)` 生成，页面会自动尝试 png/jpg/jpeg/webp/svg。
+ */
+
+export type ReleaseChannel = 'preview' | 'stable'
+
+export interface VersionEntry {
+  /** 版本号（同时是贺图文件名） */
+  version: string
+  /** 发布/计划日期（YYYY-MM-DD） */
+  date: string
+  /** 渠道：预览测试版 / 正式版 */
+  channel: ReleaseChannel
+  /** 一句话标题 */
+  title: string
+  /** 是否还是"计划中"（未发布） */
+  planned?: boolean
+  /** 更新要点（网页上以列表展示） */
+  highlights: string[]
+  /** 附加说明（可选） */
+  note?: string
+}
+
+/** 贺图目录（`public/` 下按原路径对外提供） */
+export const VERSION_ART_DIR = '/version-art'
+
+/** 某个版本的贺图基路径（不含扩展名；页面会自动尝试多种扩展名） */
+export const versionArtPath = (version: string): string => `${VERSION_ART_DIR}/${version}`
+
+/** 支持的贺图扩展名（按优先级尝试） */
+export const VERSION_ART_EXTS = ['png', 'jpg', 'jpeg', 'webp', 'svg'] as const
+
+/** 渠道文案 */
+export const channelText = (c: ReleaseChannel): string => (c === 'stable' ? '建议使用（正式版）' : '预览测试版')
+
+/** 全站版本建议（显示在「版本信息」页顶部，也用于 README 口径） */
+export const VERSION_ADVICE = {
+  recommended: '1.2.*',
+  preview: '1.1.*',
+  recommendedEta: '9.20',
+} as const
+
+/** 版本列表（最新在前） */
+export const VERSION_ENTRIES: VersionEntry[] = [
+  {
+    version: '1.2.0',
+    date: '2026-09-20',
+    channel: 'stable',
+    title: '计划中的正式版（建议使用）',
+    planned: true,
+    highlights: [
+      '**建议使用 1.2.* 的发行版**（预计 9.20 发布）：当前 1.1.* 均为**预览测试版**；',
+      '1.2.* 将在此基础上收敛功能与稳定性，作为对外推荐的正式版本。',
+    ],
+    note: '本条目为计划项；发布后会补上贺图与完整更新日志。',
+  },
+  {
+    version: '1.1.6',
+    date: '2026-09-16',
+    channel: 'preview',
+    title: '修复「立即检测」失效 + 缓存文案诚实化',
+    planned: true,
+    highlights: [
+      '**修复「立即检测新版本」点了没反应**：命中过缓存后按钮会被"并发去重"变量永久挡住（async 赋值顺序 bug）；',
+      '缓存新鲜期收紧到 30 分钟：超过就重查，不再拿旧结论糊弄；',
+      '缓存态文案改为「N 分钟前的结果（本地缓存，点「立即检测」刷新）」，不再假称"刚刚检测"。',
+    ],
+    note: '开发中，尚未发布。',
+  },
+  {
+    version: '1.1.5',
+    date: '2026-09-16',
+    channel: 'preview',
+    title: '适配官方 wx67 + 修复「云端没有轨迹」',
+    highlights: [
+      '**适配龙猫官方 wx67 版本**（已逐条核对接口契约）；**请勿再使用更早的版本**；**本版本只支持「校园跑（校园阳光跑）」**；',
+      '**修复「云端没有轨迹」**：提交的轨迹点补齐 `time`（`HH:mm:ss`）并只发官方实际使用的 3 个字段 —— 此前服务端判「GPS位置为空！」整条拒收，导致详情页地图空白；',
+      '**拟合度控幅改为 0.70~0.85**、**里程改为 3.21~3.35km**（对齐本人真跑实测：0.75 / 3.21km）；',
+      '新增**日志系统**（本机事件日志 + 服务端文件日志，可筛选/复制/清空/打开日志文件夹；token 与个人信息一律脱敏）；',
+      '新增「**请使用最新版本**」提示与「**立即检测**」；连不上 GitHub 时明确提示检查网络 / 确认仓库是否改名迁移；',
+      '「关于」里新增「喜欢就 Star 一下」；含 1.1.4 的**一键获取 token**（只读扫描进程内存 + 服务端逐个验活）。',
+    ],
+  },
+  {
+    version: '1.1.4',
+    date: '2026-09-15',
+    channel: 'preview',
+    title: '一键获取 token + 体验优化与修复',
+    highlights: [
+      '**一键获取 token**：只读扫描电脑版微信小程序进程内存 → 服务端**逐个验活** → 自动登录并读取真实数据（约 5 秒）；',
+      '刷新后默认「干净状态」；新增「恢复上次任务」「清空本机数据」；',
+      'token 过期给出可操作提示（退出登录 → 学号+姓名重新登录）；首次启动教程；',
+      '修复：摄像头杆开关读取失败被永久卡住、`getCameraConfig` 的 `flag` 层级读错、本机端点 403 等。',
+    ],
+  },
+  {
+    version: '1.1.3',
+    date: '2026-09-15',
+    channel: 'preview',
+    title: '开跑前门禁真正落地 + 支持范围改为条件式',
+    highlights: [
+      '**开跑前三合一否决门禁**（开场人脸 / 随机抽查 / 摄像头杆）：任一开启**或状态未知**都在 `getRunBegin` **之前**拦住，不创建场次；',
+      '支持范围改为**条件式**（共享域 + 无风控校验），不再写"只支持某校"；',
+      '代理层安全加固（上游白名单 + 强制 HTTPS）。',
+    ],
+  },
+]

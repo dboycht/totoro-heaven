@@ -374,13 +374,14 @@ export function useMpReal() {
       return null
     }
 
-    // ⓪ 三合一否决门禁（必须在任何写操作之前）
+    // ⓪ 三合一否决门禁（必须在任何写操作之前）—— 含"夜间停用 22:30~06:00"（同一纯函数，实时取时钟）
     const gate = evaluateRunGate({
       schoolCode: profile.value.schoolCode,
       switches: switches.value,
       line: input.line,
       cameraFlag: cameraFlag.value,
       cameraFlagLineId: cameraFlagLineId.value,
+      now: new Date(),
     })
     if (!gate.allow) {
       phase.value = 'error'
@@ -618,6 +619,26 @@ export function useMpReal() {
   )
 
   /**
+   * 时钟 tick（每 30 秒）：**只**用于让"夜间停用（22:30~06:00）"这类与时间有关的门禁自动刷新，
+   * 不参与任何成绩/拟合度判定（判定仍只看任务的里程/配速/拟合度/时段那几个字段）。
+   */
+  const clockTick = useState('mpRealClockTick', () => Date.now())
+  let clockTimer: ReturnType<typeof setInterval> | null = null
+  onMounted(() => {
+    if (!import.meta.client) return
+    clockTick.value = Date.now()
+    clockTimer = setInterval(() => {
+      clockTick.value = Date.now()
+    }, 30_000)
+  })
+  onUnmounted(() => {
+    if (clockTimer !== null) {
+      clearInterval(clockTimer)
+      clockTimer = null
+    }
+  })
+
+  /**
    * 开跑前门禁的实时状态（**界面用它禁用「真实提交」按钮并说明原因**）。
    * 与 `submitRealRun` 内那道门禁调用同一个纯函数，保证"按钮说能点"与"点了真能提交"一致。
    */
@@ -628,6 +649,8 @@ export function useMpReal() {
       line: selectedLine.value,
       cameraFlag: cameraFlag.value,
       cameraFlagLineId: cameraFlagLineId.value,
+      // ⚠️ 依赖 clockTick：门禁里的"夜间停用（22:30~06:00）"要能**随时间自动刷新**（每 30 秒）
+      now: new Date(clockTick.value),
     }),
   )
 

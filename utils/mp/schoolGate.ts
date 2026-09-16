@@ -123,6 +123,8 @@ export interface RunGateInput {
   cameraFlag: boolean | null | undefined
   /** 上面那个 flag 对应的线路 id（防止"线路已切换但 flag 还是上一条的"） */
   cameraFlagLineId?: string | null | undefined
+  /** 当前时刻（**可注入**，便于测试；缺省取系统时间） */
+  now?: Date
 }
 
 /** 门禁结论 */
@@ -132,15 +134,50 @@ export interface RunGateResult {
   /** 拒绝原因（allow=false 时必填） */
   reason: string
   /** 命中的否决项代号（便于界面/测试断言） */
-  blockedBy?: 'switches_unknown' | 'start_face' | 'point_random' | 'camera_on' | 'camera_unknown'
+  blockedBy?: 'night' | 'switches_unknown' | 'start_face' | 'point_random' | 'camera_on' | 'camera_unknown'
+}
+
+/**
+ * **夜间停用时段**（用户 2026-09-16 要求："22:30 后禁止使用，防止出现不必要的麻烦"）。
+ *
+ * 口径：**22:30 ~ 次日 06:00 停用**（即每天可用窗口 = 06:00~22:30）。
+ *   - 为什么延伸到次日 06:00：任务本身的生效时段就是 06:00 起（`runTimeRuleList`），
+ *     凌晨其实也跑不了；把整夜都算停用时段，语义更清楚，也不会出现"0 点后又偷偷能用"。
+ *   - ⚠️ 只影响**开跑/提交**（门禁前置拦截），**不影响任何判定逻辑**：里程/拟合度/配速/时段自检
+ *     与 `scorePassType` 的读回一律照旧（见 `taskRules.ts`，本文件不碰）。
+ */
+export const NIGHT_BLOCK_START_MIN = 22 * 60 + 30 // 22:30
+export const NIGHT_BLOCK_END_MIN = 6 * 60 // 次日 06:00
+
+/** 当前是否处于夜间停用时段 */
+export function isNightBlocked(now: Date = new Date()): boolean {
+  const minutes = now.getHours() * 60 + now.getMinutes()
+  // 跨零点：>= 22:30 或 < 06:00 都算停用
+  return minutes >= NIGHT_BLOCK_START_MIN || minutes < NIGHT_BLOCK_END_MIN
+}
+
+/** 夜间停用时的提示文案（含当前时间，便于用户判断） */
+export function nightBlockReason(now: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const hhmm = `${pad(now.getHours())}:${pad(now.getMinutes())}`
+  return (
+    `现在是 ${hhmm}，处于**夜间停用时段（22:30~06:00）**：为避免不必要的麻烦，已停止开跑与提交。` +
+    `请在**每天 06:00 之后**再使用（只读功能仍可用：读取账号/任务、取 token、看记录与日志）。`
+  )
 }
 
 /**
  * 开跑前三合一否决门禁（**必须在 `getRunBegin` 之前调用**）。
- * 判定顺序：开关是否读到 → 开场人脸 → 随机抽查 → 摄像头杆（含"线路切了但没重查"）。
+ * 判定顺序：夜间停用 → 开关是否读到 → 开场人脸 → 随机抽查 → 摄像头杆（含"线路切了但没重查"）。
  * ℹ️ 学校**不再做白名单校验**（支持范围改条件式）；是否"已验证判分口径"只由界面软提示。
  */
 export function evaluateRunGate(input: RunGateInput): RunGateResult {
+  // ⓪ 夜间停用（最先判：到点就谁也别跑，避免留下深夜记录）
+  const now = input.now ?? new Date()
+  if (isNightBlocked(now)) {
+    return { allow: false, reason: nightBlockReason(now), blockedBy: 'night' }
+  }
+
   // ① 三个开关必须已读取（未知 ≠ 关闭）
   if (!input.switches || typeof input.switches !== 'object') {
     return {

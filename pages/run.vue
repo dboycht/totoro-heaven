@@ -1,5 +1,20 @@
 <template>
   <div>
+    <!-- 🌙 夜间停用（22:30~06:00）：放**页面最顶部**，任何模式下都先说明（避免白等一场 20 分钟的跑步） -->
+    <v-alert
+      v-if="gateStatus.blockedBy === 'night'"
+      type="warning"
+      variant="flat"
+      density="comfortable"
+      class="mb-4"
+    >
+      <div class="font-weight-bold">🌙 夜间停用时段（22:30~06:00）</div>
+      <div class="text-body-2">
+        为避免不必要的麻烦，此时间段<b>已停止开跑与提交</b>（只读功能仍可用）。请在每天 <b>06:00 之后</b>再使用。
+      </div>
+      <div class="text-caption mt-1">{{ gateStatus.reason }}</div>
+    </v-alert>
+
     <v-alert v-if="!isLoggedIn" type="warning" variant="tonal" density="comfortable" class="mb-4">
       未建立会话 —— 回到 <NuxtLink to="/">工作台</NuxtLink> 填 token 并点「读取真实账号与任务」。
     </v-alert>
@@ -150,7 +165,7 @@
                 color="primary"
                 block
                 prepend-icon="mdi-play"
-                :disabled="!activeTask"
+                :disabled="!activeTask || gateStatus.blockedBy === 'night'"
                 @click="start"
               >
                 开始跑步
@@ -284,12 +299,10 @@
           <v-chip v-if="phase !== 'idle'" size="small" variant="tonal" :color="phaseColor">{{ phaseMessage }}</v-chip>
         </div>
 
-        <v-alert v-if="!realReady" type="info" variant="tonal" density="compact">
+        <!-- 未读到真实任务时的提示（演示模式不算——它本来就不是真实数据） -->
+        <v-alert v-if="!realReady && !demoMode" type="info" variant="tonal" density="compact">
           尚未读取真实数据：先在<NuxtLink to="/">工作台</NuxtLink>粘贴 token 并点「读取真实账号与任务」。
           演示数据只能用于试界面与报文预览，<b>不会</b>真实提交。
-        </v-alert>
-        <v-alert v-else-if="!realReady" type="warning" variant="tonal" density="compact">
-          真实数据未就绪：先在工作台读取真实账号与任务。
         </v-alert>
         <!-- ⛔ 开跑前门禁：三个否决项任一开启（或状态未知）→ 从源头阻止创建场次 -->
         <v-alert

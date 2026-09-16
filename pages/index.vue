@@ -1,5 +1,21 @@
 <template>
   <div>
+    <!-- 🌙 夜间停用（22:30~06:00，用户要求）：最显眼位置提示，只读功能不受影响 -->
+    <v-alert
+      v-if="gateStatus.blockedBy === 'night'"
+      type="warning"
+      variant="flat"
+      density="comfortable"
+      class="mb-4"
+    >
+      <div class="font-weight-bold">🌙 夜间停用时段（22:30~06:00）</div>
+      <div class="text-body-2">
+        为避免不必要的麻烦，此时间段<b>已停止开跑与提交</b>；读取账号 / 取 token / 看记录与日志仍然可用。
+        请在每天 <b>06:00 之后</b>再开始跑步。
+      </div>
+      <div class="text-caption mt-1">{{ gateStatus.reason }}</div>
+    </v-alert>
+
     <!-- 🔔 版本提示 + 立即检测（组件内自带：有新版本→报警；连不上 GitHub→提示；正常→常驻行）-->
     <UpdateNotice />
 

@@ -11,6 +11,7 @@
       <v-btn to="/run" variant="text" prepend-icon="mdi-run" class="text-none">阳光跑</v-btn>
       <v-btn to="/records" variant="text" prepend-icon="mdi-format-list-bulleted" class="text-none">记录</v-btn>
       <v-btn to="/logs" variant="text" prepend-icon="mdi-text-box-search-outline" class="text-none">日志</v-btn>
+      <v-btn to="/version-info" variant="text" prepend-icon="mdi-image-multiple-outline" class="text-none">版本信息</v-btn>
       <v-spacer />
 
       <v-chip :color="isRealSession ? 'success' : 'default'" variant="tonal" size="small" class="mr-2">
