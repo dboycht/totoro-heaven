@@ -96,7 +96,7 @@ export function unverifiedSchoolNotice(schoolCode: string | undefined | null, sc
   const list = VERIFIED_SCHOOLS.filter((s) => s.verified)
     .map((s) => `${s.schoolName}（${s.schoolCode}）`)
     .join('、')
-  return `${who} 不在我们实测验证过的名单内（已验证：${list || '（无）'}）：可以开跑，但**判分口径未经实测**，首次提交后请到「记录」页核对是否判为「有效」。`
+  return `${who} 不在我们实测验证过的名单内（已验证：${list || '（无）'}）：可以开跑，但「判分口径未经实测」，首次提交后请到「记录」页核对是否判为「有效」。`
 }
 
 /** 非共享域（专属小程序等）的统一提示语 */

@@ -25,55 +25,106 @@ const state = reactive({
   /** 是否发现新版本（比当前版本新） */
   hasUpdate: false,
   checking: false,
+  /** 检查失败原因（界面直接展示；成功时为空串） */
+  error: '',
+  /** 上次检查完成时间（毫秒；0 = 还没查过） */
+  checkedAt: 0,
 })
 
 let started = false
+let inflight: Promise<void> | null = null
 
-async function checkForUpdate(currentVersion: string): Promise<void> {
-  if (!import.meta.client || started || state.checking) return
-  started = true
+/** 连不上 GitHub 时的提示（用户 2026-09-16 指定要点：检查网络 + 看看是不是有新仓库） */
+const CANNOT_CONNECT_HINT =
+  '无法连接到 GitHub（可能需要科学上网，或被防火墙/代理拦截）。请检查网络后重试；' +
+  '若一直连不上，也请去 GitHub 搜一下本项目名，确认「仓库是否已改名 / 迁移到新仓库」。'
+
+async function runCheck(currentVersion: string, opts: { force?: boolean } = {}): Promise<void> {
+  if (!import.meta.client) return
+  if (inflight) return inflight // 并发去重：同时只跑一次
+  if (!opts.force && started) return // 自动检查每次会话只做一次；手动（force）随时可跑
   state.checking = true
-  try {
-    // 1) 被"忽略"过且未过期 → 不提示
+  state.error = ''
+
+  inflight = (async () => {
     try {
-      const d = Number(localStorage.getItem(DISMISS_KEY) || 0)
-      if (d && Date.now() - d < DISMISS_TTL_MS) return
-    } catch {
-      /* 忽略 */
+      if (opts.force) {
+        // 手动检测：忽略"已忽略"与缓存，强制重新请求
+        try {
+          localStorage.removeItem(DISMISS_KEY)
+        } catch {
+          /* 忽略 */
+        }
+      } else {
+        // 1) 被"忽略"过且未过期 → 不提示（但仍标记已查过）
+        try {
+          const d = Number(localStorage.getItem(DISMISS_KEY) || 0)
+          if (d && Date.now() - d < DISMISS_TTL_MS) {
+            state.checkedAt = Date.now()
+            return
+          }
+        } catch {
+          /* 忽略 */
+        }
+        // 2) 缓存命中且未过期 → 直接用缓存
+        let cached: { at: number; latest: string } | null = null
+        try {
+          const raw = sessionStorage.getItem(CACHE_KEY)
+          if (raw) cached = JSON.parse(raw) as { at: number; latest: string }
+        } catch {
+          /* 忽略 */
+        }
+        if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+          state.latest = cached.latest
+          state.hasUpdate = isNewerVersion(cached.latest, currentVersion)
+          state.checkedAt = Date.now()
+          return
+        }
+      }
+
+      // 3) 查 GitHub 最新 Release（只读，不带任何本机数据）
+      let res: Response
+      try {
+        res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+          headers: { Accept: 'application/vnd.github+json' },
+          signal: AbortSignal.timeout(8000),
+        })
+      } catch {
+        // 网络层失败（DNS/超时/被拦/断网）
+        state.error = CANNOT_CONNECT_HINT
+        state.checkedAt = Date.now()
+        return
+      }
+      if (!res.ok) {
+        state.error =
+          res.status === 404
+            ? 'GitHub 上找不到这个仓库（可能已改名 / 迁移到新仓库）。请去 GitHub 搜一下本项目名，确认新仓库地址。'
+            : `GitHub 返回 HTTP ${res.status}，暂时无法确认最新版本。请稍后点「立即检测」重试。`
+        state.checkedAt = Date.now()
+        return
+      }
+      const json = (await res.json().catch(() => null)) as { tag_name?: string } | null
+      const latest = json?.tag_name ?? ''
+      if (!latest) {
+        state.error = 'GitHub 响应里没有版本号（仓库可能已改名 / 迁移）。请确认新仓库地址。'
+        state.checkedAt = Date.now()
+        return
+      }
+      try {
+        sessionStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), latest }))
+      } catch {
+        /* 忽略 */
+      }
+      state.latest = latest
+      state.hasUpdate = isNewerVersion(latest, currentVersion)
+      state.checkedAt = Date.now()
+    } finally {
+      state.checking = false
+      started = true
+      inflight = null
     }
-    // 2) 缓存命中且未过期 → 直接用缓存
-    let cached: { at: number; latest: string } | null = null
-    try {
-      const raw = sessionStorage.getItem(CACHE_KEY)
-      if (raw) cached = JSON.parse(raw) as { at: number; latest: string }
-    } catch {
-      /* 忽略 */
-    }
-    if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
-      state.latest = cached.latest
-      state.hasUpdate = isNewerVersion(cached.latest, currentVersion)
-      return
-    }
-    // 3) 查 GitHub 最新 Release（只读，不带任何本机数据）
-    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
-      headers: { Accept: 'application/vnd.github+json' },
-      signal: AbortSignal.timeout(6000),
-    })
-    if (!res.ok) return
-    const json = (await res.json().catch(() => null)) as { tag_name?: string } | null
-    const latest = json?.tag_name ?? ''
-    try {
-      sessionStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), latest }))
-    } catch {
-      /* 忽略 */
-    }
-    state.latest = latest
-    state.hasUpdate = isNewerVersion(latest, currentVersion)
-  } catch {
-    /* 网络失败/被墙 → 静默，不提示 */
-  } finally {
-    state.checking = false
-  }
+  })()
+  return inflight
 }
 
 /** 忽略本次（24 小时内不再提示） */
@@ -94,7 +145,9 @@ export function useUpdateCheck() {
     appVersion,
     releasesUrl: RELEASES_URL,
     repoUrl: REPO_URL,
-    checkForUpdate: () => checkForUpdate(appVersion.value),
+    checkForUpdate: () => runCheck(appVersion.value),
+    /** 手动「立即检测」：忽略缓存与"已忽略"，强制重新请求 */
+    forceCheck: () => runCheck(appVersion.value, { force: true }),
     dismissUpdate,
   }
 }
