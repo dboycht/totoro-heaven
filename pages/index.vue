@@ -1,5 +1,35 @@
 <template>
   <div>
+    <!-- 🔔 版本提示（用户要求：发布新版就提示用新版、别用老版）-->
+    <v-alert
+      v-if="hasUpdate"
+      type="warning"
+      variant="flat"
+      class="mb-4"
+      density="comfortable"
+    >
+      <div class="font-weight-bold">
+        <v-icon class="mr-1">mdi-update</v-icon>发现新版本 v{{ latest }}（你正在用 v{{ appVersion }}）
+      </div>
+      <div class="text-body-2">
+        <b>请下载并使用最新版本</b>：旧版本可能无法使用（校方接口/小程序会变），甚至可能产生<b>无效记录</b>。
+      </div>
+      <div class="d-flex flex-wrap ga-2 mt-2">
+        <v-btn size="small" color="warning" variant="flat" prepend-icon="mdi-download" :href="releasesUrl" target="_blank" rel="noopener">
+          去下载最新版
+        </v-btn>
+        <v-btn size="small" variant="text" prepend-icon="mdi-close" @click="dismissUpdate()">忽略本次（24 小时）</v-btn>
+      </div>
+    </v-alert>
+    <v-alert v-else type="info" variant="tonal" density="compact" class="mb-4">
+      <span class="text-body-2">
+        📌 <b>请始终使用最新版本</b>：每次发版都会修 bug、跟进校方与小程序的变化；<b>旧版本可能失效甚至产生无效记录</b>。
+        当前 <b>v{{ appVersion }}</b>（<a :href="releasesUrl" target="_blank" rel="noopener" class="text-primary">查看最新版</a>）
+        <span v-if="latest && !hasUpdate" class="text-medium-emphasis">· 已是最新（远端 v{{ latest }}）</span>
+        <span v-else-if="checking" class="text-medium-emphasis">· 正在检查更新…</span>
+      </span>
+    </v-alert>
+
     <v-alert type="info" variant="flat" class="mb-4" density="comfortable">
       <template #prepend>
         <v-icon>mdi-shield-check-outline</v-icon>
@@ -343,6 +373,11 @@
             回到本页再点一次「一键获取 token」即可。
             <br />（等价且更稳的做法：在微信里删除该小程序 → 重新打开 → 登录。两者都会解除微信绑定，请确认记得学号。）
           </v-alert>
+          <v-alert type="warning" variant="tonal" density="compact" class="mt-2">
+            <b>请始终使用最新版本</b>（当前 v{{ appVersion }}）：每次发版都会修 bug、跟进校方与小程序的变化；
+            旧版本可能无法使用，甚至产生<b>无效记录</b>。
+            <a :href="releasesUrl" target="_blank" rel="noopener" class="text-primary">查看最新版</a>
+          </v-alert>
         </v-card-text>
         <v-card-actions>
           <v-btn variant="text" prepend-icon="mdi-radar" @click="doTokenScanAndCloseGuide">知道了，立即获取 token</v-btn>
@@ -392,6 +427,9 @@ const verifiedSchoolText = computed(() => {
 const manualToken = ref('')
 const confirmClearOpen = ref(false)
 
+// 版本提示（用户要求：发新版就提示用新版）—— 启动查一次 GitHub 最新 Release（失败静默）
+const { latest, hasUpdate, checking, appVersion, releasesUrl, checkForUpdate, dismissUpdate } = useUpdateCheck()
+
 // ---------- 首次启动教程（用户要求：第一次启动弹教程） ----------
 const GUIDE_KEY = 'totoro_guide_seen_v1'
 const guideOpen = ref(false)
@@ -430,6 +468,8 @@ onMounted(() => {
   } catch {
     /* 忽略隐私模式等读取失败 */
   }
+  // 版本检查（用户要求：发新版就提示用新版）—— 失败静默，不影响任何功能
+  void checkForUpdate()
 })
 
 /** 载入演示数据（按需功能：只在"没有真实数据、只想看界面"时用） */
