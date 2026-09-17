@@ -203,7 +203,9 @@ export function groupRoutesByCampus(
         ? inferred
           ? `线路最多的一组（推断为本校区） · ${routes.length} 条`
           : `本校区${campusName ? `（${campusName}）` : ''} · ${routes.length} 条`
-        : `其他校区（约 ${kmText(distanceFromHomeM)}） · ${routes.length} 条`
+        : inferred
+          ? `另一组线路（约 ${kmText(distanceFromHomeM)}） · ${routes.length} 条`
+          : `其他校区（约 ${kmText(distanceFromHomeM)}） · ${routes.length} 条`
       return { index: i, kind: (isHome ? 'home' : 'other') as RouteCampusKind, count: routes.length, centroid: c.centroid, distanceFromHomeM, label, routes }
     })
     .sort((a, b) => (a.kind === b.kind ? a.distanceFromHomeM - b.distanceFromHomeM : a.kind === 'home' ? -1 : 1))
@@ -224,6 +226,13 @@ export function groupRoutesByCampus(
 export function warnForSelection(groups: RouteGroupsResult, lineId: string): string {
   const hit = groups.ordered.find((r) => String(r.line.pointId) === String(lineId))
   if (!hit || hit.kind === 'home') return ''
+  // ⚠️ 2026-09-17 修：**校区未知时不许下"其他校区"的结论**。
+  //    实测（用户真实反馈）：刷新后只剩缓存任务、档案没加载 ⇒ 拿不到校区名 ⇒ 代码按"线路最多的一组"推断本校区
+  //    （将军路 4 条），于是把**用户真正的天目湖校区**判成"其他校区，约 91 km" —— 纯误导。
+  if (groups.inferred) {
+    return 'ℹ️ 暂时无法判定校区归属（档案未加载或档案里没有校区名）：请确认所选线路属于你的校区；' +
+      '回「工作台」点「一键获取 token / 读取真实账号与任务」后会自动识别。'
+  }
   return `⚠️ 你选的是【其他校区】的线路，距本校区约 ${kmText(hit.distanceFromHomeM)}：轨迹会生成在该校区，请确认这是你要跑的。`
 }
 
