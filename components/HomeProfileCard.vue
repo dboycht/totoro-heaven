@@ -28,7 +28,7 @@
         还没读取真实账号。填入 token 后点左侧「读取真实账号与任务」。
       </v-alert>
 
-      <!-- 未验证学校：只提示"判分口径未实测"，不阻断（**读到档案后才显示**，否则还不知道是哪所学校） -->
+      <!-- 未验证学校：只提示"判分口径未实测"，不阻断（<b>读到档案后才显示</b>，否则还不知道是哪所学校） -->
       <v-alert v-if="realProfileMasked && realSchoolNotice" type="info" variant="tonal" density="compact" class="mt-3">
         {{ realSchoolNotice }}
       </v-alert>

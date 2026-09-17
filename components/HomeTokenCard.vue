@@ -68,7 +68,7 @@
       </v-alert>
 
       <!-- ⚠️ 2026-09-17 修：这两个徽章原本直接跟在 v-alert 后面（inline 元素紧跟块级提示），
-           在"提示文字换行 + 卡片内边距"时会出现**徽章压住提示框底边**的重叠。
+           在"提示文字换行 + 卡片内边距"时会出现<b>徽章压住提示框底边</b>的重叠。
            改成独立一行 flex 容器 + 明确上边距，跟谁都不挤。 -->
       <div v-if="isLoggedIn || realStatus === 'ready'" class="d-flex flex-wrap align-center ga-2 mt-3">
         <v-chip v-if="isLoggedIn" color="success" variant="tonal" size="small">
@@ -88,7 +88,7 @@
         已填入 token —— 点「读取真实账号与任务」即可校验并拉取真实数据（自动识别学校；非已验证学校会被拒绝）。
       </v-alert>
 
-      <!-- 上次读取的任务：**刷新后不自动恢复**（默认干净），这里给显式入口 -->
+      <!-- 上次读取的任务：<b>刷新后不自动恢复</b>（默认干净），这里给显式入口 -->
       <v-alert v-if="hasCachedTask && !realTask" type="info" variant="tonal" density="compact" class="mt-3">
         <div class="text-body-2">本机存有<b>上次读取的任务</b>：{{ cachedTaskLabel }}</div>
         <div class="d-flex flex-wrap ga-2 mt-2">

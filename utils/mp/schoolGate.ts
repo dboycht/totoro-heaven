@@ -165,8 +165,8 @@ export function nightBlockReason(now: Date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   const hhmm = `${pad(now.getHours())}:${pad(now.getMinutes())}`
   return (
-    `现在是 ${hhmm}，处于**夜间停用时段（22:30~06:00）**：为避免不必要的麻烦，已停止**真实提交**。` +
-    `本地模拟与预览仍可正常使用（跑一条看形状、自检、报文预览都可以）；要真提交请在**每天 06:00 之后**。`
+    `现在是 ${hhmm}，处于夜间停用时段（22:30~06:00）：为避免不必要的麻烦，已停止真实提交。` +
+    `本地模拟与预览仍可正常使用（跑一条看形状、自检、报文预览都可以）；要真提交请在每天 06:00 之后。`
   )
 }
 

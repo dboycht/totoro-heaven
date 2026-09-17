@@ -318,7 +318,7 @@ export const MP_ENDPOINTS = {
     payload: 'body',
     needToken: true,
     note:
-      '⚠️ 2026-09-15 修正：**flag 在 `body` 里**（`body.flag`），摄像头列表在同级 `data[]`。' +
+      '⚠️ 2026-09-15 修正：flag 在 `body` 里（`body.flag`），摄像头列表在同级 `data[]`。' +
       '依据：小程序源码 `getCameraConfig` → `CameraConfigFlag: t.body?.flag`（逐字）；第三方实现也读 `camera.body?.flag`。' +
       '此前误登记为 `top` → 读 `data.flag` 恒为 undefined → 门禁永远判定"摄像头杆未读取"（见 ERROR.md E30）。',
   },

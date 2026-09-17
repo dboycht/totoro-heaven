@@ -83,7 +83,7 @@ async function runCheck(currentVersion: string, opts: { force?: boolean } = {}):
         if (cached && Date.now() - cached.at < FRESH_MS) {
           state.latest = cached.latest
           state.hasUpdate = isNewerVersion(cached.latest, currentVersion)
-          state.checkedAt = cached.at // ← 用**缓存时间**，界面才能诚实显示"N 分钟前"
+          state.checkedAt = cached.at // ← 用缓存时间，界面才能诚实显示"N 分钟前"
           state.fromCache = true
           return
         }

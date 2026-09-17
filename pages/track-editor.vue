@@ -274,7 +274,7 @@ const zoomBy = (d: number) => {
 
 // ---------- 车道 + 轨迹预览 ----------
 const laneCount = ref(6)
-const laneNo = ref(3) // 默认**居中**那道（第 1 道=最内道；居中才不会看着"压在内圈上"）
+const laneNo = ref(3) // 默认居中那道（第 1 道=最内道；居中才不会看着"压在内圈上"）
 const seed = ref(20260917)
 const rings = computed<TrackRings>(() => ({ outer: outer.value, inner: inner.value }))
 const ringsReady = computed(() => outer.value.length >= 3 && inner.value.length >= 3)
@@ -430,7 +430,7 @@ const removeEntry = (id: string) => {
             </div>
           </v-card-text>
           <v-card-text class="text-caption text-medium-emphasis">
-            拖动=平移地图　单击=在当前位置**加一个点**　按住已有的小圆点拖动=改点　（编辑哪一圈见右侧）
+            拖动=平移地图　单击=在当前位置<b>加一个点</b>　按住已有的小圆点拖动=改点　（编辑哪一圈见右侧）
           </v-card-text>
         </v-card>
       </v-col>

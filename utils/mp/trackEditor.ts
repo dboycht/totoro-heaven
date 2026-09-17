@@ -187,7 +187,7 @@ export function validateRings(rings: TrackRings): { ok: boolean; problems: strin
   // ① 内圈的每个点都必须在外圈之内
   let innerOutside = 0
   for (const p of inner) if (!pointInRing(p, outer)) innerOutside++
-  if (innerOutside > 0) problems.push(`内圈有 ${innerOutside} 个点落在**外圈之外** —— 内圈必须整个画在外圈里面`)
+  if (innerOutside > 0) problems.push(`内圈有 ${innerOutside} 个点落在外圈之外 —— 内圈必须整个画在外圈里面`)
 
   // ② 两圈不能相交（相交时"车道线"必然一头贴外、一头贴内）
   const pr = makeProjector(ringCentroidLat(outer))
@@ -199,13 +199,13 @@ export function validateRings(rings: TrackRings): { ok: boolean; problems: strin
       if (segmentsCross(oXY[i]!, oXY[(i + 1) % oXY.length]!, iXY[j]!, iXY[(j + 1) % iXY.length]!)) crossings++
     }
   }
-  if (crossings > 0) problems.push(`内外圈**相交** ${crossings} 处 —— 两条圈不能交叉，否则插出来的车道线会一头贴外圈、一头贴内圈`)
+  if (crossings > 0) problems.push(`内外圈相交 ${crossings} 处 —— 两条圈不能交叉，否则插出来的车道线会一头贴外圈、一头贴内圈`)
 
   // ③ 环宽（跑道宽度）合理 —— 标准田径场约 8~10 m（含内场缓冲也不该到 20 m）
   if (widthM < 2) problems.push(`内外圈间距只有 ${widthM.toFixed(1)} m，太窄（不像跑道）`)
   else if (widthM > 20)
     problems.push(
-      `内外圈间距 ${widthM.toFixed(1)} m，**太宽**（标准跑道约 8~10 m）—— 这样"第 2 道"离内圈会有好几米，看起来就像压在圈上；建议把外圈贴着跑道外沿、或用「按外圈自动生成内圈」`,
+      `内外圈间距 ${widthM.toFixed(1)} m，太宽（标准跑道约 8~10 m）—— 这样"第 2 道"离内圈会有好几米，看起来就像压在圈上；建议把外圈贴着跑道外沿、或用「按外圈自动生成内圈」`,
     )
 
   return { ok: problems.length === 0, problems, widthM, innerOutside, crossings }
