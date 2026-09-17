@@ -131,15 +131,16 @@ for (const rel of PAGE_FILES) {
   }
 }
 
-// ---------- R5：成绩报文的构造出口 —— 已知分歧（警告，B 轮统一）----------
-const realHasBuilder = /buildScoreRequest\(/.test(realPath)
+// ---------- R5：成绩报文也必须走单一构造器（B 轮已统一，故这里是**硬断言**）----------
 const demoPath = read('composables/useMpDemo.ts')
+const realHasBuilder = /buildScoreRequest\(/.test(realPath)
 const demoHasBuilder = /buildScoreRequest\(/.test(demoPath)
-if (realHasBuilder && !demoHasBuilder) {
-  warnings.push(
-    '已知分歧（待 B 轮统一）：`useMpDemo.ts` 仍在**手写**成绩报文（约 366-385 行），' +
-      '而真实链路用 `buildScoreRequest()`。演示预览因此可能与实发漂移 —— 这是 E33「预览与实发不一致」的同类风险。',
-  )
+if (!realHasBuilder) {
+  failures.push('composables/useMpReal.ts：提交成绩必须走 `buildScoreRequest()`（单一构造出口）')
+}
+if (!demoHasBuilder) {
+  failures.push('composables/useMpDemo.ts：预览成绩报文必须走 `buildScoreRequest()`' +
+    '（此前是手抄 18 字段，会与实发漂移 —— E33 同类风险；2026-09-17 B 轮已统一）')
 }
 
 // ---------- 报告 ----------
@@ -154,4 +155,4 @@ if (failures.length) {
   for (const f of failures) console.log('   - ' + f)
   process.exit(1)
 }
-console.log('\n✅ 接线契约全部满足：门禁在写操作前、顺序正确、无 E33 复发字段、明细单一构造出口。')
+console.log('\n✅ 接线契约全部满足：门禁在写操作前、顺序正确、无 E33 复发字段、**成绩与明细都只有单一构造出口**。')

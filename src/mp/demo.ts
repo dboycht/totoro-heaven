@@ -39,11 +39,10 @@ export const DEMO_SWITCHES = {
   sunrunPointRandom: '0',
 }
 
-/** 【演示】客户端上报用的基础信息（实测真包为 version "4.1.12.55"、phoneInfo 纯品牌串） */
-export const DEMO_CLIENT = {
-  version: '4.1.12.55',
-  phoneInfo: 'microsoft&microsoft&Windows 11 x64',
-}
+// ⚠️ 2026-09-17（B 轮）删除 `DEMO_CLIENT`：演示页的成绩报文已改为走 `buildScoreRequest()` 单一构造器，
+//    不再需要这份手抄的 version/phoneInfo —— 而且它的 `phoneInfo` 是**三段式**，
+//    与真实提交用的纯品牌串（`MP_PHONE_INFO_SCORE`）不一致，留着只会再次误导。
+//    上报口径的唯一来源：`utils/mp/submitPayload.ts` 的 `MP_CLIENT_VERSION` / `MP_PHONE_INFO_*`。
 
 const M_PER_DEG_LAT = 111320
 

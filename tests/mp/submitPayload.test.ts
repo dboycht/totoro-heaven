@@ -121,6 +121,41 @@ test('buildScoreRequest：拟合度按两位小数提交（0.976 → "0.98"）',
   assert.equal(buildScoreRequest(makeContext({ fitDegree: 0.976 })).fitDegree, '0.98')
 })
 
+// ---------- B 轮（2026-09-17）：成绩报文统一为单一构造出口 ----------
+
+test('buildScoreRequest：默认是阳光跑（runType=0），taskId/路径点列都取自线路 —— 与旧行为逐字一致', () => {
+  const req = buildScoreRequest(makeContext())
+  assert.equal(req.runType, 0)
+  assert.equal(req.taskId, line.taskId)
+  assert.deepEqual(req.sunrunPathPointList, line.pointList)
+  assert.equal(req.steps, '', '真包 steps 恒为空串')
+  assert.equal(req.flag, '1')
+})
+
+test('buildScoreRequest：自由跑（runType=1）不带任务号、路径点列为空数组（真包口径）', () => {
+  const req = buildScoreRequest(makeContext(), { runType: 1 })
+  assert.equal(req.runType, 1)
+  assert.equal(req.taskId, '', '自由跑不带 taskId')
+  assert.deepEqual(req.sunrunPathPointList, [], '自由跑路径点列为 []')
+  // 其余口径不受 runType 影响
+  assert.equal(req.steps, '')
+  assert.equal(req.flag, '1')
+  assert.equal(req.km, '3.20')
+})
+
+test('buildScoreRequest：同一 context 两种 runType 的键集合完全相同（18 字段口径不因 runType 变化）', () => {
+  const sun = buildScoreRequest(makeContext())
+  const free = buildScoreRequest(makeContext(), { runType: 1 })
+  assert.deepEqual(Object.keys(free).sort(), Object.keys(sun).sort())
+  assert.equal(Object.keys(sun).length, 18, '实测真包就是 18 个字段')
+})
+
+test('buildScoreRequest：纯函数 —— 同参数两次调用结果一致（演示预览与实发同源的前提）', () => {
+  const a = buildScoreRequest(makeContext())
+  const b = buildScoreRequest(makeContext())
+  assert.deepEqual(a, b)
+})
+
 test('buildScoreDetailRequest：只有 3 个字段，且每个点都带 time（HH:mm:ss）', () => {
   const req = buildScoreDetailRequest(makeContext())
   // 依据：小程序源码 `data:{pointList:h.data.polyline[0].points, scantronId:w, token}`（v65/v67 逐字一致）

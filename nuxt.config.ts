@@ -1,9 +1,10 @@
 import { defineNuxtConfig } from 'nuxt/config'
 
 export default defineNuxtConfig({
-  // ⚠️ 2026-09-17 移除 `compatibilityDate`（vue-tsc 查出）：它是 **Nuxt 3.12+ 才有的键**，
-  //    本项目锁定 **nuxt 3.9.1**，`nuxt/schema` 里没有该键 ⇒ 运行时是**空操作**、却让 typecheck 失败。
-  //    将来升级 Nuxt 到 ≥3.12 时再加回（届时它才真正生效）。
+  // ⚠️ 2026-09-17 修正（vue-tsc 查出后**再更正**）：原先写在**根级**的 `compatibilityDate` 让 typecheck 失败
+  //    （`nuxt 3.9.1` 的 `NuxtConfig` 类型里没有这个键），但它**并不是空操作** ——
+  //    移除后 Nitro 立刻警告 `Using 2024-04-03 as fallback`，说明这个值是**被 Nitro 消费**的。
+  //    正解：放进 `nitro.compatibilityDate`（既有类型、又真正生效），值保持原样不变。
   devtools: { enabled: false },
   ssr: false,
   modules: [],
@@ -78,6 +79,9 @@ export default defineNuxtConfig({
     },
   },
   nitro: {
+    // 从根级挪到这里（2026-09-17）：值不变，但这是 Nitro **声明过**的键 —— 既有类型检查、
+    // 又能真正生效（根级那个位置虽然被 Nitro 读到了，却过不了 TypeScript）。
+    compatibilityDate: '2024-04-03',
     output: {
       dir: '.output',
     },

@@ -96,6 +96,16 @@ try {
     if (code === 0) failures.push('明细不再走构造器但检查器仍然通过（单一出口守卫失效）')
     else if (!out.includes('buildScoreDetailRequest')) failures.push(`报错信息不是预期的：\n${out}`)
   }
+
+  // ---------- 注入 4：成绩报文退回"手抄"（B 轮统一的反向守卫）----------
+  {
+    const dir = copyBase()
+    const file = join(dir, 'composables/useMpDemo.ts')
+    writeFileSync(file, readFileSync(file, 'utf8').replace(/buildScoreRequest\(/g, 'handWrittenScore('), 'utf8')
+    const { code, out } = run(dir)
+    if (code === 0) failures.push('成绩报文不再走构造器但检查器仍然通过（单一出口守卫失效）')
+    else if (!out.includes('buildScoreRequest')) failures.push(`报错信息不是预期的：\n${out}`)
+  }
 } finally {
   rmSync(sandbox, { recursive: true, force: true })
 }
@@ -106,4 +116,4 @@ if (failures.length) {
   for (const f of failures) console.log('   - ' + f)
   process.exit(1)
 }
-console.log('✅ 自测通过：基线通过、3 类注入（E33 复发 / 顺序错乱 / 绕过构造器）都被抓到且退出码非 0。')
+console.log('✅ 自测通过：基线通过、4 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器）都被抓到且退出码非 0。')

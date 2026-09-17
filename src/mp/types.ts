@@ -563,8 +563,10 @@ export interface MpSession {
 /** 跑步类型：小程序用 0=阳光跑，2=自由跑；提交时 2 会被转成 1 */
 export type MpRunType = 0 | 2
 
-/** 提交给 sunRunExercises 的 runType（源码：2 -> 1，其余原样） */
-export const toSubmitRunType = (runType: MpRunType): number => (runType === 2 ? 1 : runType)
+/** 提交给 sunRunExercises 的 runType（源码：2 -> 1，其余原样）。
+ *  返回类型收紧到 `0 | 1`（2026-09-17）：它是 `buildScoreRequest` 的入参类型，
+ *  收紧后"自由跑口径"能在编译期被检查，而不是靠运行时猜。 */
+export const toSubmitRunType = (runType: MpRunType): 0 | 1 => (runType === 2 ? 1 : runType)
 
 /** getRunBegin 入参 */
 export interface MpRunBeginRequest {

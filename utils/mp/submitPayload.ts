@@ -61,19 +61,35 @@ export function buildRunBeginRequest(context: {
   }
 }
 
-/** sunRunExercises 报文（18 字段，逐字对齐实测真包） */
-export function buildScoreRequest(context: RealSubmitContext): MpScoreRequest {
+/** 报文的 runType 口径：`0` = 阳光跑（默认） / `1` = 自由跑（源码 `2 -> 1`，见 `toSubmitRunType`） */
+export interface ScorePayloadOptions {
+  runType?: 0 | 1
+}
+
+/**
+ * sunRunExercises 报文（18 字段，逐字对齐实测真包）。
+ *
+ * ⚠️ **单一构造出口**（2026-09-17 健壮化 B 轮统一）：演示页的「报文预览」与真实提交**都必须走这里**。
+ *    此前 `composables/useMpDemo.ts` 手抄了一份 18 字段，导致预览可能和实发漂移
+ *    （E33 就是"预览与实发不一致"这一类；`scripts/check-wiring.mjs` 现已把它变成硬断言）。
+ *
+ * **自由跑口径**（真包源码：`sunrunPathPointList: (o?.pointList) || []`，自由跑时 `o` 为空）：
+ *   `runType = 1`、**不带任务号**（`taskId: ''`）、**路径点列为空数组**。
+ */
+export function buildScoreRequest(context: RealSubmitContext, options: ScorePayloadOptions = {}): MpScoreRequest {
+  const runType = options.runType ?? 0
   const stats = buildRunStats({
     distanceKm: context.km,
     durationSeconds: context.durationSeconds,
-    runType: 0, // 阳光跑
+    runType,
   })
   const time = buildTimeFields(context.startMs, context.endMs)
+  const freeRun = runType === 1
   return {
     scantronId: context.scantronId,
     stuNumber: context.snCode,
     schoolCode: context.schoolCode,
-    runType: 0, // 阳光跑（自由跑才转 1）
+    runType,
     km: stats.km,
     usedTime: stats.usedTime,
     fitDegree: Number(context.fitDegree).toFixed(2),
@@ -85,8 +101,8 @@ export function buildScoreRequest(context: RealSubmitContext): MpScoreRequest {
     evaluateDate: time.evaluateDate,
     endTime: time.endTime,
     startTime: time.startTime,
-    taskId: context.line.taskId ?? '',
-    sunrunPathPointList: context.line.pointList ?? [],
+    taskId: freeRun ? '' : (context.line.taskId ?? ''),
+    sunrunPathPointList: freeRun ? [] : (context.line.pointList ?? []),
     flag: '1',
   }
 }

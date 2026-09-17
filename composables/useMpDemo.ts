@@ -18,13 +18,12 @@
 import { calculateRouteSimilarity, type LatLng } from '~/utils/mp/routeSimilarity'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import { buildRunStats, buildTimeFields } from '~/utils/mp/runData'
-import { buildScoreDetailRequest } from '~/utils/mp/submitPayload'
+import { buildScoreDetailRequest, buildScoreRequest } from '~/utils/mp/submitPayload'
 import { evaluateRunAgainstTask, type TaskCheckResult } from '~/utils/mp/taskRules'
 import { newRunSeed, planRealisticRun, type RunPlan } from '~/utils/mp/realism'
 import { toSubmitRunType, type MpRunLine, type MpRunRecord, type MpScoreDetailRequest, type MpScoreRequest, type MpSunrunTask } from '~/src/mp/types'
 import {
   DEMO_ARCH_SUMMARY,
-  DEMO_CLIENT,
   DEMO_LINES,
   DEMO_PASS_POINTS,
   DEMO_SWITCHES,
@@ -363,26 +362,33 @@ export function useMpDemo() {
     // 实测真包里 steps 恒为 ""（源码全工程无赋值）→ 照抄该口径；估算值只作对照展示
     const stepsSubmitted = ''
 
-    const scoreRequest: MpScoreRequest = {
-      scantronId,
-      stuNumber,
-      schoolCode,
-      runType: submitRunType,
-      km: stats.km,
-      usedTime: stats.usedTime,
-      fitDegree: Number(fitDegree).toFixed(2),
-      avgSpeed: stats.avgSpeed,
-      steps: stepsSubmitted,
-      token,
-      version: DEMO_CLIENT.version,
-      phoneInfo: DEMO_CLIENT.phoneInfo,
-      evaluateDate: timeFields.evaluateDate,
-      endTime: timeFields.endTime,
-      startTime: timeFields.startTime,
-      taskId: run.value.runType === 0 ? task.value.taskId : '',
-      sunrunPathPointList: run.value.runType === 0 ? run.value.officialRoute : [],
-      flag: '1',
-    }
+    // ⚠️ 成绩报文与真实提交**同一构造器**（2026-09-17 B 轮统一）：演示预览不再手抄 18 字段，
+    //    否则真包口径一变，预览不会跟着变 —— 那正是 E33「预览与实发不一致」的同类风险。
+    //    构造器内部已按真包口径写死 `steps: ''`、`fitDegree` 两位小数、`flag: '1'`。
+    const scoreRequest: MpScoreRequest = buildScoreRequest(
+      {
+        snCode: stuNumber,
+        schoolCode,
+        task: task.value,
+        line: {
+          pointId: run.value.lineId || 'demo-line',
+          // ⚠️ `DEMO_LINES` 里没有 taskId；真包里 `taskId` 取线路的 taskId（实测两者同值），
+          //    这里显式补上，保持预览与真实提交一致。
+          taskId: task.value.taskId ?? '',
+          pointName: '',
+          pointList: run.value.officialRoute ?? [],
+        },
+        km: distanceKm,
+        durationSeconds,
+        fitDegree,
+        points: points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) })),
+        token,
+        scantronId,
+        startMs: endedAtMs - durationSeconds * 1000,
+        endMs: endedAtMs,
+      },
+      { runType: submitRunType },
+    )
 
     // 轨迹明细预览：与真实提交**同一构造器**（3 字段 + 每点带 time），避免预览与实发不一致。
     // 该构造器只用到 points/startMs/durationSeconds/scantronId/token，其余字段是占位。
