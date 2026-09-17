@@ -110,6 +110,39 @@ const distToPolylineM = (p: { latitude: number; longitude: number }, poly: { lat
   return best
 }
 
+test('★ generateCorridorRoute：**直道必须是直的**（段内横向偏移近似恒定）—— 2026-09-17 用户要求', () => {
+  // 夹具是 100 m 的正方形环：四条边都是**纯直道**，最适合验证"直道不抖"。
+  const route = loopRoute()
+  for (const seed of [7, 42, 20260914]) {
+    const g = generateCorridorRoute(route, { targetKm: 0.8, stepM: 3, seed, drift: true })
+    const pts = g.points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
+    // 取第一条边（route[0]→route[1]）：收集"走在这条边上"的轨迹点（投影参数 t∈[0.15,0.85] 且离边 <15 m）
+    const A = route[0]!
+    const B = route[1]!
+    const mLat = 111320
+    const mLng = 111320 * Math.cos((((A.latitude + B.latitude) / 2) * Math.PI) / 180)
+    const ax = A.longitude * mLng, ay = A.latitude * mLat
+    const bx = B.longitude * mLng, by = B.latitude * mLat
+    const dx = bx - ax, dy = by - ay
+    const len2 = dx * dx + dy * dy
+    const lat: number[] = []
+    for (const p of pts) {
+      const px = p.longitude * mLng, py = p.latitude * mLat
+      const t = ((px - ax) * dx + (py - ay) * dy) / len2
+      if (t < 0.15 || t > 0.85) continue
+      const qx = ax + t * dx, qy = ay + t * dy
+      const d = Math.hypot(px - qx, py - qy)
+      if (d < 15) lat.push(d)
+    }
+    assert.ok(lat.length > 10, `seed=${seed} 落在第一条边上的点太少（${lat.length}）`)
+    const spread = Math.max(...lat) - Math.min(...lat)
+    // 判据：直道段内横向偏移基本恒定 ⇒ 轨迹与官方直道**平行** ⇒ 看起来"跑得直"。
+    // 1.5 m ≈ 一条跑道宽的 1/8（地图上不到 1 像素）；旧算法在这里是 2~3 m 的"波浪"，
+    // 正是用户说的"左右抖动太假、直道不直"。
+    assert.ok(spread <= 1.5, `seed=${seed} 直道段内横向偏移波动 ${spread.toFixed(2)} m（>1.5 m 看起来就不直）`)
+  }
+})
+
 test('★ generateCorridorRoute：轨迹必须**留在路线上**（单点偏离 ≤ 10 m）—— "在跑道上"的回归守卫', () => {
   const route = loopRoute()
   for (const seed of [7, 11, 42, 2026, 20260914]) {

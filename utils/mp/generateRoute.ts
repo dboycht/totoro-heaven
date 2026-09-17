@@ -181,7 +181,7 @@ const degLngPerMeter = (lat: number) => 1 / (M_PER_DEG_LAT * Math.cos((lat * Mat
 export function generateCorridorRoute(officialRoute: LatLng[], options: CorridorOptions): GeneratedRoute {
   const {
     targetKm,
-    jitterSigmaM = 2.2,
+    jitterSigmaM = 0.6,
     jitterRho = 0.92,
     stepM = 2,
     loop = true,
@@ -282,30 +282,14 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
   const rho = Math.min(0.999, Math.max(0, jitterRho))
   const innovScale = Math.sqrt(Math.max(0, 1 - rho * rho))
 
-  // ---- 真实感：GPS 精度下降「区」（按**路线弧长位置**定义，而不是按时间）----
-  // ⚠️ 两个关键认知（2026-09-14 踩坑后想通）：
-  //   ① 拟合度 = 官方路线每个采样点到**用户折线的最短距离**。多圈路线下，若漂移只发生在某几圈，
-  //      同一采样点会被**另外几圈干净地经过** → 拟合度照样 1.00。所以偏移必须与"跑到哪儿"绑定。
-  //   ② 偏移方向必须**以垂直于路线为主**：若方向恰好与路线平行，垂直偏差≈0 → 采样点照样命中。
-  //      （实测：纯随机方向时，12 组种子里有 7 组仍是满分。）
-  interface DriftZone {
-    startM: number
-    lenM: number
-    /** 偏移方向（单位向量，**创建时定死**，避免沿线切向在某些位置退化/翻转造成跳变） */
-    perpLat: number
-    perpLng: number
-    alongLat: number
-    alongLng: number
-    perpM: number
-    alongM: number
-  }
+  // ---- 真实感：**车道模型**（2026-09-17 彻底重写；依据"真跑 vs 官方"实测：ERROR E43 / memory/10 §9）----
+  // 真跑 9-16 实测（1121 点，`_mp-analyze/scratch/analyze_real_run.mjs`）：
+  //   · 横向抖动（相对自身平滑中心线）：中位 **1.46 m**、P90 4.24、P99 7.34；
+  //   · **逐点横向变化只有 0.175 m/点** ⇒ 真跑的线是**光滑的**，不是波浪（旧算法 2~3 m 波浪 = "一眼假"）；
+  //   · 每 ~90 m 的横向均值在 0.9~4.0 m 之间缓慢摆动 ⇒ 人是在**一条跑道里跑、缓慢小漂移**。
+  // 结论：偏移 = **车道偏移**（按弧长、缓慢、圈间一致） + **极小高频颗粒**（≈0.2 m） + 偶发"精度下降"小凸起（几米）。
+  // ⚠️ 关键："直道肯定要跑直" ⇒ **偏移只在弯道变化、直道段内恒定**，直道与官方直道**严格平行**。
   const driftOn = options.drift === true
-  const driftCfg = {
-    minLenM: options.driftOptions?.minLen ?? 50,
-    maxLenM: options.driftOptions?.maxLen ?? 140,
-    minM: options.driftOptions?.minM ?? 26,
-    maxM: options.driftOptions?.maxM ?? 44,
-  }
   /** 取某弧长所在**线段**的单位切向（用折线本身，绕开 locate 的折返/夹紧） */
   const segmentTangentAt = (arc: number): { lat: number; lng: number } => {
     const p = Math.min(Math.max(arc, 0), pathTotal - 1e-6)
@@ -326,83 +310,92 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
   }
 
   /**
-   * 生成最多 `DRIFT_MAX_ZONES` 个候选"精度下降区"（位置/长度/方向随机，振幅随档位缩放）。
-   * ⚠️ 为什么不做"固定幅度"，而是**闭环加码**（见下方控制循环）：
-   *    实测发现**路线自身会折返重叠** —— 偏移 26m 的轨迹点，其采样点常被"隔壁车道"（只偏 12m）
-   *    在 25m 容差内接住，所以固定幅度不保证拟合度降下来。必须用**真算法测量**后再加码。
+   * 车道偏移表：把路线按**转角**切成"段"（直道 / 弯道），**每段一个恒定偏移**（相邻段之间缓慢随机游走），
+   * 再按弧长取用并做 ±2 m 轻微平滑（过渡落在段边界＝弯道附近，直道内部仍近似恒定 ⇒ **直道笔直**）。
    */
-  const DRIFT_MAX_ZONES = 5
-  const zones: DriftZone[] = []
-  if (driftOn) {
-    for (let i = 0; i < DRIFT_MAX_ZONES; i++) {
-      const lenM = driftCfg.minLenM + rng() * (driftCfg.maxLenM - driftCfg.minLenM)
-      const startM = rng() * pathTotal
-      const amp = driftCfg.minM + rng() * (driftCfg.maxM - driftCfg.minM)
-      const sign = rng() < 0.5 ? -1 : 1
-      const t = segmentTangentAt(startM)
-      zones.push({
-        startM,
-        lenM,
-        perpLat: t.lng * sign,
-        perpLng: -t.lat * sign,
-        alongLat: t.lat,
-        alongLng: t.lng,
-        perpM: amp,
-        alongM: amp * (rng() * 0.4 - 0.2), // ±20% 切向分量，方向不总是 90°
-      })
+  const LANE_HALF_WIDTH_M = Math.min(maxOffRouteM, 3.5) // 车道偏移上限（≈ 两条跑道宽）
+  const laneTable: number[] = (() => {
+    const turnDegAt = (i: number) => {
+      const a = path[(i - 1 + path.length) % path.length]!
+      const b = path[i % path.length]!
+      const c = path[(i + 1) % path.length]!
+      const v1 = Math.atan2(
+        (b.latitude - a.latitude) * M_PER_DEG_LAT,
+        (b.longitude - a.longitude) / degLngPerMeter(b.latitude),
+      )
+      const v2 = Math.atan2(
+        (c.latitude - b.latitude) * M_PER_DEG_LAT,
+        (c.longitude - b.longitude) / degLngPerMeter(c.latitude),
+      )
+      const d = ((v2 - v1 + Math.PI * 3) % (Math.PI * 2)) - Math.PI
+      return Math.abs((d * 180) / Math.PI)
     }
-  }
-  /** 按弧长位置查偏移（米）：同路段每圈/每次折返偏移一致 → 像真实多径 */
-  /** 按弧长位置查偏移（米）：同路段每圈/每次折返偏移一致 → 像真实多径
-   *  `lenScale` 缩放"漂移区长度"（2026-09-16 新增）：实测发现**长度覆盖率**才是拟合度的主控杠杆
-   *  （幅度 26~44m 本就超 25m 容差；区太短则大部分采样仍被命中，拟合度压不下来）。 */
-  const offsetAt = (arcPos: number, zoneCount: number, ampScale: number, lenScale = 1): { lat: number; lng: number } => {
-    let lat = 0
-    let lng = 0
-    for (let zi = 0; zi < Math.min(zoneCount, zones.length); zi++) {
-      const z = zones[zi]
-      if (!z) break
-      const zoneLen = z.lenM * lenScale
-      const d = (((arcPos - z.startM) % pathTotal) + pathTotal) % pathTotal
-      if (d <= zoneLen) {
-        const w = Math.sin(Math.PI * (d / zoneLen)) // 平滑进出，峰值在区间中点
-        lat += (z.perpM * ampScale * z.perpLat + z.alongM * ampScale * z.alongLat) * w
-        lng += (z.perpM * ampScale * z.perpLng + z.alongM * ampScale * z.alongLng) * w
-      }
+    const bounds: number[] = [0]
+    for (let i = 1; i < path.length - 1; i++) if (turnDegAt(i) >= 8) bounds.push(cum[i]!)
+    bounds.push(pathTotal)
+
+    const perLeg: { startM: number; endM: number; v: number }[] = []
+    let v = 1.2 // 起始约"第 2 道"
+    for (let i = 1; i < bounds.length; i++) {
+      perLeg.push({ startM: bounds[i - 1]!, endM: bounds[i]!, v })
+      v = Math.max(-LANE_HALF_WIDTH_M, Math.min(LANE_HALF_WIDTH_M, v + gauss(rng, 0, 0.6)))
     }
-    return { lat, lng }
+    const bins = Math.max(8, Math.round(pathTotal)) // 1 m 一格
+    const raw: number[] = []
+    for (let i = 0; i < bins; i++) {
+      const s = (i * pathTotal) / bins
+      const leg = perLeg.find((l) => s >= l.startM && s < l.endM) ?? perLeg[perLeg.length - 1]
+      raw.push(leg ? leg.v : 0)
+    }
+    const w = 2 // ±2 m 平滑
+    return raw.map((_, i) => {
+      let sum = 0
+      for (let k = i - w; k <= i + w; k++) sum += raw[(k + bins) % bins]!
+      return sum / (2 * w + 1)
+    })
+  })()
+  const laneAt = (arcPos: number): number => {
+    const bins = laneTable.length
+    const s = ((((arcPos % pathTotal) + pathTotal) % pathTotal) / pathTotal) * bins
+    const i = Math.floor(s) % bins
+    const f = s - Math.floor(s)
+    return laneTable[i]! * (1 - f) + laneTable[(i + 1) % bins]! * f
   }
 
   /**
-   * 抖动噪声表（**按弧长锁定**，2026-09-17 新增）：
-   * 先在一圈上生成 512 个"平滑噪声"（AR(1) 沿表推进、首尾相接），生成轨迹时按**弧长**查表 ⇒
-   * **同一弧长位置每圈偏移一致** ⇒ 多圈几乎重合（真跑正是这样）；
-   * 再叠加一点**逐点独立**的细颗粒（σ 的 1/4）模拟 GPS 抖动，避免"每年圈像素级复刻"。
-   * 旧实现是"按点序号"的 AR(1)：每圈噪声互相独立 ⇒ 几圈错开成"绳带状"（实测逐圈离散 30~86 m）。
+   * 偶发"GPS 精度下降"小凸起：真跑实测 P99 = 7.3 m ⇒ 是**几米级、几个点**的凸起（旧算法 26~44 m 是错的）。
+   * 弧长锁定（每圈位置一致，与真跑"同一个人同一条道"一致）。
    */
-  const NOISE_BINS = 512
-  const noiseLat: number[] = []
-  const noiseLng: number[] = []
-  {
-    const nr = createRng(seed ^ 0x9e3779b9)
-    let aLat = 0
-    let aLng = 0
-    for (let i = 0; i < NOISE_BINS; i++) {
-      aLat = jitterRho * aLat + Math.sqrt(Math.max(0, 1 - jitterRho * jitterRho)) * gauss(nr, 0, jitterSigmaM)
-      aLng = jitterRho * aLng + Math.sqrt(Math.max(0, 1 - jitterRho * jitterRho)) * gauss(nr, 0, jitterSigmaM)
-      noiseLat.push(aLat)
-      noiseLng.push(aLng)
+  const bursts = driftOn
+    ? Array.from({ length: 2 }, () => ({
+        startM: rng() * pathTotal,
+        lenM: 20 + rng() * 20, // 7~13 个点（3 m 步长）
+        // ⚠️ 幅度必须小（0.3~0.6 m）：**直道必须是直的**（用户要求）——旧算法 26~44 m 那种凸起
+        //    压在直道上就是"左右抖动太假"。真正的车道变化放在**弯道**（见上面按段恒定的车道偏移）。
+        ampM: (rng() < 0.5 ? -1 : 1) * (0.3 + rng() * 0.3),
+      }))
+    : []
+  const burstAt = (arcPos: number): number => {
+    let sum = 0
+    for (const b of bursts) {
+      const d = (((arcPos - b.startM) % pathTotal) + pathTotal) % pathTotal
+      if (d <= b.lenM) sum += b.ampM * Math.sin(Math.PI * (d / b.lenM))
     }
+    return sum
   }
-  const noiseAt = (arcPos: number): { lat: number; lng: number } => {
-    const t = ((((arcPos % pathTotal) + pathTotal) % pathTotal) / pathTotal) * NOISE_BINS
-    const i = Math.floor(t)
-    const f = t - i
-    const j = (i + 1) % NOISE_BINS
-    const a = Math.min(i, NOISE_BINS - 1)
-    return { lat: noiseLat[a]! * (1 - f) + noiseLat[j]! * f, lng: noiseLng[a]! * (1 - f) + noiseLng[j]! * f }
+
+  /**
+   * 偏移（米，north/east 分量）= 车道偏移 + 小凸起，方向取路线**法向**（垂直）。
+   * 后三个参数保留只为兼容闭环扫描的调用签名（新模型不再需要"加码"）。
+   */
+  const offsetAt = (arcPos: number, _zoneCount = 1, _ampScale = 1, _lenScale = 1): { lat: number; lng: number } => {
+    const lane = laneAt(arcPos) + burstAt(arcPos)
+    const t = segmentTangentAt(arcPos)
+    return { lat: lane * t.lng, lng: -lane * t.lat }
   }
-  /** 偏移向量按**上限截断**：无论档位怎么加码，单点偏离不超过 maxOffRouteM ⇒ 不会甩出跑道 */
+  /** 旧"按弧长的噪声波"已废弃（就是"左右抖动太假"的来源）；逐点颗粒改由 `jitterFor` 独立叠加 */
+  const noiseAt = (_arcPos: number): { lat: number; lng: number } => ({ lat: 0, lng: 0 })
+  /** 偏移向量按**上限截断**：无论怎么叠加，单点偏离不超过 maxOffRouteM ⇒ 不会甩出跑道 */
   const clampOffset = (off: { lat: number; lng: number }): { lat: number; lng: number } => {
     const mag = Math.hypot(off.lat, off.lng)
     if (!(mag > maxOffRouteM) || mag === 0) return off
@@ -449,60 +442,9 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     return { pts, accumulated: acc }
   }
 
-  // 初始：1 个偏移区、原始幅度
-  let built = buildTrajectory(driftOn ? 1 : 0, 1)
-  let fit = calculateRouteSimilarity(route, built.pts)
-  let usedZones = driftOn ? 1 : 0
-
-  /**
-   * 闭环加码：用**真算法**测到拟合度落进 [FIT_TARGET_MIN, FIT_TARGET_MAX]。
-   *
-   * 为什么是 0.70~0.85（2026-09-16 用户要求 + 真跑对照）：
-   *   - 用户真跑那条云端归档 `trajectorySimilary = 0.75`（有效），而我们此前控在 0.90~0.985 → **偏高、不像真跑**；
-   *   - 任务阈值（`task.fitDegree`）是 **0.60**，控到 0.70 起仍有余量，不会被判不合格。
-   *
-   * 实现：按"偏移区数 × 幅度"做**确定性扫描**（幅度几何递增），一旦测得 ≤ 上限即停；
-   * 若某一档掉到下限以下（掉太狠、失真），保留上一档 —— 宁可略高，也不要出现"穿墙"式轨迹。
-   */
-  if (driftOn) {
-    /**
-     * 扫描顺序（**从"最不像假"到"最能把拟合度压下来"**）：
-     *   先加**区长度**（长度越长 → 偏离容忍区的采样越多），再加**区数**，最后加**幅度**。
-     * 选**第一个落进 [MIN, MAX] 的候选**；若整轮都进不了区间，退而求其次取"最接近区间"者。
-     */
-    const inRange = (f: number) => f >= FIT_TARGET_MIN && f <= FIT_TARGET_MAX
-    let best = { attempt: built, fit, zones: usedZones, ok: inRange(fit) }
-    let done = false
-    for (const lenScale of [1, 1.3, 1.7, 2.2, 2.8, 3.5, 4.5, 6]) {
-      for (const zoneCount of [1, 2, 3, 4, 5]) {
-        for (const ampScale of [1, 1.3]) {
-          const attempt = buildTrajectory(zoneCount, ampScale, lenScale)
-          const f = calculateRouteSimilarity(route, attempt.pts)
-          if (inRange(f)) {
-            best = { attempt, fit: f, zones: zoneCount, ok: true }
-            done = true
-            break
-          }
-          if (!best.ok) {
-            const better =
-              f > FIT_TARGET_MAX
-                ? best.fit > FIT_TARGET_MAX
-                  ? f < best.fit
-                  : true
-                : best.fit < FIT_TARGET_MIN
-                  ? f > best.fit
-                  : false
-            if (better) best = { attempt, fit: f, zones: zoneCount, ok: false }
-          }
-        }
-        if (done) break
-      }
-      if (done) break
-    }
-    built = best.attempt
-    fit = best.fit
-    usedZones = best.zones
-  }
+  // 车道模型是**确定性**的（偏移由弧长与随机种子决定，不再有"加码档位"）⇒ 直接构建一次即可。
+  const built = buildTrajectory(1, 1)
+  const fit = calculateRouteSimilarity(route, built.pts)
 
   return {
     points: built.pts.map((p) => ({
@@ -511,7 +453,7 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     })),
     km: (built.accumulated / 1000).toFixed(2),
     fitDegree: Number(fit).toFixed(2),
-    driftEpisodes: usedZones,
+    driftEpisodes: driftOn ? bursts.length : 0,
   }
 }
 
