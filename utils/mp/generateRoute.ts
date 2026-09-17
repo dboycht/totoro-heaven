@@ -14,7 +14,7 @@
  * 逆向依据：`_mp-analyze/小程序逆向分析.md` 第 5.3 节（算法参数 5m/25m）
  */
 
-import { distanceMeters, calculateRouteSimilarity, type LatLng } from './routeSimilarity'
+import { distanceMeters, calculateRouteSimilarity, pointToSegmentDistance, type LatLng } from './routeSimilarity'
 
 export interface CorridorOptions {
   /** 目标里程（公里） */
@@ -37,6 +37,22 @@ export interface CorridorOptions {
   drift?: boolean
   /** 漂移期参数（给测试用；默认 2~4 次、每次 24~44 点、峰值偏移 14~30 米） */
   driftOptions?: { minCount?: number; maxCount?: number; minLen?: number; maxLen?: number; minM?: number; maxM?: number }
+  /**
+   * 单点相对路线的**最大允许偏离（米）**，默认 `MAX_OFF_ROUTE_M`（6）。
+   * 2026-09-17 新增：无论漂移档位怎么加码，都会把偏移向量**按上限截断** ⇒ 轨迹不会甩出跑道。
+   */
+  maxOffRouteM?: number
+  /**
+   * 生成前对官方路线做几轮 **Chaikin 圆角**（默认 2，0 = 不平滑）。
+   * 官方模板是 **7~24 个点的粗多边形**（实测），照它走会出现"带尖角的折线"——
+   * 真跑是一条圆滑的线。圆角后观感接近真跑；拟合度仍按**原始路线**计算（截角本身会产生自然的小偏差）。
+   */
+  smoothRoute?: number
+  /**
+   * 抖动是否**按弧长锁定**（默认 true）：同一弧长位置每圈偏移一致 ⇒ 多圈几乎重合（真跑就是这样）。
+   * 旧实现用"按点序号"的 AR(1)，每圈噪声独立 ⇒ 几圈错开成"绳带状"（实测逐圈离散 30~86 m）。
+   */
+  arcLockedJitter?: boolean
 }
 
 export interface GeneratedRoute {
@@ -51,13 +67,29 @@ export interface GeneratedRoute {
 }
 
 /**
- * 拟合度控幅目标区间（2026-09-16 用户要求改为 **0.70~0.85**）。
+ * 拟合度控幅目标区间（**2026-09-17 用户要求改为 0.97~1.00**）。
  *
- * 依据：用户真跑那条云端归档 `trajectorySimilary = 0.75`（判「有效」），
- * 而我们此前控在 0.90~0.985 偏高、不像真跑；任务阈值是 0.60，故 0.70 起仍有余量。
+ * 为什么又改了（这条是"看图说话"改的，详见 `_mp-analyze/scratch/viz_map.mjs` 与 `memory/10` §6/§7）：
+ *   - 手机上看 9-17 那笔（区间 0.70~0.85，实测 0.83）：**轨迹甩出跑道、几圈互相错开** ⇒ 一眼假；
+ *     而 9-16 真跑那条（0.75）**紧紧贴在跑道上**，是一条干净的椭圆。
+ *   - 根因：**拟合度的容差是 25 m**（5 m 采样 / 25 m 命中）。想把拟合度压到 0.8x，就必须让轨迹
+ *     偏离路线 25~44 m —— 那就必然离开跑道。**"在跑道上"与"低拟合度"在数学上互斥。**
+ *   - 用户拍板：**接受更高的拟合度**，优先"看起来在跑道上"。
+ *   - 旁证：该账号 2025 学年的真跑记录大多就是 **1.00 / 0.99** ⇒ 高分本身并不异常。
  */
-export const FIT_TARGET_MIN = 0.7
-export const FIT_TARGET_MAX = 0.85
+export const FIT_TARGET_MIN = 0.97
+export const FIT_TARGET_MAX = 1.0
+
+/** 单点相对路线的**最大允许偏离（米）**：5 m ≈ 跑到宽度量级 ⇒ 保证"还在跑道上" */
+export const MAX_OFF_ROUTE_M = 5
+
+/**
+ * 圆角（Chaikin）允许造成的**最大偏离（米）**。
+ * 为什么要有这个上限：圆角会削掉尖角，段越长削得越多 —— 实测 100 m 的直角会被削掉约 14 m
+ * （真模板段长只有 ~27 m，只削 ~4 m）。所以**自适应**：从最大轮数往下试，取第一个不超上限的；
+ * 都超就**完全不圆角**（宁可保留尖角，也不能跑到路线外）。
+ */
+export const SMOOTH_MAX_DEV_M = 5
 
 /** 可复现随机数（mulberry32） */
 function createRng(seed: number): () => number {
@@ -69,6 +101,63 @@ function createRng(seed: number): () => number {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
+}
+
+/**
+ * Chaikin 圆角（闭合折线）：每轮把每条线段按 1/4、3/4 处切成两点，折角被"削平"。
+ * 用途：官方路线模板实测只有 **7~24 个点**（粗多边形），直接沿它走会出现明显尖角；
+ * 圆角后观感接近真跑的平滑路径（2026-09-17 用户"一眼假"反馈后新增）。
+ */
+function chaikinClosed<T extends { latitude: number; longitude: number }>(points: T[], iterations: number): T[] {
+  let out: T[] = points
+  for (let it = 0; it < iterations; it++) {
+    const next: T[] = []
+    for (let i = 0; i < out.length; i++) {
+      const a = out[i]!
+      const b = out[(i + 1) % out.length]!
+      next.push({ ...a, latitude: a.latitude * 0.75 + b.latitude * 0.25, longitude: a.longitude * 0.75 + b.longitude * 0.25 })
+      next.push({ ...a, latitude: a.latitude * 0.25 + b.latitude * 0.75, longitude: a.longitude * 0.25 + b.longitude * 0.75 })
+    }
+    out = next
+  }
+  return out
+}
+
+/** 一条折线到另一条折线的**最大偏离（米）**（逐段用中点加密，够精确且便宜） */
+function maxDeviationM(
+  candidate: { latitude: number; longitude: number }[],
+  route: { latitude: number; longitude: number }[],
+): number {
+  let worst = 0
+  for (let i = 0; i < candidate.length; i++) {
+    const p = candidate[i]!
+    const q = candidate[(i + 1) % candidate.length]!
+    for (const t of [0, 0.5]) {
+      const lat = p.latitude + (q.latitude - p.latitude) * t
+      const lng = p.longitude + (q.longitude - p.longitude) * t
+      let best = Number.POSITIVE_INFINITY
+      for (let k = 1; k < route.length; k++) {
+        const a = route[k - 1]!
+        const b = route[k]!
+        best = Math.min(best, pointToSegmentDistance(lat, lng, a.latitude, a.longitude, b.latitude, b.longitude))
+      }
+      if (best > worst) worst = best
+    }
+  }
+  return worst
+}
+
+/**
+ * 自适应圆角：从 `iterations` 轮往下试，取**第一个**偏离原路线不超过 `SMOOTH_MAX_DEV_M` 的候选；
+ * 都不满足就返回原路线（不圆角）。⇒ 既拿到"圆滑"的观感，又保证不因为圆角而离开路线。
+ */
+function smoothRouteWithinBound<T extends { latitude: number; longitude: number }>(route: T[], iterations: number): T[] {
+  if (iterations <= 0) return route
+  for (let it = iterations; it >= 1; it--) {
+    const cand = chaikinClosed(route, it)
+    if (maxDeviationM(cand, route) <= SMOOTH_MAX_DEV_M) return cand
+  }
+  return route
 }
 
 /** 高斯随机（Box-Muller），sigma 为标准差 */
@@ -97,6 +186,9 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     stepM = 2,
     loop = true,
     seed = 20260914,
+    maxOffRouteM = MAX_OFF_ROUTE_M,
+    smoothRoute = 2,
+    arcLockedJitter = true,
   } = options
 
   if (!officialRoute || officialRoute.length < 2) {
@@ -114,14 +206,21 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     longitude: Number(p.longitude),
   }))
 
+  /**
+   * ⚠️ 生成用的路径（可圆角）与**计算拟合度用的路线**（始终是原始模板）**是两条**：
+   *    圆角会削掉尖角 ⇒ 轨迹相对原始多边形自然产生几米的偏差（这正是真跑"抄近道"的样子），
+   *    所以拟合度仍按**原始** `route` 计算，不会因为圆角而被"算虚高"。
+   */
+  const genRoute = smoothRoute > 0 ? smoothRouteWithinBound(route, smoothRoute) : route
+
   // 闭合路线：把首点接到末尾，保证最后一圈也能走满
   const closed = distanceMeters(
-    route[0]!.latitude,
-    route[0]!.longitude,
-    route[route.length - 1]!.latitude,
-    route[route.length - 1]!.longitude,
+    genRoute[0]!.latitude,
+    genRoute[0]!.longitude,
+    genRoute[genRoute.length - 1]!.latitude,
+    genRoute[genRoute.length - 1]!.longitude,
   ) < 30
-  const path = closed ? [...route, route[0]!] : route
+  const path = closed ? [...genRoute, genRoute[0]!] : genRoute
 
   // 预计算每段长度与累计弧长
   const segLen: number[] = []
@@ -274,6 +373,42 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     return { lat, lng }
   }
 
+  /**
+   * 抖动噪声表（**按弧长锁定**，2026-09-17 新增）：
+   * 先在一圈上生成 512 个"平滑噪声"（AR(1) 沿表推进、首尾相接），生成轨迹时按**弧长**查表 ⇒
+   * **同一弧长位置每圈偏移一致** ⇒ 多圈几乎重合（真跑正是这样）；
+   * 再叠加一点**逐点独立**的细颗粒（σ 的 1/4）模拟 GPS 抖动，避免"每年圈像素级复刻"。
+   * 旧实现是"按点序号"的 AR(1)：每圈噪声互相独立 ⇒ 几圈错开成"绳带状"（实测逐圈离散 30~86 m）。
+   */
+  const NOISE_BINS = 512
+  const noiseLat: number[] = []
+  const noiseLng: number[] = []
+  {
+    const nr = createRng(seed ^ 0x9e3779b9)
+    let aLat = 0
+    let aLng = 0
+    for (let i = 0; i < NOISE_BINS; i++) {
+      aLat = jitterRho * aLat + Math.sqrt(Math.max(0, 1 - jitterRho * jitterRho)) * gauss(nr, 0, jitterSigmaM)
+      aLng = jitterRho * aLng + Math.sqrt(Math.max(0, 1 - jitterRho * jitterRho)) * gauss(nr, 0, jitterSigmaM)
+      noiseLat.push(aLat)
+      noiseLng.push(aLng)
+    }
+  }
+  const noiseAt = (arcPos: number): { lat: number; lng: number } => {
+    const t = ((((arcPos % pathTotal) + pathTotal) % pathTotal) / pathTotal) * NOISE_BINS
+    const i = Math.floor(t)
+    const f = t - i
+    const j = (i + 1) % NOISE_BINS
+    const a = Math.min(i, NOISE_BINS - 1)
+    return { lat: noiseLat[a]! * (1 - f) + noiseLat[j]! * f, lng: noiseLng[a]! * (1 - f) + noiseLng[j]! * f }
+  }
+  /** 偏移向量按**上限截断**：无论档位怎么加码，单点偏离不超过 maxOffRouteM ⇒ 不会甩出跑道 */
+  const clampOffset = (off: { lat: number; lng: number }): { lat: number; lng: number } => {
+    const mag = Math.hypot(off.lat, off.lng)
+    if (!(mag > maxOffRouteM) || mag === 0) return off
+    const k = maxOffRouteM / mag
+    return { lat: off.lat * k, lng: off.lng * k }
+  }
   /** 构建一条轨迹（**同一 seed** → 每次尝试的抖动完全一致，只有偏移档位不同） */
   const buildTrajectory = (zoneCount: number, ampScale: number, lenScale = 1) => {
     const r = createRng(seed)
@@ -282,21 +417,31 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     let eLng = 0
     let acc = 0
     let p = 0
+    /** 取当前点的抖动（米）：弧长锁定 + 细颗粒；关掉锁定时退回旧的"按序号 AR(1)" */
+    const jitterFor = (arc: number): { lat: number; lng: number } => {
+      if (arcLockedJitter) {
+        const n = noiseAt(arc)
+        return { lat: n.lat + gauss(r, 0, jitterSigmaM * 0.25), lng: n.lng + gauss(r, 0, jitterSigmaM * 0.25) }
+      }
+      eLat = rho * eLat + innovScale * gauss(r, 0, jitterSigmaM)
+      eLng = rho * eLng + innovScale * gauss(r, 0, jitterSigmaM)
+      return { lat: eLat, lng: eLng }
+    }
     // ⚠️ 首点也必须走同一套"抖动 + 偏移"（否则首点与第二点之间会凭空出现一次 15~22m 跳变 —— 实测抓到的）
     const first = locate(0)
-    const off0 = driftOn ? offsetAt(first.arc, zoneCount, ampScale, lenScale) : { lat: 0, lng: 0 }
+    const j0 = jitterFor(first.arc)
+    const off0 = clampOffset(driftOn ? offsetAt(first.arc, zoneCount, ampScale, lenScale) : { lat: 0, lng: 0 })
     pts.push({
-      latitude: first.lat + off0.lat / M_PER_DEG_LAT,
-      longitude: first.lng + off0.lng * degLngPerMeter(first.lat),
+      latitude: first.lat + (j0.lat + off0.lat) / M_PER_DEG_LAT,
+      longitude: first.lng + (j0.lng + off0.lng) * degLngPerMeter(first.lat),
     })
     while (p < maxPosition && acc < targetM) {
       p += stepM
       const here = locate(p)
-      eLat = rho * eLat + innovScale * gauss(r, 0, jitterSigmaM)
-      eLng = rho * eLng + innovScale * gauss(r, 0, jitterSigmaM)
-      const off = driftOn ? offsetAt(here.arc, zoneCount, ampScale, lenScale) : { lat: 0, lng: 0 }
-      const lat = here.lat + (eLat + off.lat) / M_PER_DEG_LAT
-      const lng = here.lng + (eLng + off.lng) * degLngPerMeter(here.lat)
+      const j = jitterFor(here.arc)
+      const off = clampOffset(driftOn ? offsetAt(here.arc, zoneCount, ampScale, lenScale) : { lat: 0, lng: 0 })
+      const lat = here.lat + (j.lat + off.lat) / M_PER_DEG_LAT
+      const lng = here.lng + (j.lng + off.lng) * degLngPerMeter(here.lat)
       const prev = pts[pts.length - 1]!
       acc += distanceMeters(prev.latitude, prev.longitude, lat, lng)
       pts.push({ latitude: lat, longitude: lng })

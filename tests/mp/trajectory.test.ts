@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { generateCorridorRoute, buildTimeline } from '../../utils/mp/generateRoute.ts'
-import { calculateRouteSimilarity, pathLengthMeters } from '../../utils/mp/routeSimilarity.ts'
+import { calculateRouteSimilarity, pathLengthMeters, distanceMeters } from '../../utils/mp/routeSimilarity.ts'
 import {
   buildRunStats,
   buildTimeFields,
@@ -68,7 +68,7 @@ test('generateCorridorRoute：拟合度 ≥ 0.95（走廊内抖动）', () => {
   assert.equal(g.fitDegree, Number(score).toFixed(2))
 })
 
-test('generateCorridorRoute：drift 开启后拟合度落进 0.70~0.85（贴近真跑，2026-09-16 用户要求）', () => {
+test('generateCorridorRoute：drift 开启后拟合度仍落进 0.97~1.00（2026-09-17 用户改口径）', () => {
   const route = loopRoute()
   const scores = [7, 11, 42, 2026, 20260914].map((seed) => {
     const g = generateCorridorRoute(route, { targetKm: 0.6, seed, drift: true })
@@ -77,9 +77,51 @@ test('generateCorridorRoute：drift 开启后拟合度落进 0.70~0.85（贴近�
     return calculateRouteSimilarity(route, pts)
   })
   for (const [i, score] of scores.entries()) {
-    // 依据：用户真跑那条云端归档 trajectorySimilary = 0.75（判「有效」）；任务阈值 0.60，故 0.70 起仍有余量
-    assert.ok(score >= 0.7, `第 ${i} 个种子的拟合度 ${score} 低于控幅下限 0.70`)
-    assert.ok(score <= 0.85, `第 ${i} 个种子的拟合度 ${score} 高于控幅上限 0.85（不像真跑）`)
+    // 2026-09-17 口径变更：**拟合度容差是 25 m** ⇒ 想把拟合度压到 0.8x 就必须偏离路线 25 m+（甩出跑道）。
+    // 用户拍板"优先看起来在跑道上、接受更高的拟合度"；且本账号 2025 学年真跑记录大多就是 1.00/0.99。
+    assert.ok(score >= 0.97, `第 ${i} 个种子的拟合度 ${score} 低于控幅下限 0.97`)
+    assert.ok(score <= 1.0, `第 ${i} 个种子的拟合度 ${score} 超出上限 1.00`)
+  }
+})
+
+/** 点到折线的最短距离（米）——用等距近似（小范围足够精确） */
+const distToPolylineM = (p: { latitude: number; longitude: number }, poly: { latitude: number; longitude: number }[]) => {
+  let best = Number.POSITIVE_INFINITY
+  for (let i = 1; i < poly.length; i++) {
+    const a = poly[i - 1]!
+    const b = poly[i]!
+    const refLat = ((a.latitude + b.latitude) / 2) * (Math.PI / 180)
+    const mPerDegLat = 111320
+    const mPerDegLng = 111320 * Math.cos(refLat)
+    const ax = a.longitude * mPerDegLng
+    const ay = a.latitude * mPerDegLat
+    const bx = b.longitude * mPerDegLng
+    const by = b.latitude * mPerDegLat
+    const px = p.longitude * mPerDegLng
+    const py = p.latitude * mPerDegLat
+    const dx = bx - ax
+    const dy = by - ay
+    const len2 = dx * dx + dy * dy
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2))
+    const qx = ax + t * dx
+    const qy = ay + t * dy
+    best = Math.min(best, Math.hypot(px - qx, py - qy))
+  }
+  return best
+}
+
+test('★ generateCorridorRoute：轨迹必须**留在路线上**（单点偏离 ≤ 10 m）—— "在跑道上"的回归守卫', () => {
+  const route = loopRoute()
+  for (const seed of [7, 11, 42, 2026, 20260914]) {
+    const g = generateCorridorRoute(route, { targetKm: 0.6, stepM: 3, seed, drift: true })
+    const pts = g.points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
+    const devs = pts.map((p) => distToPolylineM(p, route))
+    const worst = Math.max(...devs)
+    const p95 = devs.slice().sort((x, y) => x - y)[Math.floor(devs.length * 0.95)]!
+    // 判据来源（2026-09-17 实测）：旧算法最大偏离 46~77 m ⇒ 手机上能看出"甩出跑道、一眼假"。
+    // 现在 (a) 偏移向量按 MAX_OFF_ROUTE_M=6 截断、(b) 圆角、(c) 抖动按弧长锁定 ⇒ 应稳定在个位数米。
+    assert.ok(worst <= 10, `seed=${seed} 最大偏离 ${worst.toFixed(1)} m（>10 m 就会看起来不在跑道上）`)
+    assert.ok(p95 <= 8, `seed=${seed} P95 偏离 ${p95.toFixed(1)} m（>8 m 偏松）`)
   }
 })
 

@@ -135,8 +135,8 @@ test('端到端真实感：规划 → 生成轨迹 → 任务自检全绿，且�
   // 数值"不像整数"：里程不是 3.20、时长不是整分钟
   assert.notEqual(km.toFixed(2), task.mileage.toFixed(2), '里程不应正好等于任务要求')
   assert.notEqual(durationSeconds % 60, 0, `时长 ${durationSeconds}s 是整分钟，看起来假`)
-  // 拟合度控幅 0.70~0.85（2026-09-16 用户要求：贴近真跑实测 0.75；任务阈值 0.60 仍有余量）
-  assert.ok(Number(generated.fitDegree) < 1, `拟合度 ${generated.fitDegree} 满分显得假`)
-  assert.ok(Number(generated.fitDegree) >= 0.7, `拟合度 ${generated.fitDegree} 低于控幅下限 0.70`)
-  assert.ok(Number(generated.fitDegree) <= 0.85, `拟合度 ${generated.fitDegree} 高于控幅上限 0.85（不像真跑）`)
+  // 拟合度口径（**2026-09-17 用户改为 0.97~1.00**）：优先"看起来在跑道上"，
+  // 因为判据容差是 25 m —— 压到 0.8x 就必须偏离路线 25 m+（甩出跑道、手机上一眼假）。
+  assert.ok(Number(generated.fitDegree) >= 0.97, `拟合度 ${generated.fitDegree} 低于新下限 0.97`)
+  assert.ok(Number(generated.fitDegree) <= 1, `拟合度 ${generated.fitDegree} 超过上限 1.00`)
 })
