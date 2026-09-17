@@ -23,13 +23,14 @@
  *   `/api/mp/wxapi/platform/active/getSunRunSchoolList` → `<base>/wxapi/platform/active/getSunRunSchoolList`
  *   兼容旧写法：`/api/mp/sunrun/getRunBegin` → `<base>/wxxcx/sunrun/getRunBegin`（自动补 `/wxxcx`）
  */
-import { MP_HOST, MP_UPSTREAM_HEADER } from '../../../src/mp/types'
+import { MP_API_PREFIX, MP_HOST, MP_PATH_PREFIXES, MP_UPSTREAM_HEADER } from '../../../src/mp/types'
 import { summarizeUpstream } from '../../../utils/mp/logFormat'
 import { logError, logInfo, summarizeRequestBody, logWarn } from '../../utils/logger'
 import { fingerprintOf } from '../../utils/tokenScanState'
 
-/** 上游路径的已知命名空间前缀（不在其中则按旧写法自动补 `/wxxcx`） */
-const KNOWN_PREFIXES = ['/wxxcx/', '/wxapi/', '/oss/']
+// ⚠️ 2026-09-17（D 轮）收口：**不再在本文件重复声明**前缀数组 —— 唯一来源是
+//    `src/mp/constants.ts` 的 `MP_PATH_PREFIXES`（由 MP_API_PREFIX / MP_WXAPI_PREFIX 推导）。
+//    两处各写一份时，一旦不同步就会出现"某些端点被补错前缀"的隐蔽 bug。
 
 /** 🔒 允许的上游主机后缀（供应商自有域；见文件头"安全边界"） */
 const ALLOWED_UPSTREAM_SUFFIXES = ['xtotoro.com']
@@ -73,7 +74,7 @@ export default defineEventHandler(async (event) => {
 
   // /api/mp/wxxcx/sunrun/getRunBegin -> /wxxcx/sunrun/getRunBegin
   const raw = event.path.replace(/^\/api\/mp/, '') || '/'
-  const suffix = KNOWN_PREFIXES.some((prefix) => raw.startsWith(prefix)) ? raw : `/wxxcx${raw}`
+  const suffix = MP_PATH_PREFIXES.some((prefix) => raw.startsWith(prefix)) ? raw : `${MP_API_PREFIX}${raw}`
   const target = `${base}${suffix}${qs ? `?${qs}` : ''}`
 
   const headers: Record<string, string> = {

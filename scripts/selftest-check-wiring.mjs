@@ -41,7 +41,11 @@ const NEEDED = [
   'utils/mp/runData.ts',
   'src/mp/envelope.ts',
   'src/mp/types.ts',
+  'src/mp/constants.ts',
   'src/wrappers/MpApiWrapper.ts',
+  // ⚠️ 2026-09-17 D 轮（分层规则）：检查器现在还要读代理与契约层常量 ——
+  //    L7 断言"前缀单一来源"（代理不得自己声明 KNOWN_PREFIXES、constants 必须有 MP_PATH_PREFIXES）。
+  'server/api/mp/[...slug].ts',
 ]
 
 /**
@@ -157,14 +161,34 @@ try {
     if (code === 0) failures.push('成绩报文不再走构造器但检查器仍然通过（单一出口守卫失效）')
     else if (!out.includes('buildScoreRequest')) failures.push(`报错信息不是预期的：\n${out}`)
   }
+
+  // ---------- 注入 5：纯逻辑层被塞进框架运行时依赖（D 轮分层规则）----------
+  {
+    const dir = copyBase()
+    const file = join(dir, 'utils/mp/runData.ts')
+    writeFileSync(file, `import { ref } from 'vue' // 注入：纯逻辑层不该依赖框架\n${readFileSync(file, 'utf8')}`, 'utf8')
+    const { code, out } = run(dir)
+    if (code === 0) failures.push('纯逻辑层 import vue 但检查器仍然通过（分层守卫失效）')
+    else if (!out.includes('框架运行时依赖')) failures.push(`报错信息不是预期的：\n${out}`)
+  }
+
+  // ---------- 注入 6：代理又自己声明了一份上游前缀（D 轮"单一来源"规则）----------
+  {
+    const dir = copyBase()
+    const file = join(dir, 'server/api/mp/[...slug].ts')
+    writeFileSync(file, `const KNOWN_PREFIXES = ['/wxxcx/'] // 注入：重复声明\n${readFileSync(file, 'utf8')}`, 'utf8')
+    const { code, out } = run(dir)
+    if (code === 0) failures.push('代理重新声明 KNOWN_PREFIXES 但检查器仍然通过（单一来源守卫失效）')
+    else if (!out.includes('KNOWN_PREFIXES')) failures.push(`报错信息不是预期的：\n${out}`)
+  }
 } finally {
   rmSync(sandbox, { recursive: true, force: true })
 }
 
-console.log('=== check-wiring 自测（注入违规定验证）===\n')
+console.log('=== check-wiring 自测（注入违规验证）===\n')
 if (failures.length) {
   console.log(`❌ 自测失败 ${failures.length} 条：`)
   for (const f of failures) console.log('   - ' + f)
   process.exit(1)
 }
-console.log('✅ 自测通过：基线通过、4 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器）都被抓到且退出码非 0。')
+console.log('✅ 自测通过：基线通过、6 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / 代理重复声明前缀）都被抓到且退出码非 0。')

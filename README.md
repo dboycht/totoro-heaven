@@ -86,7 +86,7 @@ npm run test:mp        # 163 个单测（Node 内置 test runner，零依赖）
 npm run typecheck:mp   # 纯逻辑模块类型检查
 npm run typecheck:ui   # composables / src / utils / server 的 .ts 类型检查
 npm run typecheck:vue  # .vue 模板类型检查（nuxi typecheck）
-npm run check:wiring   # 接线契约：门禁在写操作前 / 提交顺序 / 明细单一构造器
+npm run check:wiring   # 接线与分层契约：门禁在写操作前 / 提交顺序 / 单一构造器 / 分层规则
 npm run build          # 产出 .output/
 npm run sea            # 打单文件 EXE（见 pack/sea/build-sea.ps1）
 ```

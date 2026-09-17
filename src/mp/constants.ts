@@ -15,6 +15,15 @@ export const MP_API_PREFIX = '/wxxcx'
 /** 第二个命名空间前缀（学校清单等 /wxapi/ 端点） */
 export const MP_WXAPI_PREFIX = '/wxapi'
 
+/**
+ * 上游路径的**已知命名空间前缀**（带尾斜杠）。
+ *
+ * 用途：代理决定"请求路径已经是完整上游路径"还是"旧写法、需要补 `/wxxcx`"——
+ * 见 `server/api/mp/[...slug].ts`。**这是唯一来源**：以前代理自己又写了一份数组（D 轮收口），
+ * 两处一旦不同步就会出现"某些端点被补错前缀"的隐蔽 bug。
+ */
+export const MP_PATH_PREFIXES = [MP_API_PREFIX + '/', MP_WXAPI_PREFIX + '/', '/oss/'] as const
+
 /** 代理转发时携带「本次上游基址」的请求头名（多租户；见 server/api/mp/[...slug].ts） */
 export const MP_UPSTREAM_HEADER = 'x-mp-upstream'
 
@@ -33,18 +42,7 @@ export const MP_CODES = {
   submitRejected: '-11',
 } as const
 
-/**
- * MotionAnalyzer 的 6 个合法中文结论。
- * ⚠️ 仅留档：该值**当前不上报**（成绩/明细报文里都不再携带），保留数组是为了不丢掉
- * 「原小程序源码里存在这套结论口径」这一事实，供后续核对时参照。
- */
-export const MP_CHEAT_CODE = [
-  '正常跑步',
-  '疑似使用代步工具',
-  '长时间静止',
-  '运动轨迹异常',
-  '疑似全程走路',
-  '未开启加速器',
-] as const
-
-export type MpCheatCode = (typeof MP_CHEAT_CODE)[number]
+// ⚠️ 2026-09-17（D 轮）删除 `MP_CHEAT_CODE` / `MpCheatCode`：它们**全仓零引用**，
+//    而"MotionAnalyzer 的 6 个合法中文结论"这一事实已由 `_mp-analyze/深挖/C-风控与人脸.md` 与
+//    `ERROR.md` E33 留档（明细报文只发 3 个字段，本就不带 cheatCode）。
+//    需要时从那里查，别在代码里留一个没人用的导出（它会让人以为我们还在上报该字段）。

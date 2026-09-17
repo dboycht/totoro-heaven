@@ -12,7 +12,7 @@
  * 用法：node scripts/check-wiring.mjs [root]
  *   `root` 可选（默认 = 本脚本所在仓库根）——供自测脚本指向"被篡改的副本"验证检查器真的会报错。
  */
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -208,9 +208,95 @@ if (demoScoreBuilder && !/buildScoreRequest\(/.test(demoScoreBuilder.text)) {
   failures.push(`${demoScoreBuilder.rel}：预览成绩报文必须走 \`buildScoreRequest()\`（单一构造出口）`)
 }
 
+// ---------- R6：分层规则（D 轮 2026-09-17 建立；层次定义见 HANDOVER §3.1）----------
+// 允许的依赖方向：
+//   契约层 `src/mp/**`    —— 纯数据/纯函数，**零框架依赖**；**不得**依赖算法层
+//   算法层 `utils/mp/**`  —— 纯函数；只能从契约层取**类型**（`import type`）
+//   装配层 `composables|components|pages|layouts` —— 可依赖契约层 + 算法层
+//   服务端 `server/**`    —— 只依赖契约层 + 算法层 + server 自身；**不得**拉前端装配层
+// 反向（装配层不得 import server/）同样禁止。
+const listDir = (rel) => {
+  const abs = join(ROOT, rel)
+  if (!existsSync(abs)) return []
+  const out = []
+  const walk = (dir, prefix) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const child = join(dir, e.name)
+      const childRel = `${prefix}/${e.name}`
+      if (e.isDirectory()) walk(child, childRel)
+      else if (/\.(ts|vue|mjs)$/.test(e.name)) out.push(childRel)
+    }
+  }
+  walk(abs, rel)
+  return out
+}
+
+const CONTRACT_FILES = listDir('src/mp')
+const ALGO_FILES = listDir('utils/mp')
+const SERVER_FILES = listDir('server')
+const FRONT_FILES = [...listDir('composables'), ...listDir('components'), ...listDir('pages'), ...listDir('layouts')]
+
+/** 逐条规则：返回违规说明数组 */
+const layerViolations = []
+const checkLayer = (rel, text) => {
+  const lines = text.split('\n')
+  lines.forEach((line, i) => {
+    const at = `${rel}:${i + 1}`
+    const isContractOrAlgo = CONTRACT_FILES.includes(rel) || ALGO_FILES.includes(rel)
+    // L1：契约层不得依赖算法层
+    if (CONTRACT_FILES.includes(rel) && /from\s+['"][^'"]*utils\/mp/.test(line)) {
+      layerViolations.push(`${at} 契约层(src/mp)**依赖了算法层**(utils/mp) —— 方向必须单向`)
+    }
+    // L2：算法层只能从契约层取类型
+    if (ALGO_FILES.includes(rel) && /from\s+['"][^'"]*src\/mp/.test(line) && !/^\s*import\s+type\b/.test(line)) {
+      layerViolations.push(`${at} 算法层(utils/mp)从契约层取值时必须写成 \`import type\`（只取类型，避免运行期耦合）`)
+    }
+    // L3：纯逻辑层零框架依赖
+    if (isContractOrAlgo && /from\s+['"](vue|vue-router|#app|nuxt)['"]|useState\(|useRuntimeConfig\(/.test(line)) {
+      layerViolations.push(`${at} 纯逻辑层出现了框架运行时依赖（vue/#app/useState/useRuntimeConfig）—— 它必须能离线单测`)
+    }
+    // L4：纯逻辑层不得拉装配层/服务端
+    if (isContractOrAlgo && /from\s+['"][^'"]*(composables|pages|components|layouts|server)\//.test(line)) {
+      layerViolations.push(`${at} 纯逻辑层依赖了装配层/服务端 —— 必须保持"零依赖可测"`)
+    }
+    // L5：服务端不得拉前端装配层
+    if (SERVER_FILES.includes(rel) && /from\s+['"][^'"]*(composables|components|pages|layouts)\//.test(line)) {
+      layerViolations.push(`${at} 服务端依赖了前端装配层 —— server 只应依赖 契约层/算法层/自身`)
+    }
+    // L6：前端不得直接拉服务端模块
+    if (FRONT_FILES.includes(rel) && /from\s+['"][^'"]*server\//.test(line)) {
+      layerViolations.push(`${at} 前端直接 import 了 server/ 模块 —— 应通过接口（/api/**）而非直接依赖`)
+    }
+  })
+}
+for (const rel of [...CONTRACT_FILES, ...ALGO_FILES, ...SERVER_FILES, ...FRONT_FILES]) {
+  const text = read(rel)
+  if (text) checkLayer(rel, text)
+}
+failures.push(...layerViolations)
+
+// L7：上游路径前缀必须**单一来源**（代理不得自己再声明一份）
+const PROXY_REL = 'server/api/mp/[...slug].ts'
+const proxyText = read(PROXY_REL)
+if (proxyText) {
+  if (/const\s+KNOWN_PREFIXES\s*=/.test(proxyText)) {
+    failures.push(`${PROXY_REL}：又自己声明了 KNOWN_PREFIXES —— 前缀的唯一来源是 \`src/mp/constants.ts\` 的 MP_PATH_PREFIXES（D 轮收口）`)
+  }
+  if (!/MP_PATH_PREFIXES/.test(proxyText)) {
+    failures.push(`${PROXY_REL}：没有使用 \`MP_PATH_PREFIXES\`（检查器需同步更新，或代理改写回了本地数组）`)
+  }
+}
+const constantsText = read('src/mp/constants.ts')
+if (constantsText && !/export const MP_PATH_PREFIXES\s*=\s*\[[^\]]*MP_API_PREFIX[^\]]*MP_WXAPI_PREFIX[^\]]*\]/.test(constantsText)) {
+  failures.push('src/mp/constants.ts：`MP_PATH_PREFIXES` 必须由 MP_API_PREFIX / MP_WXAPI_PREFIX 推导出来（单一来源）')
+}
+
 // ---------- 报告 ----------
 console.log('=== check-wiring：接线与契约检查（源码级）===\n')
-console.log(`📄 已检查：${SOURCE_FILES.length} 个源文件 + ${DETAIL_BUILDERS.length} 个明细构造点 + ${PAGE_FILES.length} 个页面`)
+console.log(
+  `📄 已检查：${SOURCE_FILES.length} 个源文件 + ${DETAIL_BUILDERS.length} 个明细构造点 + ${PAGE_FILES.length} 个页面` +
+    ` + 分层规则（契约 ${CONTRACT_FILES.length} / 算法 ${ALGO_FILES.length} / 服务端 ${SERVER_FILES.length} / 装配 ${FRONT_FILES.length} 个文件）`,
+)
 if (warnings.length) {
   console.log(`\n⚠️  警告 ${warnings.length} 条（不阻断 CI）：`)
   for (const w of warnings) console.log('   - ' + w)
