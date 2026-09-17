@@ -29,6 +29,26 @@ const read = (rel) => {
   return readFileSync(p, 'utf8')
 }
 
+/** 只读：文件存在就返回 `{ rel, text }`，不存在返回 null（**不记失败**，用于"路径迁移"的探测） */
+const readIfExists = (rel) => {
+  const p = join(ROOT, rel)
+  return existsSync(p) ? { rel, text: readFileSync(p, 'utf8') } : null
+}
+
+/**
+ * 依次尝试多个候选路径，返回**第一个存在的**文件（都不存在返回 null）。
+ * 为什么需要：2026-09-17 结构整理把 `useMpReal.ts` 拆成组装器 + `composables/real/{state,data,submit}.ts`，
+ * 顺序 / 构造出口这类"按文件定位"的检查要能**跟着代码搬家**，同时保留旧路径兜底。
+ * ⚠️ 调用方必须自己处理 null（**报失败并提示"检查器需同步更新"**），绝不允许静默通过。
+ */
+const readFirstExisting = (rels) => {
+  for (const rel of rels) {
+    const hit = readIfExists(rel)
+    if (hit) return hit
+  }
+  return null
+}
+
 const lineOf = (text, index) => text.slice(0, index).split('\n').length
 
 /** 取某个函数体（从 `marker` 到下一个顶层 `}` 之间的近似区间：用下一个 async function 或 EOF 收尾） */
@@ -72,11 +92,19 @@ function assertOrder(label, text, patterns) {
 }
 
 // ---------- R1/R2：真实提交的顺序（门禁 → 建场次 → 成绩 → 明细）----------
-const realPath = read('composables/useMpReal.ts')
-if (realPath) {
+// ⚠️ 2026-09-17 结构整理：`submitRealRun` 已从 `composables/useMpReal.ts` 搬到
+//    `composables/real/submit.ts`（该文件只剩组装器，没有序列）。这里**依次尝试**新路径与旧路径；
+//    两个都找不到 = 检查器失效 → **报失败**（提示"检查器需同步更新"），不许静默通过。
+const REAL_SUBMIT_FILES = ['composables/real/submit.ts', 'composables/useMpReal.ts']
+const realSubmit = readFirstExisting(REAL_SUBMIT_FILES)
+if (!realSubmit) {
+  failures.push(
+    `找不到真实提交源文件（依次尝试：${REAL_SUBMIT_FILES.join(' / ')}）—— 检查器需同步更新（check-wiring.mjs）`,
+  )
+} else {
   // ⚠️ marker 必须带 `(`，否则会被 `submitRealRun_xxx` 这类同前缀名字骗过（自测发现的坑）
-  const { body } = bodyOf(realPath, 'async function submitRealRun(')
-  if (!body) failures.push('useMpReal.ts：找不到 submitRealRun(（检查器已失效）')
+  const { body } = bodyOf(realSubmit.text, 'async function submitRealRun(')
+  if (!body) failures.push(`${realSubmit.rel}：找不到 submitRealRun(（检查器已失效）`)
   else {
     assertOrder('真实提交顺序（门禁 → getRunBegin → saveScores → saveScoreDetail）', body, [
       /evaluateRunGate\(|gate\b/,
@@ -92,6 +120,11 @@ const SOURCE_FILES = [
   'utils/mp/submitPayload.ts',
   'utils/mp/runData.ts',
   'composables/useMpReal.ts',
+  // ⚠️ 2026-09-17 结构整理新增：真实链路的共享状态 / 只读侧 / 写侧（E33 守卫必须跟着代码搬家，
+  //    否则"字段又回来了"会藏在拆分出去的新文件里）
+  'composables/real/state.ts',
+  'composables/real/data.ts',
+  'composables/real/submit.ts',
   'composables/useMpDemo.ts',
   'src/mp/envelope.ts',
   'src/mp/types.ts',
@@ -112,12 +145,10 @@ for (const rel of SOURCE_FILES) {
 }
 
 // ---------- R4：明细报文只能有一个构造出口 ----------
-// ① 真正"构造"明细的两个地方必须走构造器；
+// ① 真正"构造"明细的两个地方必须走构造器（真实侧 = real/submit.ts，旧路径 useMpReal.ts 兜底）；
 // ② 页面层不得内联声明明细报文类型（只允许截取预览）。
-const DETAIL_BUILDERS = ['composables/useMpReal.ts', 'composables/useMpDemo.ts']
-for (const rel of DETAIL_BUILDERS) {
-  const text = read(rel)
-  if (!text) continue
+const DETAIL_BUILDERS = [realSubmit, readIfExists('composables/useMpDemo.ts')].filter(Boolean)
+for (const { rel, text } of DETAIL_BUILDERS) {
   if (!/buildScoreDetailRequest\(/.test(text)) {
     failures.push(`${rel}：提交/预览明细时必须走 \`buildScoreDetailRequest()\` 单一构造器（否则 E33 那类"预览与实发不一致"会复发）`)
   }
@@ -133,10 +164,10 @@ for (const rel of PAGE_FILES) {
 
 // ---------- R5：成绩报文也必须走单一构造器（B 轮已统一，故这里是**硬断言**）----------
 const demoPath = read('composables/useMpDemo.ts')
-const realHasBuilder = /buildScoreRequest\(/.test(realPath)
+const realHasBuilder = realSubmit ? /buildScoreRequest\(/.test(realSubmit.text) : false
 const demoHasBuilder = /buildScoreRequest\(/.test(demoPath)
-if (!realHasBuilder) {
-  failures.push('composables/useMpReal.ts：提交成绩必须走 `buildScoreRequest()`（单一构造出口）')
+if (realSubmit && !realHasBuilder) {
+  failures.push(`${realSubmit.rel}：提交成绩必须走 \`buildScoreRequest()\`（单一构造出口）`)
 }
 if (!demoHasBuilder) {
   failures.push('composables/useMpDemo.ts：预览成绩报文必须走 `buildScoreRequest()`' +
