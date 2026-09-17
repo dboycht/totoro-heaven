@@ -7,6 +7,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { laneLoop, laneRatioFor, laneRatioProfile, ringLengthM, ringWidthM, smoothClosedRing, type TrackRings } from '../../utils/mp/trackEditor.ts'
+import { normalizeLibrary, entrySummaryText } from '../../utils/mp/trackLibrary.ts'
 
 const CENTER = { latitude: 31.37, longitude: 119.48 }
 const mLat = 111320
@@ -73,6 +74,62 @@ test('smoothClosedRing：手工描的圈平滑后仍是同一个圈（圆→圆�
   assert.ok(Math.abs(perAfter - perBefore) / perBefore < 0.02, `周长变化 ${(((perAfter - perBefore) / perBefore) * 100).toFixed(2)}%`)
   // 少于 3 个点时不动（避免把两点"平滑"成一条线）
   assert.deepEqual(smoothClosedRing(circle(100, 2), 2).length, 2)
+})
+
+test('★ laneLoop 支持"按弧长变道"的 ratio 函数：起点贴一道、终点贴另一道，中途平滑过渡', () => {
+  // ⚠️ 注意：这里必须喂**平滑**的 ratio 函数（余弦过渡）。
+  //    `laneLoop` 只忠实插值；"换道要平滑"是 `laneRatioProfile` 的职责 ——
+  //    第一版测试喂了个阶跃函数，立刻被自己抓到"6 m 台阶"（0.6 道 × 10 m 环宽），属测试写错。
+  const smoothRatio = (arc: number) => {
+    if (arc <= 100) return 0.2
+    if (arc >= 200) return 0.8
+    const k = 0.5 - 0.5 * Math.cos((Math.PI * (arc - 100)) / 100) // 0→1
+    return 0.2 + 0.6 * k
+  }
+  const lane = laneLoop(rings, smoothRatio, 240)
+  const rs = lane.map((p) => radiusOf(p as { latitude: number; longitude: number }))
+  const first = rs[0]!
+  const last = rs[rs.length - 1]!
+  assert.ok(Math.abs(first - (90 + 10 * 0.2)) < 1, `起点半径 ${first.toFixed(2)}（应≈92）`)
+  assert.ok(Math.abs(last - (90 + 10 * 0.8)) < 1.6, `终点半径 ${last.toFixed(2)}（应≈98）`)
+  // 平滑输入 ⇒ 平滑输出：相邻点半径差必须很小（同心圆夹具下 ≈ 0）
+  const jumps = rs.slice(1).map((v, i) => Math.abs(v - rs[i]!))
+  assert.ok(Math.max(...jumps) < 0.3, `出现台阶 ${Math.max(...jumps).toFixed(2)} m`)
+})
+
+test('normalizeLibrary：新格式原样、旧格式（{lineId:{outer,inner}}）自动迁移、垃圾数据丢弃', () => {
+  const good = { lineId: 'L1', lineName: '西操场', outer: circle(100, 10), inner: circle(90, 10), createdAt: '2026-09-17T21:00:00.000Z', appVersion: '1.1.7' }
+  const arr = normalizeLibrary([good, { lineId: 'bad' }])
+  assert.equal(arr.length, 1)
+  assert.equal(arr[0]!.lineId, 'L1')
+  assert.equal(arr[0]!.appVersion, '1.1.7')
+
+  const legacy = normalizeLibrary({ L2: { outer: circle(100, 8), inner: circle(90, 8) } }, '旧版')
+  assert.equal(legacy.length, 1)
+  assert.equal(legacy[0]!.lineId, 'L2')
+  assert.equal(legacy[0]!.appVersion, '旧版')
+  assert.equal(legacy[0]!.createdAt, '')
+
+  assert.deepEqual(normalizeLibrary(null), [])
+  assert.deepEqual(normalizeLibrary('nonsense'), [])
+  assert.deepEqual(normalizeLibrary({ L3: { outer: 'x', inner: 'y' } }), [])
+})
+
+test('entrySummaryText：列表摘要必须带点位数、创建日期与版本（用户要求）', () => {
+  const text = entrySummaryText({
+    lineId: 'L1',
+    lineName: '西操场',
+    outer: circle(100, 12),
+    inner: circle(90, 10),
+    createdAt: '2026-09-17T21:00:00.000Z',
+    appVersion: '1.1.7',
+  })
+  assert.ok(text.includes('外圈 12 点'), text)
+  assert.ok(text.includes('内圈 10 点'), text)
+  assert.ok(text.includes('2026-09-17 21:00'), text)
+  assert.ok(text.includes('v1.1.7'), text)
+  const bare = entrySummaryText({ lineId: 'x', lineName: 'x', outer: [], inner: [], createdAt: '', appVersion: '' })
+  assert.ok(bare.includes('创建日期未知') && bare.includes('版本未知'), bare)
 })
 
 test('laneRatioProfile：随机道次 + 偶尔换道，比例恒在 [0,1] 且能复现', () => {

@@ -12,6 +12,7 @@
  */
 import { calculateRouteSimilarity } from '~/utils/mp/routeSimilarity'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
+import { laneLoop, laneRatioProfile, makeSeedRng, ringLengthM } from '~/utils/mp/trackEditor'
 import { buildRunStats, buildTimeFields } from '~/utils/mp/runData'
 import { buildScoreDetailRequest, buildScoreRequest } from '~/utils/mp/submitPayload'
 import { evaluateRunAgainstTask } from '~/utils/mp/taskRules'
@@ -28,6 +29,8 @@ let lastFitAt = 0
 export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
   const { demoMode, task, lines, run, session } = state
   const { records, persistRecords } = recordsApi
+  /** 本地路线库（在"跑道编辑"里配置的内外圈）—— 必须在这里（setup 期）取，不能在 start() 里取 */
+  const lib = useTrackLibrary()
 
   // ---------- 跑步模拟 ----------
 
@@ -117,7 +120,22 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
     try {
       // 演示用 20m 采样（点少、页面轻）；真实模式用 3m（≈1Hz GPS，与真实提交口径一致）
       // drift:true → 叠加"GPS 精度下降期"，拟合度自然落到 0.9x（不是满分 1.00）
-      const generated = generateCorridorRoute(line.pointList, {
+      //
+      // ⭐ 2026-09-17：**若这条线路在"跑道编辑"里配置过内外圈**，就用**车道线**当生成几何
+      //    （随机一道 + 缓慢换道，按弧长），这样跑出来是**真跑道的形状**；
+      //    没配置则回退官方路线。⚠️ `officialRoute` 始终是**厂商模板** —— 拟合度必须按它算
+      //    （服务端就是按它算），两者不能混。
+      const trackEntry = lib.get(line.pointId)
+      let geometry: { latitude: number | string; longitude: number | string }[] = line.pointList
+      if (trackEntry && trackEntry.outer.length >= 3 && trackEntry.inner.length >= 3) {
+        const totalM = ringLengthM(trackEntry.outer)
+        const profile = laneRatioProfile(makeSeedRng(newRunSeed()), Math.max(2, trackEntry.laneCount ?? 6), totalM, {
+          maxChanges: 2,
+          changeLenM: 30,
+        })
+        geometry = laneLoop({ outer: trackEntry.outer, inner: trackEntry.inner }, profile, 240)
+      }
+      const generated = generateCorridorRoute(geometry, {
         targetKm: plan.targetKm,
         stepM: isRealLine ? REAL_STEP_M : DEMO_STEP_M,
         drift: true,

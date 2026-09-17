@@ -67,14 +67,19 @@
         </div>
       </v-alert>
 
-      <v-chip v-if="isLoggedIn" color="success" variant="tonal" size="small" class="mr-2">
-        <v-icon start size="14">mdi-account-check</v-icon>
-        真实会话
-      </v-chip>
-      <v-chip v-if="realStatus === 'ready'" color="success" variant="tonal" size="small">
-        <v-icon start size="14">mdi-database-check-outline</v-icon>
-        真实任务已就绪
-      </v-chip>
+      <!-- ⚠️ 2026-09-17 修：这两个徽章原本直接跟在 v-alert 后面（inline 元素紧跟块级提示），
+           在"提示文字换行 + 卡片内边距"时会出现**徽章压住提示框底边**的重叠。
+           改成独立一行 flex 容器 + 明确上边距，跟谁都不挤。 -->
+      <div v-if="isLoggedIn || realStatus === 'ready'" class="d-flex flex-wrap align-center ga-2 mt-3">
+        <v-chip v-if="isLoggedIn" color="success" variant="tonal" size="small">
+          <v-icon start size="14">mdi-account-check</v-icon>
+          真实会话
+        </v-chip>
+        <v-chip v-if="realStatus === 'ready'" color="success" variant="tonal" size="small">
+          <v-icon start size="14">mdi-database-check-outline</v-icon>
+          真实任务已就绪
+        </v-chip>
+      </div>
 
       <v-alert v-if="realStatus === 'error'" type="error" variant="tonal" density="compact" class="mt-3">
         {{ realError }}

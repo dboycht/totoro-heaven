@@ -9,11 +9,11 @@
  *
  * 存储：本机 localStorage，按 lineId 保存（`mp_track_rings_v1`）——运行时数据不入库。
  */
-import { laneLoop, laneRatioFor, ringLengthM, ringWidthM, smoothClosedRing, type TrackRings } from '~/utils/mp/trackEditor'
+import { laneLoop, laneRatioFor, laneRatioProfile, ringLengthM, ringWidthM, smoothClosedRing, type TrackRings } from '~/utils/mp/trackEditor'
+import { entrySummaryText } from '~/utils/mp/trackLibrary'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
 
-const STORE_KEY = 'mp_track_rings_v1'
 /** 契约层坐标（latitude/longitude 可能是字符串） */
 type P = LatLng
 /** 内部数值型坐标（**所有算术/存本机都用它**；N 可赋给 LatLng，反之不行） */
@@ -114,33 +114,25 @@ const overlayTiles = computed(() =>
     : [],
 )
 
-// ---------- 线路与两圈数据 ----------
+// ---------- 本地路线库（含创建日期/版本）+ 正在编辑的草稿 ----------
 const lines = computed(() => activeLines.value ?? [])
 const lineId = ref<string>('')
-watch(
-  lines,
-  (ls) => {
-    if (!lineId.value && ls.length) lineId.value = String(ls[0]!.pointId)
-  },
-  { immediate: true },
-)
-const currentLine = computed(() => lines.value.find((l) => String(l.pointId) === String(lineId.value)))
-const official = computed<N[]>(() => (currentLine.value?.pointList ?? []).map(num))
-
-const all = ref<Record<string, { outer: N[]; inner: N[] }>>({})
-const loadAll = () => {
-  try {
-    all.value = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') as Record<string, { outer: N[]; inner: N[] }>
-  } catch {
-    all.value = {}
-  }
+const lib = useTrackLibrary()
+/** 模板里要用的 ref 需要拿出来（嵌套在对象里的 ref 模板不会自动解包） */
+const libEntries = lib.entries
+const draftOuter = ref<N[]>([])
+const draftInner = ref<N[]>([])
+const loadDraft = (id: string) => {
+  const e = lib.get(id)
+  draftOuter.value = (e?.outer ?? []).map(num)
+  draftInner.value = (e?.inner ?? []).map(num)
 }
-const saveAll = () => localStorage.setItem(STORE_KEY, JSON.stringify(all.value))
 onMounted(() => {
-  loadAll()
+  lib.load()
   const el = mapEl.value
   if (el) viewport.value = { w: el.clientWidth, h: el.clientHeight }
   window.addEventListener('resize', onResize)
+  loadDraft(lineId.value)
 })
 onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 const onResize = () => {
@@ -151,12 +143,50 @@ const onResize = () => {
 const mapEl = ref<HTMLElement | null>(null)
 /** 当前编辑哪一圈 */
 const editing = ref<'outer' | 'inner'>('outer')
-const ringsOf = (id: string): { outer: N[]; inner: N[] } => all.value[id] ?? { outer: [], inner: [] }
-const outer = computed(() => ringsOf(lineId.value).outer)
-const inner = computed(() => ringsOf(lineId.value).inner)
+const outer = computed(() => draftOuter.value)
+const inner = computed(() => draftInner.value)
 const setRing = (which: 'outer' | 'inner', pts: N[]) => {
-  all.value = { ...all.value, [lineId.value]: { ...ringsOf(lineId.value), [which]: pts } }
+  if (which === 'outer') draftOuter.value = pts
+  else draftInner.value = pts
 }
+/** 切换线路 ⇒ 自动载入那条线路已保存的草稿（没保存过就是空的） */
+watch(lineId, (id) => loadDraft(String(id ?? '')))
+
+/**
+ * **快速定位**（用户要求）：把地图移到给定点集的范围，并挑一个刚好装得下的缩放级。
+ * 不传参数时：优先用"已描的圈"，否则用官方路线。
+ */
+const focusOn = (ptsIn?: N[]) => {
+  const pts = ptsIn ?? (outer.value.length >= 3 ? [...outer.value, ...inner.value] : official.value.map(num))
+  if (pts.length < 2) {
+    showSnackbar('这条线路还没有可定位的点', 'warning')
+    return
+  }
+  const lats = pts.map((p) => p.latitude)
+  const lngs = pts.map((p) => p.longitude)
+  const minLat = Math.min(...lats)
+  const maxLat = Math.max(...lats)
+  const minLng = Math.min(...lngs)
+  const maxLng = Math.max(...lngs)
+  center.value = { latitude: (minLat + maxLat) / 2, longitude: (minLng + maxLng) / 2 }
+  for (let z = Z_MAX; z >= Z_MIN; z--) {
+    const wPx = (lng2x(maxLng, z) - lng2x(minLng, z)) * TILE
+    const hPx = (lat2y(minLat, z) - lat2y(maxLat, z)) * TILE
+    if (wPx <= viewport.value.w * 0.75 && hPx <= viewport.value.h * 0.75) {
+      zoom.value = z
+      break
+    }
+  }
+}
+watch(
+  lines,
+  (ls) => {
+    if (!lineId.value && ls.length) lineId.value = String(ls[0]!.pointId)
+  },
+  { immediate: true },
+)
+const currentLine = computed(() => lines.value.find((l) => String(l.pointId) === String(lineId.value)))
+const official = computed<N[]>(() => (currentLine.value?.pointList ?? []).map(num))
 
 /** 当前编辑圈的点（含屏幕坐标，供 SVG 画） */
 const editingPts = computed(() => (editing.value === 'outer' ? outer.value : inner.value))
@@ -250,7 +280,7 @@ const rings = computed<TrackRings>(() => ({ outer: outer.value, inner: inner.val
 const ringsReady = computed(() => outer.value.length >= 3 && inner.value.length >= 3)
 const widthM = computed(() => (ringsReady.value ? ringWidthM(rings.value) : 0))
 const laneRatio = computed(() => laneRatioFor(laneNo.value, laneCount.value))
-const lane = computed<N[]>(() => (ringsReady.value ? laneLoop(rings.value, laneRatio.value, 240).map(num) : []))
+const lane = computed<N[]>(() => (ringsReady.value ? laneLoop(rings.value, laneProfile.value ?? laneRatio.value, 240).map(num) : []))
 
 /** 最终轨迹：以车道线为参考几何，叠加"真实抖动"（直道恒定、小颗粒、偶发小凸起） */
 const trajectory = computed<N[]>(() => {
@@ -265,14 +295,51 @@ const pathOf = (pts: P[], close = false) => {
   return close ? `${d} Z` : d
 }
 
+/** 车道：把"随机道次 + 偶尔缓慢换道"的按弧长比例喂给 laneLoop（换道平滑由 laneRatioProfile 负责） */
+const laneProfile = computed(() => {
+  const totalM = ringsReady.value ? ringLengthM(outer.value) : 0
+  if (!totalM) return null
+  const rng = (() => {
+    let a = (seed.value >>> 0) || 20260917
+    return () => {
+      a = (a + 0x6d2b79f5) | 0
+      let t = Math.imul(a ^ (a >>> 15), 1 | a)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+  })()
+  return laneRatioProfile(rng, laneCount.value, totalM, { maxChanges: 2, changeLenM: 30 })
+})
+
 const save = () => {
-  saveAll()
-  showSnackbar('已保存到本机（按线路）')
+  if (!lineId.value) {
+    showSnackbar('先选一条线路', 'warning')
+    return
+  }
+  const e = lib.upsert({
+    lineId: lineId.value,
+    lineName: String(currentLine.value?.pointName ?? lineId.value),
+    outer: outer.value,
+    inner: inner.value,
+    laneCount: laneCount.value,
+  })
+  showSnackbar(`已存入本机路线库（创建于 ${e.createdAt.slice(0, 16).replace('T', ' ')} · v${e.appVersion}）`)
 }
 const reset = () => {
   setRing('outer', [])
   setRing('inner', [])
-  saveAll()
+}
+/** 本地路线管理：载入到编辑器（顺带定位过去） */
+const loadEntry = (id: string) => {
+  lineId.value = String(id)
+  loadDraft(String(id))
+  focusOn()
+  showSnackbar('已载入这条本地路线')
+}
+const removeEntry = (id: string) => {
+  lib.remove(String(id))
+  if (String(id) === String(lineId.value)) reset()
+  showSnackbar('已从本机路线库删除')
 }
 </script>
 
@@ -365,6 +432,18 @@ const reset = () => {
               <v-btn value="outer" size="small">外圈</v-btn>
               <v-btn value="inner" size="small">内圈</v-btn>
             </v-btn-toggle>
+            <!-- 快速定位（用户要求）：选中线路后一键把地图移到它那里 -->
+            <v-btn
+              block
+              size="small"
+              color="secondary"
+              variant="tonal"
+              class="mb-2"
+              prepend-icon="mdi-crosshairs-gps"
+              @click="focusOn()"
+            >
+              快速定位（把地图移到这条线路）
+            </v-btn>
             <div class="text-caption text-medium-emphasis mb-2">
               当前{{ editing === 'outer' ? '外圈' : '内圈' }}：<b>{{ editingPts.length }}</b> 点
               <span v-if="editingPts.length > 2">· 周长 {{ ringLengthM(editingPts).toFixed(0) }} m</span>
@@ -401,6 +480,32 @@ const reset = () => {
                 <br />最终轨迹 {{ trajectory.length }} 点（含真实抖动：直道恒定 + 0.15 m 颗粒 + 偶发小凸起）
               </div>
             </template>
+          </v-card-text>
+        </v-card>
+        <v-card class="mt-3">
+          <v-card-title class="text-subtitle-1">
+            本地路线库
+            <span class="text-caption text-medium-emphasis">（{{ libEntries.length }} 条）</span>
+          </v-card-title>
+          <v-card-text>
+            <div v-if="!libEntries.length" class="text-caption text-medium-emphasis">
+              还没有配置好的路线。描好内外圈后点「保存（本机）」，这里就会按"创建日期 + 版本"列出来。
+            </div>
+            <v-list v-else density="compact" class="pa-0">
+              <v-list-item v-for="e in libEntries" :key="e.lineId" class="px-0">
+                <v-list-item-title class="text-body-2">
+                  {{ e.lineName }}
+                  <v-chip v-if="String(e.lineId) === String(lineId)" size="x-small" color="primary" variant="tonal" class="ml-1">
+                    正在编辑
+                  </v-chip>
+                </v-list-item-title>
+                <v-list-item-subtitle class="text-caption">{{ entrySummaryText(e) }}</v-list-item-subtitle>
+                <template #append>
+                  <v-btn size="x-small" variant="text" @click="loadEntry(e.lineId)">载入</v-btn>
+                  <v-btn size="x-small" variant="text" color="error" @click="removeEntry(e.lineId)">删除</v-btn>
+                </template>
+              </v-list-item>
+            </v-list>
           </v-card-text>
         </v-card>
       </v-col>

@@ -93,16 +93,20 @@ export function laneRatioFor(laneNo: number, laneCount: number): number {
 
 /**
  * 生成**车道中心线**：在内外圈之间按 `ratio` 做径向插值。
+ * @param ratio  0 = 贴内圈，1 = 贴外圈；
+ *               **也可以传函数** `(arcM) => ratio` —— 就能表达"跑到一半慢慢切到另一条道"
+ *               （弧长按**外圈**的累计长度算；重采样后每格弧长相等，所以 arc = k × 总长/n）
  * @param samples 采样点数（越大越平滑；默认 240 足够）
  * @returns 闭合折线（首点即起点，末点不重复首点）
  */
-export function laneLoop(rings: TrackRings, ratio: number, samples = 240): LatLng[] {
+export function laneLoop(rings: TrackRings, ratio: number | ((arcM: number) => number), samples = 240): LatLng[] {
   const outerRaw = norm(rings.outer)
   const innerRaw = norm(rings.inner)
   if (outerRaw.length < 3 || innerRaw.length < 3) return []
   const n = Math.max(24, Math.round(samples))
   const outer = resampleClosed(outerRaw, n)
   const inner = resampleClosed(innerRaw, n)
+  const outerTotal = cumulative(outerRaw).total
 
   // 找"整体平移最小距离"的对齐偏移：把内圈的起点挪到与外圈最匹配的位置
   let bestShift = 0
@@ -120,17 +124,28 @@ export function laneLoop(rings: TrackRings, ratio: number, samples = 240): LatLn
     }
   }
 
-  const r = Math.min(1, Math.max(0, ratio))
   const out: { latitude: number; longitude: number }[] = []
   for (let i = 0; i < n; i++) {
     const a = inner[(i + bestShift) % n]!
     const b = outer[i]!
+    const r = typeof ratio === 'function' ? Math.min(1, Math.max(0, ratio((outerTotal * i) / n))) : Math.min(1, Math.max(0, ratio))
     out.push({
       latitude: a.latitude + (b.latitude - a.latitude) * r,
       longitude: a.longitude + (b.longitude - a.longitude) * r,
     })
   }
   return out
+}
+
+/** 可复现随机源（mulberry32）——编辑器与跑步机共用，保证"同种子同车道" */
+export function makeSeedRng(seed: number): () => number {
+  let a = (seed >>> 0) || 20260917
+  return () => {
+    a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
 }
 
 /**

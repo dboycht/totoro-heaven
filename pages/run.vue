@@ -110,7 +110,17 @@
             </div>
 
             <v-alert v-if="run.error" type="error" variant="tonal" density="compact" class="mt-3">{{ run.error }}</v-alert>
-            <v-alert v-if="!realReady && !demoMode" type="warning" variant="tonal" density="compact" class="mt-3">
+            <!-- 路线来源说明（2026-09-17 用户要求：阳光跑只选"已配置好的路线"） -->
+      <v-alert v-if="hasConfigured" type="success" variant="tonal" density="compact" class="mt-3">
+        只列出你在「跑道编辑」里配置好的 <b>{{ libEntries.length }}</b> 条路线 —— 轨迹按你描的
+        <b>真跑道</b>生成（随机一道 + 缓慢换道），拟合度按官方模板算。
+      </v-alert>
+      <v-alert v-else-if="activeLinesRaw.length" type="info" variant="tonal" density="compact" class="mt-3">
+        还没有配置任何跑道 ⇒ 当前先列出全部 <b>{{ activeLinesRaw.length }}</b> 条官方线路（用官方模板生成，形状会偏）。
+        去「<b>跑道编辑</b>」描一条内外圈并保存，这里就只列你配置过的路线。
+      </v-alert>
+
+      <v-alert v-if="!realReady && !demoMode" type="warning" variant="tonal" density="compact" class="mt-3">
               还没读到任务：回<NuxtLink to="/">工作台</NuxtLink>粘贴 token → 点「读取真实账号与任务」；
               或点上方「载入演示数据」只试界面与报文（不发请求）。
               <!-- 刷新后默认不自动恢复缓存，这里给显式入口 -->
@@ -318,7 +328,20 @@ const realReady = computed(() => realStatus.value === 'ready' && Boolean(realTas
 /** 当前生效的任务：真实任务优先，其次演示任务（默认都为空 = 未载入） */
 const activeTask = computed(() => realTask.value ?? task.value)
 /** 当前线路集（真实/演示任务都自带 runPointList） */
-const activeLines = computed(() => activeTask.value?.runPointList ?? [])
+const activeLinesRaw = computed(() => activeTask.value?.runPointList ?? [])
+
+/**
+ * 本地路线库（用户要求）：**阳光跑页只列"在跑道编辑里配置好的路线"** ——
+ * 这样每次开跑都用你描过的真跑道几何（而不是那个偏差 39 m 的官方模板）。
+ * 库里为空时仍列出全部线路（否则新用户完全没法开跑），界面上会提示去配置。
+ */
+const { entries: libEntries, load: loadTrackLibrary } = useTrackLibrary()
+onMounted(() => loadTrackLibrary())
+const configuredIds = computed(() => new Set(libEntries.value.map((e) => String(e.lineId))))
+const hasConfigured = computed(() => libEntries.value.length > 0)
+const activeLines = computed(() =>
+  hasConfigured.value ? activeLinesRaw.value.filter((l) => configuredIds.value.has(String(l.pointId))) : activeLinesRaw.value,
+)
 const isBusy = computed(() => run.value.status === 'running' || run.value.status === 'paused')
 
 /** 载入演示数据（按需功能，不发任何请求） */
