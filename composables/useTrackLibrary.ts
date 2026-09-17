@@ -29,17 +29,28 @@ export function useTrackLibrary() {
     } catch {
       merged = []
     }
+    let migrated = false
     try {
       const legacyRaw = localStorage.getItem(TRACK_LIBRARY_KEY_LEGACY)
       if (legacyRaw) {
         for (const e of normalizeLibrary(JSON.parse(legacyRaw), '旧版')) {
           if (!merged.some((m) => String(m.lineId) === String(e.lineId))) merged.push(e)
         }
+        // ⚠️ 迁完**立刻删掉旧键**：否则每次 load() 都会把用户已删除的条目再补回来 ——
+        //    用户实测"删除不掉"就是这个原因（删了之后一进页面又出现）。
+        localStorage.removeItem(TRACK_LIBRARY_KEY_LEGACY)
+        migrated = true
       }
     } catch {
-      /* 旧数据坏了就忽略 */
+      /* 旧数据坏了就忽略（顺手把坏键也清掉，避免每次都解析失败） */
+      try {
+        localStorage.removeItem(TRACK_LIBRARY_KEY_LEGACY)
+      } catch {
+        /* 忽略 */
+      }
     }
     entries.value = merged
+    if (migrated) persist()
     return merged
   }
 
