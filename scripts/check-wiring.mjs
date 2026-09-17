@@ -291,11 +291,110 @@ if (constantsText && !/export const MP_PATH_PREFIXES\s*=\s*\[[^\]]*MP_API_PREFIX
   failures.push('src/mp/constants.ts：`MP_PATH_PREFIXES` 必须由 MP_API_PREFIX / MP_WXAPI_PREFIX 推导出来（单一来源）')
 }
 
+// ---------- R7/R8：错误处理与空值纪律（C 轮 2026-09-17；约定见 HANDOVER §3.2）----------
+// R7 模板空值：**可空状态**在模板里必须 `?.` 取值，或被**祖先 `v-if` 守卫**。
+//    E27 的成因正是"把 ref 默认值从有值改成 null，却没检查模板里的裸取值" —— 渲染期抛错会中断整棵树 ⇒ 整页黑屏。
+//    这里用一个**栈式模板解析**（记录每个元素的 v-if 守卫）来精确判定"是否已被祖先守卫"。
+// R8 catch 留痕：`catch {}` 完全空 → 违规。允许静默的**必须写明注释**（注释就是"为什么可以吞"的留痕）。
+
+const NULLABLE_DECL_RE =
+  /(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:useState|ref|shallowRef|computed|useMemo)\s*<[^>]*\|\s*(?:null|undefined)[^>]*>/g
+const nullableNames = new Map()
+for (const rel of [...listDir('composables'), ...listDir('src')]) {
+  if (!rel.endsWith('.ts')) continue
+  const text = read(rel)
+  for (const m of text.matchAll(NULLABLE_DECL_RE)) {
+    const line = text.slice(0, m.index).split('\n').length
+    if (!nullableNames.has(m[1])) nullableNames.set(m[1], `${rel}:${line}`)
+  }
+}
+
+const VOID_TAGS = new Set(['br', 'hr', 'img', 'input', 'meta', 'link', 'source', 'area', 'base', 'col', 'embed', 'track', 'wbr'])
+const TAG_RE = /<(\/?)([A-Za-z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/g
+
+/** 在给定守卫集合下，找出一段模板文本里的"裸取值"（可空状态后面直接跟点） */
+const bareAccesses = (text, guards) => {
+  const out = []
+  for (const name of nullableNames.keys()) {
+    if (guards.has(name)) continue
+    const re = new RegExp(`(?<![\\w$.])${name}(?!\\?)(?!\\s*&&)(?!\\s*\\|\\|)\\.`, 'g')
+    for (const m of text.matchAll(re)) out.push({ name, index: m.index })
+  }
+  return out
+}
+
+const nullViolations = []
+for (const rel of [...listDir('pages'), ...listDir('components'), ...listDir('layouts')]) {
+  if (!rel.endsWith('.vue')) continue
+  const text = read(rel)
+  const start = text.indexOf('<template>')
+  const end = text.lastIndexOf('</template>')
+  if (start < 0 || end < 0) continue
+  const tpl = text.slice(start, end)
+  const baseLine = text.slice(0, start).split('\n').length // 行号偏移
+  const stack = [] // { tag, guards:Set }
+  let last = 0
+  for (const m of tpl.matchAll(TAG_RE)) {
+    // ① 标签之间的文本节点：只看祖先守卫
+    const textNode = tpl.slice(last, m.index)
+    const ancestorGuards = new Set(stack.flatMap((f) => [...f.guards]))
+    for (const bad of bareAccesses(textNode, ancestorGuards)) {
+      const line = baseLine + tpl.slice(0, last + bad.index).split('\n').length - 1
+      nullViolations.push(`${rel}:${line} 模板里裸取可空状态 \`${bad.name}.\`（声明于 ${nullableNames.get(bad.name)}）—— 必须写成 \`${bad.name}?.\` 或被祖先 \`v-if\` 守卫`)
+    }
+    last = m.index + m[0].length
+
+    const [full, closing, tag, attrs, selfClose] = m
+    if (closing) {
+      // 闭合：弹到匹配的那个（容错）
+      for (let i = stack.length - 1; i >= 0; i--) {
+        if (stack[i].tag === tag) { stack.length = i; break }
+      }
+      continue
+    }
+    // ② 该标签自己的属性里若裸取可空状态：它自己的 v-if 也算守卫
+    const ownGuards = new Set()
+    for (const g of attrs.matchAll(/v-(?:else-)?if\s*=\s*"([^"]*)"|v-(?:else-)?if\s*=\s*'([^']*)'/g)) {
+      const expr = g[1] ?? g[2] ?? ''
+      for (const name of nullableNames.keys()) if (new RegExp(`\\b${name}\\b`).test(expr)) ownGuards.add(name)
+    }
+    const allGuards = new Set([...ancestorGuards, ...ownGuards])
+    for (const bad of bareAccesses(attrs, allGuards)) {
+      const line = baseLine + tpl.slice(0, m.index + full.indexOf(attrs) + bad.index).split('\n').length - 1
+      nullViolations.push(`${rel}:${line} 属性绑定里裸取可空状态 \`${bad.name}.\`（声明于 ${nullableNames.get(bad.name)}）—— 必须写成 \`${bad.name}?.\` 或被祖先 \`v-if\` 守卫`)
+    }
+    if (!selfClose && !VOID_TAGS.has(tag)) stack.push({ tag, guards: ownGuards })
+  }
+  // 收尾文本
+  const tail = tpl.slice(last)
+  const tailGuards = new Set(stack.flatMap((f) => [...f.guards]))
+  for (const bad of bareAccesses(tail, tailGuards)) {
+    const line = baseLine + tpl.slice(0, last + bad.index).split('\n').length - 1
+    nullViolations.push(`${rel}:${line} 模板里裸取可空状态 \`${bad.name}.\`（声明于 ${nullableNames.get(bad.name)}）`)
+  }
+}
+failures.push(...nullViolations)
+
+/** 允许"完全空 catch"的文件（每条必须写原因） */
+const ALLOW_EMPTY_CATCH = new Map([
+  ['tests/mp/logger.test.ts', '测试收尾清理，失败不影响结论（文件内已注明）'],
+])
+for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('server'), ...listDir('utils')]) {
+  if (!rel.endsWith('.ts')) continue
+  if (ALLOW_EMPTY_CATCH.has(rel)) continue
+  const text = read(rel)
+  for (const m of text.matchAll(/catch\s*(?:\([^)]*\))?\s*\{\s*\}/g)) {
+    const line = text.slice(0, m.index).split('\n').length
+    failures.push(`${rel}:${line} 出现了**完全空的 catch** —— 请求/业务路径必须留痕（写日志或状态）；确实"尽力而为"的副作用必须在括号里写明注释说明为什么可以吞`)
+  }
+}
+
 // ---------- 报告 ----------
 console.log('=== check-wiring：接线与契约检查（源码级）===\n')
 console.log(
   `📄 已检查：${SOURCE_FILES.length} 个源文件 + ${DETAIL_BUILDERS.length} 个明细构造点 + ${PAGE_FILES.length} 个页面` +
-    ` + 分层规则（契约 ${CONTRACT_FILES.length} / 算法 ${ALGO_FILES.length} / 服务端 ${SERVER_FILES.length} / 装配 ${FRONT_FILES.length} 个文件）`,
+    ` + 分层规则（契约 ${CONTRACT_FILES.length} / 算法 ${ALGO_FILES.length} / 服务端 ${SERVER_FILES.length} / 装配 ${FRONT_FILES.length} 个文件）` +
+    ` + 空值纪律（可空状态 ${nullableNames.size} 个）`,
 )
 if (warnings.length) {
   console.log(`\n⚠️  警告 ${warnings.length} 条（不阻断 CI）：`)

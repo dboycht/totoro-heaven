@@ -181,6 +181,40 @@ try {
     if (code === 0) failures.push('代理重新声明 KNOWN_PREFIXES 但检查器仍然通过（单一来源守卫失效）')
     else if (!out.includes('KNOWN_PREFIXES')) failures.push(`报错信息不是预期的：\n${out}`)
   }
+  // ---------- 注入 7：模板里裸取可空状态（E27 的成因）----------
+  {
+    const dir = copyBase()
+    const file = join(dir, 'pages/records.vue')
+    const text = readFileSync(file, 'utf8')
+    // 往模板末尾塞一个"裸取值"：task 是 `useState<MpSunrunTask | null>` 的可空状态
+    const injected = text.replace('</template>', '  <div>{{ task.paperName }}</div>\n</template>')
+    if (injected === text) failures.push('注入 7：pages/records.vue 里找不到 </template>（自测需同步更新）')
+    writeFileSync(file, injected, 'utf8')
+    const { code, out } = run(dir)
+    if (code === 0) failures.push('模板裸取可空状态但检查器仍然通过（空值守卫失效）')
+    else if (!out.includes('裸取可空状态')) failures.push(`报错信息不是预期的：\n${out}`)
+  }
+
+  // ---------- 注入 8（反向用例）：同样访问但**写成 v-if 守卫** ⇒ 必须通过 ----------
+  // 这条比"能抓到"更重要：它证明守卫识别**不会误报**（否则规则会被人当噪音关掉）。
+  {
+    const dir = copyBase()
+    const file = join(dir, 'pages/records.vue')
+    const text = readFileSync(file, 'utf8')
+    writeFileSync(file, text.replace('</template>', '  <div v-if="task">{{ task.paperName }}</div>\n</template>'), 'utf8')
+    const { code, out } = run(dir)
+    if (code !== 0) failures.push(`写了 v-if 守卫却被判违规（规则误报）：\n${out}`)
+  }
+
+  // ---------- 注入 9：完全空的 catch（请求/业务路径必须留痕）----------
+  {
+    const dir = copyBase()
+    const file = join(dir, 'utils/mp/runData.ts')
+    writeFileSync(file, `${readFileSync(file, 'utf8')}\n\nexport function __injected(): void {\n  try { JSON.parse('{') } catch {}\n}\n`, 'utf8')
+    const { code, out } = run(dir)
+    if (code === 0) failures.push('出现完全空的 catch 但检查器仍然通过（留痕守卫失效）')
+    else if (!out.includes('完全空的 catch')) failures.push(`报错信息不是预期的：\n${out}`)
+  }
 } finally {
   rmSync(sandbox, { recursive: true, force: true })
 }
@@ -191,4 +225,7 @@ if (failures.length) {
   for (const f of failures) console.log('   - ' + f)
   process.exit(1)
 }
-console.log('✅ 自测通过：基线通过、6 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / 代理重复声明前缀）都被抓到且退出码非 0。')
+console.log(
+  '✅ 自测通过：基线通过、9 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
+    '代理重复声明前缀 / 模板裸取可空状态 / 空 catch）都被抓到且退出码非 0，且"写了 v-if 守卫"的反向用例不会被误报。',
+)
