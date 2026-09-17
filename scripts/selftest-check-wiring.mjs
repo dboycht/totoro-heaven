@@ -29,6 +29,11 @@ const NEEDED = [
   'composables/real/data.ts',
   'composables/real/submit.ts',
   'composables/useMpDemo.ts',
+  // ⚠️ 本次结构整理：演示/跑步机链路已拆为 组装器 + demo/{state,records,runner}.ts；
+  //    这几个文件检查器**也要读**（E33 守卫 / 报文构造出口），副本里必须一并存在。
+  'composables/demo/state.ts',
+  'composables/demo/records.ts',
+  'composables/demo/runner.ts',
   'pages/run.vue',
   'pages/index.vue',
   'pages/records.vue',
@@ -45,6 +50,31 @@ const NEEDED = [
  */
 const REAL_SUBMIT_REL =
   ['composables/real/submit.ts', 'composables/useMpReal.ts'].find((rel) => existsSync(join(ROOT, rel))) ?? ''
+
+/**
+ * 演示预览的报文构造源文件（`buildScoreDetailRequest(` / `buildScoreRequest(` 所在）——
+ * 与 `check-wiring.mjs` 的候选取序一致：新路径优先、旧路径兜底。
+ */
+const DEMO_BUILDER_RELS = ['composables/demo/runner.ts', 'composables/useMpDemo.ts']
+
+/**
+ * 在**所有存在的候选文件**上注入违规：结构整理后构造出口只在其中一个文件里，
+ * 同时注入两处可以保证"不管检查器解析到哪个候选"都仍能被抓到。
+ * 返回**真正被改写过**的相对路径 —— 一个都没改到 = 注入目标失效（符号又搬走了），自测必须报错。
+ */
+const injectInDemoBuilders = (dir, pattern, replacement) => {
+  const touched = []
+  for (const rel of DEMO_BUILDER_RELS) {
+    const file = join(dir, rel)
+    if (!existsSync(file)) continue
+    const before = readFileSync(file, 'utf8')
+    const after = before.replace(pattern, replacement)
+    if (after === before) continue
+    writeFileSync(file, after, 'utf8')
+    touched.push(rel)
+  }
+  return touched
+}
 
 const run = (root) => {
   const res = spawnSync(process.execPath, [CHECKER, root], { encoding: 'utf8' })
@@ -108,8 +138,10 @@ try {
   // ---------- 注入 3：明细不走单一构造器 ----------
   {
     const dir = copyBase()
-    const file = join(dir, 'composables/useMpDemo.ts')
-    writeFileSync(file, readFileSync(file, 'utf8').replace(/buildScoreDetailRequest\(/g, 'inlineDetailBuilder('), 'utf8')
+    // ⚠️ 本次结构整理后 `buildScoreDetailRequest(` 在 `composables/demo/runner.ts`
+    //    （`useMpDemo.ts` 里只剩组装器）；两个候选都注入，否则检查器读到的文件没被篡改 → 自测会误判成"没抓到"。
+    const touched = injectInDemoBuilders(dir, /buildScoreDetailRequest\(/g, 'inlineDetailBuilder(')
+    if (!touched.length) failures.push('注入 3：候选文件里找不到 `buildScoreDetailRequest(`（自测需同步更新）')
     const { code, out } = run(dir)
     if (code === 0) failures.push('明细不再走构造器但检查器仍然通过（单一出口守卫失效）')
     else if (!out.includes('buildScoreDetailRequest')) failures.push(`报错信息不是预期的：\n${out}`)
@@ -118,8 +150,9 @@ try {
   // ---------- 注入 4：成绩报文退回"手抄"（B 轮统一的反向守卫）----------
   {
     const dir = copyBase()
-    const file = join(dir, 'composables/useMpDemo.ts')
-    writeFileSync(file, readFileSync(file, 'utf8').replace(/buildScoreRequest\(/g, 'handWrittenScore('), 'utf8')
+    // 同上：`buildScoreRequest(` 现在住在 `composables/demo/runner.ts`。
+    const touched = injectInDemoBuilders(dir, /buildScoreRequest\(/g, 'handWrittenScore(')
+    if (!touched.length) failures.push('注入 4：候选文件里找不到 `buildScoreRequest(`（自测需同步更新）')
     const { code, out } = run(dir)
     if (code === 0) failures.push('成绩报文不再走构造器但检查器仍然通过（单一出口守卫失效）')
     else if (!out.includes('buildScoreRequest')) failures.push(`报错信息不是预期的：\n${out}`)

@@ -14,511 +14,69 @@
  * `calculateRouteSimilarity` 计算、里程/配速/自洽校验由 `buildRunStats` 产出 —— 只是
  * 位置推进用「模拟倍速」代替真实 GPS，因此可以在几十秒内跑完 3km。
  * 真实提交（`sunRunExercises` 等）在 `composables/useMpReal.ts`，本文件的 `finish()` 只生成本地报文预览。
+ * （本次结构整理后 `finish()` 已搬到 `demo/runner.ts`，语义不变。）
  */
-import { calculateRouteSimilarity, type LatLng } from '~/utils/mp/routeSimilarity'
-import { generateCorridorRoute } from '~/utils/mp/generateRoute'
-import { buildRunStats, buildTimeFields } from '~/utils/mp/runData'
-import { buildScoreDetailRequest, buildScoreRequest } from '~/utils/mp/submitPayload'
-import { evaluateRunAgainstTask, type TaskCheckResult } from '~/utils/mp/taskRules'
-import { newRunSeed, planRealisticRun, type RunPlan } from '~/utils/mp/realism'
-import { toSubmitRunType, type MpRunLine, type MpRunRecord, type MpScoreDetailRequest, type MpScoreRequest, type MpSunrunTask } from '~/src/mp/types'
-import {
-  DEMO_ARCH_SUMMARY,
-  DEMO_LINES,
-  DEMO_PASS_POINTS,
-  DEMO_SWITCHES,
-  DEMO_TASK,
-  DEMO_TERM,
-  demoScantronId,
-} from '~/src/mp/demo'
+import { useDemoRecords } from './demo/records'
+import { useDemoRunner } from './demo/runner'
+import { useDemoState } from './demo/state'
 
-export type RunStatus = 'idle' | 'running' | 'paused' | 'finished'
+// 文件级导出保持不变：原先直接在本文件声明的常量/类型现在住在 `demo/state.ts`，这里再导出 ——
+// 调用方（含 `pages/run.vue` 的显式 import）继续能 `from '~/composables/useMpDemo'` 取到它们。
+export { DEMO_STEP_M, REAL_STEP_M } from './demo/state'
+export type { DemoRunResult, DemoRunState, RunStatus } from './demo/state'
 
-/** 演示用的采样步长（米）：2000 点太多，20m 足够展示算法；真实提交建议 2m */
-export const DEMO_STEP_M = 20
-
-/** 真实提交用的采样步长（米）：3m ≈ 1Hz GPS（3 m/s × 1s），与 9-14 实测口径一致 */
-export const REAL_STEP_M = 3
-
-/** 自由跑演示的里程上限（真实自由跑由用户手动结束） */
-const FREE_RUN_CAP_KM = 5
-
-/** 真实时间的 tick 间隔（毫秒）与模拟秒换算基数 */
-const TICK_MS = 100
-
-export interface DemoRunState {
-  status: RunStatus
-  /** 0 阳光跑 / 1 自由跑（即提交口径） */
-  runType: 0 | 1
-  lineId: string
-  targetKm: number
-  /** 目标配速（秒/公里）——真实感规划后的本次实际配速（非整分钟） */
-  paceSecPerKm: number
-  /** 本次真实感规划（超跑里程 / 配速 / 预计时长） */
-  plan: RunPlan | null
-  /** 模拟倍速：1 / 10 / 60 / 600 */
-  speed: number
-  elapsedS: number
-  distanceM: number
-  /** 完整轨迹（开跑时一次性生成） */
-  points: { latitude: string; longitude: string }[]
-  /** 已推进到的点数（用于「实时」拟合度） */
-  visibleCount: number
-  officialRoute: LatLng[]
-  fitDegree: number
-  passPoints: { all: number; done: number; notPassed: number }
-  /** 结束后的提交报文预览与判定 */
-  result: DemoRunResult | null
-  error: string
-}
-
-export interface DemoRunResult {
-  km: number
-  durationSeconds: number
-  fitDegree: number
-  scoreRequest: MpScoreRequest
-  detailRequest: MpScoreDetailRequest
-  check: TaskCheckResult
-  /** `buildRunStats` 的自洽校验问题（空数组 = 自洽） */
-  statsProblems: string[]
-  /** 本地估算的步数（实测口径提交 ""，这里只作对照展示） */
-  estimatedSteps: number
-  stepsSubmitted: string
-}
-
-const createRunState = (): DemoRunState => ({
-  status: 'idle',
-  runType: 0,
-  lineId: '',
-  targetKm: 0,
-  paceSecPerKm: 360,
-  plan: null,
-  speed: 60,
-  elapsedS: 0,
-  distanceM: 0,
-  points: [],
-  visibleCount: 0,
-  officialRoute: [],
-  fitDegree: 0,
-  passPoints: { all: 4, done: 0, notPassed: 4 },
-  result: null,
-  error: '',
-})
-
-/** 演示模式的成绩记录（localStorage 持久化，便于刷新后仍在） */
-const RECORDS_KEY = 'mp_demo_records'
-
-/** 跑步计时器放在模块级：整个应用只有一个（多个组件调用 useMpDemo 不会各起一个） */
-let timer: ReturnType<typeof setInterval> | null = null
-let lastFitAt = 0
-
+/**
+ * ⚠️ 本次结构整理：本文件是**组装器**，只做两件事：
+ *   ① 调用 `demo/state.ts`（共享状态 + 演示模式装配）、`demo/records.ts`（成绩记录）、
+ *      `demo/runner.ts`（跑步机：计时/轨迹/拟合度/结算）；
+ *   ② 把三者的返回值**逐字段合并**后返回 —— **对外键集合、顺序与语义逐字不变**，页面无需改动。
+ * 共享状态由 `demo/state.ts` 统一声明（Nuxt 的 `useState('mpDemoXxx')` 是**跨文件同一个引用**，
+ * 所以拆分不需要单例/工厂）。依赖方向：本文件 → {`demo/state`, `demo/records`, `demo/runner`}
+ * → `demo/state.ts`（单向）；`demo/runner.ts` 可依赖 `demo/records.ts`（`finish()` 要写记录），反之不行。
+ */
 export function useMpDemo() {
-  const { session, clearSession, isLoggedIn } = useMpSession()
-
   /**
-   * 演示模式开关：**默认关**（1.1.3+）。
-   * 演示不再是页面的顶层模式，而是"试界面/试报文"的**按需功能**：只有显式调用 `enableDemo()` 才载入假数据。
+   * ⚠️ 这两个动作是注入给 `demo/state.ts` 的 `clearLocalData`（清记录）与 `logout`（停计时器）用的：
+   *    它们分别属于下面两行构造出来的 records / runner，而那两个 composable 反过来要读 state 的 ref
+   *    （`records` 要 `demoMode`、`runner` 要 `task`/`lines`/`run`）—— 若由 state 直接 import 就会成环。
+   *    这里传的是**闭包**：只在用户真正点「清空本机数据 / 退出登录」时才求值，
+   *    那时 `records` / `runner` 早已构造完毕（不会踩到"暂时性死区"）。
    */
-  const demoMode = useState('mpDemoMode', () => false)
-  /** 当前任务（**默认为空**：真实任务由 useMpReal 注入；演示任务由 enableDemo 注入） */
-  const task = useState<MpSunrunTask | null>('mpDemoTask', () => null)
-  /** 当前线路集（同上，默认为空数组） */
-  const lines = useState<MpRunLine[]>('mpDemoLines', () => [])
-  /** 当前学校的开跑开关（**默认 null = 未读取**；由 enableDemo 或真实链路注入） */
-  const switches = useState<Record<string, string> | null>('mpDemoSwitches', () => null)
-  const run = useState<DemoRunState>('mpDemoRun', createRunState)
-
-  /**
-   * **载入演示数据**（唯一的演示入口）：填假任务 / 假线路 / 假开关并打开演示开关。
-   * 只用于"不接触真实账号也能看界面与报文"；**不发任何网络请求**。
-   */
-  const enableDemo = () => {
-    demoMode.value = true
-    setTask(DEMO_TASK)
-    setLines(DEMO_LINES)
-    switches.value = { ...DEMO_SWITCHES }
-    run.value = createRunState()
-  }
-
-  /** 退出演示（例如开始读真实数据时调用） */
-  const disableDemo = () => {
-    demoMode.value = false
-  }
-
-  /**
-   * **清空本机数据**：任务 / 线路 / 开关 / 跑步机状态 / 本机记录 全部归零，并退出演示。
-   * （会话 token 由调用方决定是否清 —— `useMpReal.clearAllLocalData()` 会一并清掉。）
-   * 目的：让"刷新/重置后是干净状态"，不再把上次读到的任务一直摊在界面上。
-   */
-  const clearLocalData = () => {
-    demoMode.value = false
-    task.value = null
-    lines.value = []
-    switches.value = null
-    run.value = createRunState()
-    records.value = []
-    persistRecords()
-  }
-
-  /** 注入真实任务（1.1.2 真实模式）：替换演示约束，跑步自检/轨迹生成都按真实值走 */
-  const setTask = (next: MpSunrunTask) => {
-    task.value = next
-  }
-
-  /**
-   * 注入真实线路（1.1.2 真实模式）：替换演示假环线。
-   * ⚠️ 1.1.3 起**不再在这里盲选第一条** —— 选线交给调用方（`useMpReal.applyToRunner` 的
-   *     "缓存 → 校区名 → 坐标分组默认" 三级优先级）与跑步页的校正 watch，避免此处覆盖面更优的选择。
-   */
-  const setLines = (next: MpRunLine[]) => {
-    lines.value = next
-  }
-
-  /** 成绩记录（**默认空**；演示记录由「载入演示数据」写入，真实记录由结算/接口写入） */
-  const records = useState<MpRunRecord[]>('mpDemoRecords', () => {
-    if (import.meta.client) {
-      try {
-        const raw = localStorage.getItem(RECORDS_KEY)
-        if (raw) return JSON.parse(raw) as MpRunRecord[]
-      } catch {
-        /* 忽略损坏的本地缓存 */
-      }
-    }
-    return []
+  const state = useDemoState({
+    resetRecords: () => records.resetRecords(),
+    stopRunTimer: () => runner.stopTimer(),
   })
-
-  const persistRecords = () => {
-    if (import.meta.client) {
-      try {
-        localStorage.setItem(RECORDS_KEY, JSON.stringify(records.value))
-      } catch {
-        /* 忽略配额错误 */
-      }
-    }
-  }
-
-  const logout = () => {
-    stopTimer()
-    clearSession()
-    run.value = createRunState()
-  }
-
-  // ---------- 跑步模拟 ----------
-
-  const stopTimer = () => {
-    if (timer !== null) {
-      clearInterval(timer)
-      timer = null
-    }
-  }
-
-  /** 当前应当展示的轨迹点（渐进显示，模拟真实上报过程） */
-  const visiblePoints = (): { latitude: string; longitude: string }[] => run.value.points.slice(0, run.value.visibleCount)
-
-  const refreshFitDegree = (force = false) => {
-    const now = Date.now()
-    if (!force && now - lastFitAt < 300) return
-    lastFitAt = now
-    const points = visiblePoints()
-    if (points.length < 2) {
-      run.value.fitDegree = 0
-      return
-    }
-    run.value.fitDegree = calculateRouteSimilarity(run.value.officialRoute, points)
-  }
-
-  const syncProgress = () => {
-    const total = run.value.points.length
-    const target = run.value.targetKm * 1000
-    const ratio = target > 0 ? Math.min(1, run.value.distanceM / target) : 0
-    run.value.visibleCount = Math.max(1, Math.min(total, Math.ceil(ratio * total)))
-    const done = Math.min(run.value.passPoints.all, Math.floor(ratio * run.value.passPoints.all))
-    run.value.passPoints = { all: run.value.passPoints.all, done, notPassed: run.value.passPoints.all - done }
-  }
-
-  const tick = () => {
-    if (run.value.status !== 'running') return
-    const simulatedSeconds = (TICK_MS / 1000) * run.value.speed
-    const metersPerSecond = 1000 / run.value.paceSecPerKm
-    run.value.elapsedS += simulatedSeconds
-    run.value.distanceM += simulatedSeconds * metersPerSecond
-
-    const targetM = run.value.targetKm * 1000
-    // 阳光跑到任务里程即停；自由跑演示到上限即停（真实自由跑由用户手动结束）
-    if (run.value.distanceM >= targetM) {
-      run.value.distanceM = targetM
-      syncProgress()
-      finish()
-      return
-    }
-    syncProgress()
-    refreshFitDegree()
-  }
-
-  /** 开始（生成整条轨迹，与真实提交用的是同一套算法） */
-  const start = () => {
-    if (!task.value) {
-      run.value.error = '尚未载入任务（请先在工作台「读取真实账号与任务」，或「载入演示数据」试界面）'
-      return
-    }
-    const line = lines.value.find((item) => item.pointId === run.value.lineId) ?? lines.value[0]
-    if (!line) {
-      run.value.error = '线路缺失（真实模式请先在「工作台」读取真实任务与线路）'
-      return
-    }
-    const isRealLine = !demoMode.value
-    const isSunRun = run.value.runType === 0
-
-    // 真实感规划：里程**略超**任务要求（2%~9%）、配速**非整分钟**且夹紧在任务窗口内。
-    // 这样提交的数值是 3.41km / 20:34 / 6'02" 这种，而不是 3.20 / 16:00 / 5'00"（一眼假）。
-    const plan: RunPlan = isSunRun
-      ? planRealisticRun({
-          requiredKm: Number(task.value.mileage) || 3,
-          minSpeedKmh: task.value.minSpeed,
-          maxSpeedKmh: task.value.maxSpeed,
-          minMinutes: task.value.minTime,
-          maxMinutes: task.value.maxTime,
-          basePaceSecPerKm: run.value.paceSecPerKm,
-          seed: newRunSeed(),
-        })
-      : {
-          targetKm: FREE_RUN_CAP_KM,
-          paceSecPerKm: run.value.paceSecPerKm,
-          overshootRatio: 0,
-          durationSeconds: 0,
-        }
-
-    try {
-      // 演示用 20m 采样（点少、页面轻）；真实模式用 3m（≈1Hz GPS，与真实提交口径一致）
-      // drift:true → 叠加"GPS 精度下降期"，拟合度自然落到 0.9x（不是满分 1.00）
-      const generated = generateCorridorRoute(line.pointList, {
-        targetKm: plan.targetKm,
-        stepM: isRealLine ? REAL_STEP_M : DEMO_STEP_M,
-        drift: true,
-        seed: newRunSeed(),
-      })
-      const actualKm = Number(generated.km)
-      run.value = {
-        ...createRunState(),
-        status: 'running',
-        runType: run.value.runType,
-        lineId: line.pointId,
-        paceSecPerKm: plan.paceSecPerKm,
-        plan: { ...plan, targetKm: actualKm, durationSeconds: Math.round(actualKm * plan.paceSecPerKm) },
-        speed: run.value.speed,
-        // 以"轨迹真实累计长度"为准（两位小数、非整数值），而不是任务要求里的整数
-        targetKm: actualKm,
-        points: generated.points,
-        visibleCount: 1,
-        officialRoute: line.pointList,
-        passPoints: { all: DEMO_PASS_POINTS.length, done: 0, notPassed: DEMO_PASS_POINTS.length },
-      }
-      lastFitAt = 0
-      refreshFitDegree(true)
-      stopTimer()
-      timer = setInterval(tick, TICK_MS)
-    } catch (err) {
-      run.value.error = err instanceof Error ? err.message : '轨迹生成失败'
-    }
-  }
-
-  const pause = () => {
-    if (run.value.status !== 'running') return
-    run.value.status = 'paused'
-    stopTimer()
-  }
-
-  const resume = () => {
-    if (run.value.status !== 'paused') return
-    run.value.status = 'running'
-    stopTimer()
-    timer = setInterval(tick, TICK_MS)
-  }
-
-  /** 结束并结算：生成本地提交报文 + 判分自检 + 写入记录（**不发网络请求**） */
-  const finish = () => {
-    stopTimer()
-    if (run.value.status === 'finished' || run.value.points.length < 2) return
-    if (!task.value) return
-
-    const endedAtMs = Date.now()
-    const distanceKm = run.value.distanceM / 1000
-    // 时长由「实际里程 × 本次配速」推出（配速非整分钟 → 时长自然落到 20:34 这种）
-    const durationSeconds = Math.max(1, Math.round(distanceKm * run.value.paceSecPerKm))
-    run.value.elapsedS = durationSeconds
-    const points = visiblePoints()
-    const fitDegree = points.length >= 2 ? calculateRouteSimilarity(run.value.officialRoute, points) : 0
-
-    const submitRunType = toSubmitRunType(run.value.runType === 0 ? 0 : 2)
-    const stats = buildRunStats({ distanceKm, durationSeconds, runType: submitRunType })
-    // 自洽：startTime = 结束时刻 - 模拟时长（真实跑步时二者本就是同一时刻）
-    const timeFields = buildTimeFields(endedAtMs - durationSeconds * 1000, endedAtMs)
-    const scantronId = demoScantronId(new Date(endedAtMs))
-    // ⚠️ 这里只生成"报文预览"，**不再回落演示凭据**（1.1.3：没有真实会话就留空，避免预览里出现假 token）
-    const token = session.value?.token ?? ''
-    const stuNumber = (session.value?.userInfo?.snCode as string) ?? ''
-    const schoolCode = (session.value?.userInfo?.schoolCode as string) ?? ''
-
-    // 实测真包里 steps 恒为 ""（源码全工程无赋值）→ 照抄该口径；估算值只作对照展示
-    const stepsSubmitted = ''
-
-    // ⚠️ 成绩报文与真实提交**同一构造器**（2026-09-17 B 轮统一）：演示预览不再手抄 18 字段，
-    //    否则真包口径一变，预览不会跟着变 —— 那正是 E33「预览与实发不一致」的同类风险。
-    //    构造器内部已按真包口径写死 `steps: ''`、`fitDegree` 两位小数、`flag: '1'`。
-    const scoreRequest: MpScoreRequest = buildScoreRequest(
-      {
-        snCode: stuNumber,
-        schoolCode,
-        task: task.value,
-        line: {
-          pointId: run.value.lineId || 'demo-line',
-          // ⚠️ `DEMO_LINES` 里没有 taskId；真包里 `taskId` 取线路的 taskId（实测两者同值），
-          //    这里显式补上，保持预览与真实提交一致。
-          taskId: task.value.taskId ?? '',
-          pointName: '',
-          pointList: run.value.officialRoute ?? [],
-        },
-        km: distanceKm,
-        durationSeconds,
-        fitDegree,
-        points: points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) })),
-        token,
-        scantronId,
-        startMs: endedAtMs - durationSeconds * 1000,
-        endMs: endedAtMs,
-      },
-      { runType: submitRunType },
-    )
-
-    // 轨迹明细预览：与真实提交**同一构造器**（3 字段 + 每点带 time），避免预览与实发不一致。
-    // 该构造器只用到 points/startMs/durationSeconds/scantronId/token，其余字段是占位。
-    const detailRequest: MpScoreDetailRequest = buildScoreDetailRequest({
-      snCode: stuNumber,
-      schoolCode,
-      task: task.value,
-      line: { pointId: run.value.lineId || 'demo-line', taskId: task.value.taskId ?? '', pointName: '', pointList: [] },
-      km: distanceKm,
-      durationSeconds,
-      fitDegree,
-      points: points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) })),
-      token,
-      scantronId,
-      startMs: endedAtMs - durationSeconds * 1000,
-      endMs: endedAtMs,
-    })
-
-    const check = evaluateRunAgainstTask({
-      task: task.value,
-      km: distanceKm,
-      durationSeconds,
-      fitDegree,
-    })
-
-    run.value.status = 'finished'
-    run.value.fitDegree = fitDegree
-    run.value.distanceM = distanceKm * 1000
-    run.value.result = {
-      km: distanceKm,
-      durationSeconds,
-      fitDegree,
-      scoreRequest,
-      detailRequest,
-      check,
-      statsProblems: stats.problems,
-      estimatedSteps: Number(stats.steps) || 0,
-      stepsSubmitted,
-    }
-
-    // 写入记录（本地演示；真实环境由服务端判定，这里用自检结果预判）
-    records.value = [
-      {
-        scoreId: scantronId,
-        paperId: scoreRequest.taskId,
-        runTime: timeFields.evaluateDate,
-        startTmie: timeFields.startTime,
-        endTmie: timeFields.endTime,
-        scorePassType: check.pass ? 1 : 0,
-        scorePassRemark: check.pass ? '' : check.problems.join('；'),
-        mileage: stats.km,
-        usedTime: stats.usedTime,
-        trajectorySimilary: scoreRequest.fitDegree,
-        runType: submitRunType,
-        flag: 2,
-      },
-      ...records.value,
-    ]
-    persistRecords()
-  }
-
-  const reset = () => {
-    stopTimer()
-    run.value = createRunState()
-  }
-
-  const resetRecords = () => {
-    records.value = []
-    persistRecords()
-  }
-
-  // ---------- 展示用派生值 ----------
-
-  const paceText = computed(() => {
-    if (run.value.distanceM < 50) return `0'00"`
-    const secPerKm = run.value.elapsedS / (run.value.distanceM / 1000)
-    const total = Math.round(secPerKm)
-    return `${Math.floor(total / 60)}'${String(total % 60).padStart(2, '0')}"`
-  })
-
-  const progress = computed(() => {
-    const targetM = run.value.targetKm * 1000
-    return targetM > 0 ? Math.min(1, run.value.distanceM / targetM) : 0
-  })
-
-  const stats = computed(() => {
-    const passed = records.value.filter((r) => Number(r.scorePassType) === 1 || Number(r.scorePassType) === 2).length
-    const invalid = records.value.filter((r) => Number(r.scorePassType) === 0).length
-    const totalMileage = records.value.reduce((sum, r) => sum + Number(r.mileage || 0), 0)
-    // ⚠️ requireNumber 目前来自演示摘要（真实值已由 useMpReal.fetchVerdict 读回记录，但学期要求次数尚未接线）
-    const requireNumber = demoMode.value ? DEMO_ARCH_SUMMARY.requireNumber : null
-    return {
-      requireNumber,
-      passed,
-      invalid,
-      totalMileage: totalMileage.toFixed(2),
-    }
-  })
-
-  /** 学期信息：演示模式给假值；真实模式暂未接线（界面显示 —） */
-  const term = computed(() => (demoMode.value ? DEMO_TERM : null))
+  const records = useDemoRecords(state.demoMode)
+  const runner = useDemoRunner(state, records)
 
   return {
     // 状态
-    session,
-    isLoggedIn,
-    demoMode,
-    task,
-    lines,
-    switches,
-    run,
-    records,
-    term,
-    stats,
-    progress,
-    paceText,
+    session: state.session,
+    isLoggedIn: state.isLoggedIn,
+    demoMode: state.demoMode,
+    task: state.task,
+    lines: state.lines,
+    switches: state.switches,
+    run: state.run,
+    records: records.records,
+    term: records.term,
+    stats: records.stats,
+    progress: runner.progress,
+    paceText: runner.paceText,
     // 动作
-    logout,
-    enableDemo,
-    disableDemo,
-    clearLocalData,
-    setTask,
-    setLines,
-    start,
-    pause,
-    resume,
-    finish,
-    reset,
-    resetRecords,
-    stopTimer,
-    refreshFitDegree,
+    logout: state.logout,
+    enableDemo: state.enableDemo,
+    disableDemo: state.disableDemo,
+    clearLocalData: state.clearLocalData,
+    setTask: state.setTask,
+    setLines: state.setLines,
+    start: runner.start,
+    pause: runner.pause,
+    resume: runner.resume,
+    finish: runner.finish,
+    reset: runner.reset,
+    resetRecords: records.resetRecords,
+    stopTimer: runner.stopTimer,
+    refreshFitDegree: runner.refreshFitDegree,
   }
 }

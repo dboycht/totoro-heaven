@@ -49,6 +49,19 @@ const readFirstExisting = (rels) => {
   return null
 }
 
+/**
+ * 依次尝试多个候选路径，返回**第一个「存在且内容含 `pattern`」的文件**（都不满足返回 null）。
+ * 与 `readFirstExisting` 的区别：找的是**符号所在文件**，所以还要看内容 —— 目标文件再次搬家时
+ * 必须能报"检查器需同步更新"，而不是把旧文件当兜底、静默通过。
+ */
+const findFileContaining = (rels, pattern) => {
+  for (const rel of rels) {
+    const hit = readIfExists(rel)
+    if (hit && pattern.test(hit.text)) return hit
+  }
+  return null
+}
+
 const lineOf = (text, index) => text.slice(0, index).split('\n').length
 
 /** 取某个函数体（从 `marker` 到下一个顶层 `}` 之间的近似区间：用下一个 async function 或 EOF 收尾） */
@@ -126,6 +139,11 @@ const SOURCE_FILES = [
   'composables/real/data.ts',
   'composables/real/submit.ts',
   'composables/useMpDemo.ts',
+  // ⚠️ 本次结构整理新增：演示/跑步机链路的共享状态、成绩记录、跑步引擎
+  //    （E33 守卫必须跟着代码搬家，否则"字段又回来了"会藏在拆分出去的新文件里）
+  'composables/demo/state.ts',
+  'composables/demo/records.ts',
+  'composables/demo/runner.ts',
   'src/mp/envelope.ts',
   'src/mp/types.ts',
   'src/wrappers/MpApiWrapper.ts',
@@ -145,9 +163,26 @@ for (const rel of SOURCE_FILES) {
 }
 
 // ---------- R4：明细报文只能有一个构造出口 ----------
-// ① 真正"构造"明细的两个地方必须走构造器（真实侧 = real/submit.ts，旧路径 useMpReal.ts 兜底）；
+// ① 真正"构造"明细的两个地方必须走构造器（真实侧 = real/submit.ts，旧路径 useMpReal.ts 兜底；
+//    演示预览侧 = demo/runner.ts，旧路径 useMpDemo.ts 兜底 —— 按**内容**在候选里依次找，
+//    两个候选都没有 = 检查器失效 → **报失败**并提示"检查器需同步更新"，绝不静默通过）；
 // ② 页面层不得内联声明明细报文类型（只允许截取预览）。
-const DETAIL_BUILDERS = [realSubmit, readIfExists('composables/useMpDemo.ts')].filter(Boolean)
+const DEMO_BUILDER_FILES = ['composables/demo/runner.ts', 'composables/useMpDemo.ts']
+const demoDetailBuilder = findFileContaining(DEMO_BUILDER_FILES, /buildScoreDetailRequest\(/)
+const demoScoreBuilder = findFileContaining(DEMO_BUILDER_FILES, /buildScoreRequest\(/)
+if (!demoDetailBuilder) {
+  failures.push(
+    `演示预览的明细报文必须走 \`buildScoreDetailRequest()\` 单一构造器（否则 E33 那类"预览与实发不一致"会复发）` +
+      `：依次尝试 ${DEMO_BUILDER_FILES.join(' / ')} 都没找到该构造器 —— 检查器需同步更新（check-wiring.mjs）`,
+  )
+}
+if (!demoScoreBuilder) {
+  failures.push(
+    `演示预览的成绩报文必须走 \`buildScoreRequest()\`（此前是手抄 18 字段，会与实发漂移 —— E33 同类风险；2026-09-17 B 轮已统一）` +
+      `：依次尝试 ${DEMO_BUILDER_FILES.join(' / ')} 都没找到该构造器 —— 检查器需同步更新（check-wiring.mjs）`,
+  )
+}
+const DETAIL_BUILDERS = [realSubmit, demoDetailBuilder].filter(Boolean)
 for (const { rel, text } of DETAIL_BUILDERS) {
   if (!/buildScoreDetailRequest\(/.test(text)) {
     failures.push(`${rel}：提交/预览明细时必须走 \`buildScoreDetailRequest()\` 单一构造器（否则 E33 那类"预览与实发不一致"会复发）`)
@@ -163,15 +198,14 @@ for (const rel of PAGE_FILES) {
 }
 
 // ---------- R5：成绩报文也必须走单一构造器（B 轮已统一，故这里是**硬断言**）----------
-const demoPath = read('composables/useMpDemo.ts')
+// ⚠️ 本次结构整理：演示预览的成绩构造出口已搬到 `composables/demo/runner.ts`（上面已按候选顺序
+//    解析成 `demoScoreBuilder`；两个候选都没有时上面已报失败 —— 这里不会静默通过）。
 const realHasBuilder = realSubmit ? /buildScoreRequest\(/.test(realSubmit.text) : false
-const demoHasBuilder = /buildScoreRequest\(/.test(demoPath)
 if (realSubmit && !realHasBuilder) {
   failures.push(`${realSubmit.rel}：提交成绩必须走 \`buildScoreRequest()\`（单一构造出口）`)
 }
-if (!demoHasBuilder) {
-  failures.push('composables/useMpDemo.ts：预览成绩报文必须走 `buildScoreRequest()`' +
-    '（此前是手抄 18 字段，会与实发漂移 —— E33 同类风险；2026-09-17 B 轮已统一）')
+if (demoScoreBuilder && !/buildScoreRequest\(/.test(demoScoreBuilder.text)) {
+  failures.push(`${demoScoreBuilder.rel}：预览成绩报文必须走 \`buildScoreRequest()\`（单一构造出口）`)
 }
 
 // ---------- 报告 ----------
