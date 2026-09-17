@@ -12,6 +12,10 @@
     "test:mp": "node scripts/run-mp-tests.mjs",
     "typecheck:mp": "tsc -p tsconfig.mp.json",
     "typecheck:ui": "tsc -p tsconfig.ui.json",
+    "typecheck:vue": "nuxi typecheck",
+    "check:wiring": "node scripts/check-wiring.mjs",
+    "selftest:wiring": "node scripts/selftest-check-wiring.mjs",
+    "verify": "npm run test:mp && npm run typecheck:mp && npm run typecheck:ui && tsc -p tsconfig.ui.json --noUnusedLocals && npm run typecheck:vue && npm run check:wiring && npm run selftest:wiring",
     "sea": "powershell -NoProfile -ExecutionPolicy Bypass -File pack/sea/build-sea.ps1"
   },
   "dependencies": {
@@ -31,6 +35,7 @@
     "sass": "^1.75.0",
     "tar": "^7.5.22",
     "typescript": "^5.4.5",
+    "vue-tsc": "^2.0.29",
     "vuetify": "^3.5.15"
   }
 }

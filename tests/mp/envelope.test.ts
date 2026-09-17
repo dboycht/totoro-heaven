@@ -167,7 +167,15 @@ test('判定：payload 为 none 的端点不做负载非空校验（submitAppeal
   assert.equal(judgeMpResponse({ status: '00' }, 'top').ok, false)
 })
 
-test('判定：负载存在但为空数组/空对象 → empty（body: [] 有字段，视为有负载）', () => {
+/**
+ * ⚠️ 标题更正（2026-09-17）：原标题写的是"→ empty"，但断言恰恰相反 —— 会误导读者以为
+ * 「空数组应当判 empty」从而去"修"实现。**实际语义是刻意的，两条要分清**：
+ *   - **具名字段（`body`）**：**有该字段就算有负载**（`[]` 也算）→ 空数组判 **ok**；
+ *     调用方自己看数组长度（如 schoolList / termList）。
+ *   - **具名字段 + 下标（`body#0`）**：取不到第 0 项 → 无负载 → 判 **empty**
+ *     （`getSunrunPaper` 这类"任务未设置"走的正是这条）。
+ */
+test('负载规格语义：`body` 有字段即视为有负载（true）；`body#0` 空数组取不到下标（false）', () => {
   assert.equal(hasBusinessPayload({ body: [] }, 'body'), true)
   assert.equal(hasBusinessPayload({ body: null }, 'body'), false)
   assert.equal(hasBusinessPayload({ body: [] }, 'body#0'), false)

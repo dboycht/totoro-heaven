@@ -1,18 +1,22 @@
 /**
  * 服务端文件日志（按天轮转，只写本机 runtime 目录，绝不进仓库）
  *
- * - 位置：`%TEMP%\totoro-heaven-runtime\logs\app-YYYY-MM-DD.log`
- * - 每条**一行 JSON**（字段先过 `utils/mp/logFormat` 的脱敏，token/学号/姓名永不落盘）
+ * - 位置：`%TEMP%\totoro-heaven-runtime\logs\app-YYYY-MM-DD.log`（可用 `TOTORO_LOG_DIR` 覆盖，便于测试）
+ * - 每条**一行 JSON**（`data` 走 `redactObject` 按字段名脱敏，`msg` 走 `maskTokenLike` 掩掉形似 token 的片段）
  * - 启动时清一次过期文件（保留 7 天 / 总量上限 20MB）
  * - 记录是尽力而为：**绝不让日志错误影响业务**（全部 try/catch）
+ *
+ * ⚠️ 2026-09-17 加固（健壮化 A 轮）：原先**只对 `data` 脱敏，`msg` 原样落盘** ——
+ *    只要有人把 token 拼进消息文本（`logInfo('x', 'token=' + t)`），硬规则「token 绝不落盘」就被绕过。
+ *    现在 `msg` 也过 `maskTokenLike`，并有单测 `tests/mp/logger.test.ts` 读**文件内容**做端到端断言。
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { LogEntry, LogLevel } from '../../utils/mp/logFormat'
-import { redactObject } from '../../utils/mp/logFormat'
+import { maskTokenLike, redactObject } from '../../utils/mp/logFormat'
 
-export const LOG_DIR = join(tmpdir(), 'totoro-heaven-runtime', 'logs')
+export const LOG_DIR = process.env.TOTORO_LOG_DIR?.trim() || join(tmpdir(), 'totoro-heaven-runtime', 'logs')
 const KEEP_DAYS = 7
 const MAX_TOTAL_BYTES = 20 * 1024 * 1024
 
@@ -23,17 +27,18 @@ export function logFilePath(d = new Date()): string {
   return join(LOG_DIR, `app-${dateTag(d)}.log`)
 }
 
-/** 追加一条日志（自动脱敏 data、自动建目录、吞掉一切异常） */
+/** 追加一条日志（自动脱敏 data 与 msg、自动建目录、吞掉一切异常） */
 export function logEvent(level: LogLevel, cat: string, msg: string, data?: Record<string, unknown>): void {
   try {
-    const entry: LogEntry = { t: new Date().toISOString(), level, cat, msg, data: redactObject(data) }
+    // ⚠️ `msg` 也必须过掩码：否则把 token 拼进消息文本就绕过「绝不落盘」的硬规则
+    const entry: LogEntry = { t: new Date().toISOString(), level, cat, msg: maskTokenLike(msg), data: redactObject(data) }
     if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true })
     appendFileSync(logFilePath(), JSON.stringify(entry) + '\n', 'utf8')
-    // dev 下也镜像到控制台（缩略显示）
+    // dev 下也镜像到控制台（缩略显示；用**已脱敏**的 entry.msg，不打印原始 msg）
     if (process.env.NODE_ENV !== 'production') {
       const d = entry.data && Object.keys(entry.data).length ? ` ${JSON.stringify(entry.data)}` : ''
       // eslint-disable-next-line no-console
-      console.log(`[${entry.level.toUpperCase()}] [${cat}] ${msg}${d}`)
+      console.log(`[${entry.level.toUpperCase()}] [${cat}] ${entry.msg}${d}`)
     }
   } catch {
     /* 日志失败不影响业务 */

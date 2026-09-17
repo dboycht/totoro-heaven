@@ -1,7 +1,9 @@
 import { defineNuxtConfig } from 'nuxt/config'
 
 export default defineNuxtConfig({
-  compatibilityDate: '2024-04-03',
+  // ⚠️ 2026-09-17 移除 `compatibilityDate`（vue-tsc 查出）：它是 **Nuxt 3.12+ 才有的键**，
+  //    本项目锁定 **nuxt 3.9.1**，`nuxt/schema` 里没有该键 ⇒ 运行时是**空操作**、却让 typecheck 失败。
+  //    将来升级 Nuxt 到 ≥3.12 时再加回（届时它才真正生效）。
   devtools: { enabled: false },
   ssr: false,
   modules: [],
@@ -10,8 +12,19 @@ export default defineNuxtConfig({
     '@mdi/font/css/materialdesignicons.css',
     '~/assets/css/main.css',
   ],
-  watch: {
-    ignored: ['**/_mp-analyze/**', '**/.mp-test-build/**'],
+  // ⚠️ 2026-09-17 修正（vue-tsc 查出）：原先写的是 `watch: { ignored: [...] }` ——
+  //    **Nuxt 没有这个选项**（`watch` 的类型是 `(string|RegExp)[]`），即这段配置**从未生效**。
+  //    真正让 dev 不监听 13MB 逆向材料目录的是下面 `vite.server.watch.ignored`；
+  //    这里改用 Nuxt 的顶层 `ignore`（构建期忽略），两处配合才与注释的意图一致。
+  ignore: ['**/_mp-analyze/**', '**/.mp-test-build/**'],
+  typescript: {
+    tsConfig: {
+      compilerOptions: {
+        // tests/mp 用**显式 `.ts` 后缀**导入（Node `--test` + 类型剥离需要），
+        // 与 `tsconfig.mp.json` 保持一致；否则 `nuxi typecheck` 会对每个测试文件报 TS5097。
+        allowImportingTsExtensions: true,
+      },
+    },
   },
   devServer: {
     port: 3000,

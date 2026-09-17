@@ -50,6 +50,8 @@ fs.rmSync(tmp, { recursive: true, force: true })
 const copied =
   copyTree(path.join(root, 'utils', 'mp'), path.join(tmp, 'utils', 'mp')) +
   copyTree(path.join(root, 'src', 'mp'), path.join(tmp, 'src', 'mp')) +
+  copyTree(path.join(root, 'src', 'wrappers'), path.join(tmp, 'src', 'wrappers')) +
+  copyTree(path.join(root, 'server', 'utils'), path.join(tmp, 'server', 'utils')) +
   copyTree(path.join(root, 'tests', 'mp'), path.join(tmp, 'tests', 'mp'))
 
 console.log(`[mp-test] 已准备 ${copied} 个文件 -> ${path.relative(root, tmp)}`)

@@ -27,10 +27,21 @@ import {
 } from '../mp/types'
 import { buildBearerValue, judgeMpResponse, unwrapMpResponse, type MpVerdict } from '../mp/envelope'
 
+/**
+ * Nuxt 在 `import.meta` 上注入 `server` / `env`，但**本模块不只被 Nuxt 使用**
+ * （server 端点与单测都会 import 它，而后者的 tsconfig 不含 Nuxt 全局类型）。
+ * 因此这里**显式声明**，不再隐式依赖 Nuxt 的类型扩充 —— 运行时行为不变。
+ */
+interface MpImportMeta {
+  server?: boolean
+  env?: Record<string, string | undefined>
+}
+const META = import.meta as unknown as MpImportMeta
+
 /** ky 需要绝对 base（相对 prefixUrl 在 Node/undici 下解析失败），与旧 wrapper 同策略 */
 const resolvePrefixUrl = (): string => {
   try {
-    if (import.meta.server) {
+    if (META.server) {
       const internal = process.env.TOTORO_INTERNAL_BASE
       if (internal) return `${internal.replace(/\/$/, '')}/api/mp/`
       const port = process.env.NITRO_PORT || process.env.PORT || '3000'
@@ -38,7 +49,7 @@ const resolvePrefixUrl = (): string => {
       if (Number.isNaN(portNum) || portNum <= 0 || portNum > 65535) return 'http://127.0.0.1:3000/api/mp/'
       return `http://127.0.0.1:${portNum}/api/mp/`
     }
-    const origin = (import.meta as { env?: Record<string, string> }).env?.VITE_MP_PROXY_BASE || window.location.origin
+    const origin = META.env?.VITE_MP_PROXY_BASE || window.location.origin
     if (!origin || !origin.startsWith('http')) return 'http://localhost:3000/api/mp/'
     return `${origin}/api/mp/`
   } catch {
@@ -112,6 +123,17 @@ async function rawRequest(
 const schoolListCache = { at: 0, list: [] as MpSchool[] }
 const SCHOOL_LIST_TTL_MS = 30 * 60 * 1000
 
+/**
+ * ⚠️ **写操作绝不重试**（接线契约，有单测 `tests/mp/wrapper.test.ts`）：
+ *   ky 默认会对 POST 重试 → 提交成绩 / 申诉 / 人脸建档这类**非幂等写操作**可能被重复提交。
+ *   这里只允许 `get`（读操作幂等）。
+ *
+ * ⚠️ **已知例外（显式记录，勿误以为"GET 都安全"）**：`unBindInfo`（解绑账号）**用 GET 表达**，
+ *   因此它**会被**这条 retry 规则重试。我们只在用户明确登出时调用它，风险低；
+ *   单测里把这个事实**固定住**，防止有人据此推断"GET 一定只读"。
+ */
+export const MP_RETRY_CONFIG: { limit: number; methods: ['get'] } = { limit: 1, methods: ['get'] }
+
 export const MpApiWrapper = {
   client: ky.create({
     prefixUrl: resolvePrefixUrl(),
@@ -120,9 +142,7 @@ export const MpApiWrapper = {
       Accept: 'application/json',
     },
     timeout: 15000,
-    // ⚠️ ky 默认会对 POST 重试 → 写操作（提交成绩/申诉/建档）可能被重复提交。
-    //    这里只对 GET 重试一次（读操作幂等）。
-    retry: { limit: 1, methods: ['get'] },
+    retry: MP_RETRY_CONFIG,
     // HTTP 错误码也交给判定层（后端用业务码而非 HTTP 状态表达失败）
     throwHttpErrors: false,
   }),

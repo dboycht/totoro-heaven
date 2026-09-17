@@ -1,0 +1,57 @@
+# CI —— 每次 push / PR 自动跑「一键验证」
+#
+# 为什么有它（2026-09-17 健壮化 A 轮新增）：
+#   在此之前的把关全靠人记得本地跑 —— 138 例单测、两个 typecheck、接线契约、模板类型检查，
+#   任何一项忘了跑就可能把问题带进发布物。本工作流把「靠纪律」变成「靠机器」。
+#
+# 跑什么：`npm run verify` = 单测(#) + typecheck:mp + typecheck:ui + --noUnusedLocals
+#                          + typecheck:vue（.vue 模板）+ check:wiring（接线契约）+ selftest:wiring（检查器自测）
+#
+# ⚠️ 选 windows-latest 的理由：本项目的交付物是 **Windows 单文件 EXE**，
+#    在开发者同款平台上验证最不容易出现"本地过、CI 不过"的错觉（代价是分钟数翻倍）。
+# ⚠️ `npm ci` 会触发 `postinstall: nuxt prepare`，`typecheck:vue` 依赖它生成的 `.nuxt/` 类型。
+# ⚠️ 锁文件把 `nuxi` 钉在 **3.10.0**（与 nuxt 3.9.1 匹配）—— E36 记录过：装成 nuxi 3.37 会起不来。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: 验证（测试 + 类型检查 + 接线契约）
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: 安装依赖（lockfile 精确安装）
+        run: npm ci
+
+      - name: 一键验证
+        run: npm run verify
+
+      # 失败时把"检查器/测试"的输出留在摘要里，省得回翻日志
+      - name: 失败摘要
+        if: failure()
+        shell: pwsh
+        run: |
+          "npm run verify 失败。本地复现：cd <项目根>; npm run verify" |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8

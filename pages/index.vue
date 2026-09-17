@@ -163,7 +163,7 @@
             真实账号
             <v-spacer />
             <v-btn
-              v-if="realStatus === 'ready'"
+              v-if="realStatus === 'ready' || realStatus === 'loading'"
               size="small"
               variant="text"
               prepend-icon="mdi-refresh"
