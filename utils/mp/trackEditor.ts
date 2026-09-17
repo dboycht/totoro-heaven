@@ -91,13 +91,175 @@ export function laneRatioFor(laneNo: number, laneCount: number): number {
   return (k - 0.5) / n
 }
 
+// ---------- 平面几何工具（米制，局部等距投影）----------
+type XY = { x: number; y: number }
+
+/** 以某纬度为基准的局部平面投影（小范围足够精确；所有几何判定都在这个平面里做） */
+function makeProjector(refLat: number) {
+  const mPerDegLat = 111320
+  const mPerDegLng = 111320 * Math.cos((refLat * Math.PI) / 180)
+  return {
+    toXY: (p: { latitude: number | string; longitude: number | string }): XY => ({
+      x: Number(p.longitude) * mPerDegLng,
+      y: Number(p.latitude) * mPerDegLat,
+    }),
+    toLL: (q: XY) => ({ latitude: q.y / mPerDegLat, longitude: q.x / mPerDegLng }),
+  }
+}
+
+const ringCentroidLat = (ring: { latitude: number | string }[]) =>
+  ring.reduce((s, p) => s + Number(p.latitude), 0) / Math.max(1, ring.length)
+
+/** 有向面积（>0 = 逆时针 CCW） */
+function signedArea(pts: XY[]): number {
+  let a = 0
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i]!
+    const q = pts[(i + 1) % pts.length]!
+    a += p.x * q.y - q.x * p.y
+  }
+  return a / 2
+}
+
+/** 点到线段最近点（平面） */
+function closestOnSegment(p: XY, a: XY, b: XY): XY {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const len2 = dx * dx + dy * dy
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2))
+  return { x: a.x + t * dx, y: a.y + t * dy }
+}
+
+/** 点到折线（闭合）的最近点 */
+function closestOnPolyline(p: XY, poly: XY[]): XY {
+  let best: XY = poly[0]!
+  let bestD = Number.POSITIVE_INFINITY
+  for (let i = 0; i < poly.length; i++) {
+    const q = closestOnSegment(p, poly[i]!, poly[(i + 1) % poly.length]!)
+    const d = (q.x - p.x) ** 2 + (q.y - p.y) ** 2
+    if (d < bestD) {
+      bestD = d
+      best = q
+    }
+  }
+  return best
+}
+
+/** 点在多边形内（射线法） */
+export function pointInRing(p: { latitude: number | string; longitude: number | string }, ring: { latitude: number | string; longitude: number | string }[]): boolean {
+  if (ring.length < 3) return false
+  const pr = makeProjector(ringCentroidLat(ring))
+  const q = pr.toXY(p)
+  const poly = ring.map(pr.toXY)
+  let inside = false
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i]!
+    const b = poly[j]!
+    if (a.y > q.y !== b.y > q.y && q.x < ((b.x - a.x) * (q.y - a.y)) / (b.y - a.y) + a.x) inside = !inside
+  }
+  return inside
+}
+
+/** 两条线段是否相交（含共线重叠的粗略判定） */
+function segmentsCross(a1: XY, a2: XY, b1: XY, b2: XY): boolean {
+  const cross = (o: XY, p: XY, q: XY) => (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x)
+  const d1 = cross(b1, b2, a1)
+  const d2 = cross(b1, b2, a2)
+  const d3 = cross(a1, a2, b1)
+  const d4 = cross(a1, a2, b2)
+  return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0))
+}
+
 /**
- * 生成**车道中心线**：在内外圈之间按 `ratio` 做径向插值。
- * @param ratio  0 = 贴内圈，1 = 贴外圈；
- *               **也可以传函数** `(arcM) => ratio` —— 就能表达"跑到一半慢慢切到另一条道"
- *               （弧长按**外圈**的累计长度算；重采样后每格弧长相等，所以 arc = k × 总长/n）
- * @param samples 采样点数（越大越平滑；默认 240 足够）
- * @returns 闭合折线（首点即起点，末点不重复首点）
+ * **判定两条圈是否合法**（2026-09-17 用户要求："外圈必须包着内圈"）。
+ * 检查：点数够 → 内圈**全部**在外圈之内 → 两圈**不相交** → 环宽合理（2~40 m）。
+ * 返回的问题都是可读中文，直接显示给用户。
+ */
+export function validateRings(rings: TrackRings): { ok: boolean; problems: string[]; widthM: number; innerOutside: number; crossings: number } {
+  const problems: string[] = []
+  const outer = norm(rings.outer)
+  const inner = norm(rings.inner)
+  if (outer.length < 3) problems.push('外圈至少要 3 个点')
+  if (inner.length < 3) problems.push('内圈至少要 3 个点')
+  const widthM = outer.length >= 3 && inner.length >= 3 ? ringWidthM(rings) : 0
+  if (outer.length < 3 || inner.length < 3) return { ok: false, problems, widthM, innerOutside: 0, crossings: 0 }
+
+  // ① 内圈的每个点都必须在外圈之内
+  let innerOutside = 0
+  for (const p of inner) if (!pointInRing(p, outer)) innerOutside++
+  if (innerOutside > 0) problems.push(`内圈有 ${innerOutside} 个点落在**外圈之外** —— 内圈必须整个画在外圈里面`)
+
+  // ② 两圈不能相交（相交时"车道线"必然一头贴外、一头贴内）
+  const pr = makeProjector(ringCentroidLat(outer))
+  const oXY = outer.map(pr.toXY)
+  const iXY = inner.map(pr.toXY)
+  let crossings = 0
+  for (let i = 0; i < oXY.length; i++) {
+    for (let j = 0; j < iXY.length; j++) {
+      if (segmentsCross(oXY[i]!, oXY[(i + 1) % oXY.length]!, iXY[j]!, iXY[(j + 1) % iXY.length]!)) crossings++
+    }
+  }
+  if (crossings > 0) problems.push(`内外圈**相交** ${crossings} 处 —— 两条圈不能交叉，否则插出来的车道线会一头贴外圈、一头贴内圈`)
+
+  // ③ 环宽（跑道宽度）合理
+  if (widthM < 2) problems.push(`内外圈间距只有 ${widthM.toFixed(1)} m，太窄（不像跑道）`)
+  else if (widthM > 40) problems.push(`内外圈间距 ${widthM.toFixed(1)} m，太宽（不像一条跑道）`)
+
+  return { ok: problems.length === 0, problems, widthM, innerOutside, crossings }
+}
+
+/**
+ * 把闭合圈**向内缩** `meters` 米（真·法向偏移，直道保持直）。
+ * 用途：用户只画外圈 ⇒ 一键生成"内圈"（跑道内沿），比手描两条圈靠谱得多。
+ */
+export function insetClosedRing<T extends { latitude: number | string; longitude: number | string }>(ring: T[], meters: number): T[] {
+  const src = norm(ring)
+  if (src.length < 3 || !(meters > 0)) return ring.map((p) => ({ ...p }) as T)
+  const pr = makeProjector(ringCentroidLat(src))
+  const pts = src.map(pr.toXY)
+  const ccw = signedArea(pts) > 0
+  const out: ReturnType<typeof pr.toLL>[] = []
+  for (let i = 0; i < pts.length; i++) {
+    const prev = pts[(i - 1 + pts.length) % pts.length]!
+    const cur = pts[i]!
+    const next = pts[(i + 1) % pts.length]!
+    /** 单位法线（指向环内）：CCW 取左法线，CW 取右法线 */
+    const nrm = (a: XY, b: XY): XY => {
+      const dx = b.x - a.x
+      const dy = b.y - a.y
+      const len = Math.hypot(dx, dy) || 1
+      return ccw ? { x: -dy / len, y: dx / len } : { x: dy / len, y: -dx / len }
+    }
+    const n1 = nrm(prev, cur)
+    const n2 = nrm(cur, next)
+    let nx = n1.x + n2.x
+    let ny = n1.y + n2.y
+    const nl = Math.hypot(nx, ny)
+    if (nl < 1e-9) {
+      nx = n1.x
+      ny = n1.y
+    } else {
+      nx /= nl
+      ny /= nl
+    }
+    // miter 修正：转角越尖，沿角平分线要走得更远（夹紧避免自交爆炸）
+    const cosHalf = Math.max(0.35, n1.x * nx + n1.y * ny)
+    const d = meters / cosHalf
+    out.push(pr.toLL({ x: cur.x + nx * d, y: cur.y + ny * d }))
+  }
+  return out as T[]
+}
+
+/**
+ * 生成**车道中心线**：把**外圈**按等弧长采样，再把每个采样点投影到**内圈上最近的点**，
+ * 在两点之间按 `ratio` 线性插值。
+ *
+ * ⚠️ 为什么不是"内外圈各自等弧长采样 + 按索引配对"（第一版就是这么写的）：
+ *    两条圈形状不同（尤其**手描的圈**，拐角位置对不上）时，同一索引的两点**根本不在同一条法线上**，
+ *    插出来的线会**一头贴外圈、一头贴内圈**（用户实测就是这个现象）。
+ *    沿法向就近配对则**天然**保证插值点落在"外圈点 ↔ 内圈最近点"之间 ⇒ 永远夹在两个环之间。
+ *
+ * @param ratio  0 = 贴内圈，1 = 贴外圈；也可以是 `(arcM) => ratio`（表达"跑到一半慢慢切到另一条道"）
  */
 export function laneLoop(rings: TrackRings, ratio: number | ((arcM: number) => number), samples = 240): LatLng[] {
   const outerRaw = norm(rings.outer)
@@ -105,33 +267,19 @@ export function laneLoop(rings: TrackRings, ratio: number | ((arcM: number) => n
   if (outerRaw.length < 3 || innerRaw.length < 3) return []
   const n = Math.max(24, Math.round(samples))
   const outer = resampleClosed(outerRaw, n)
-  const inner = resampleClosed(innerRaw, n)
   const outerTotal = cumulative(outerRaw).total
-
-  // 找"整体平移最小距离"的对齐偏移：把内圈的起点挪到与外圈最匹配的位置
-  let bestShift = 0
-  let bestCost = Number.POSITIVE_INFINITY
-  for (let shift = 0; shift < n; shift++) {
-    let cost = 0
-    for (let i = 0; i < n; i += 4) {
-      const a = outer[i]!
-      const b = inner[(i + shift) % n]!
-      cost += distanceMeters(a.latitude, a.longitude, b.latitude, b.longitude)
-    }
-    if (cost < bestCost) {
-      bestCost = cost
-      bestShift = shift
-    }
-  }
+  const pr = makeProjector(ringCentroidLat(outerRaw))
+  const innerXY = innerRaw.map(pr.toXY)
 
   const out: { latitude: number; longitude: number }[] = []
   for (let i = 0; i < n; i++) {
-    const a = inner[(i + bestShift) % n]!
-    const b = outer[i]!
+    const o = outer[i]!
     const r = typeof ratio === 'function' ? Math.min(1, Math.max(0, ratio((outerTotal * i) / n))) : Math.min(1, Math.max(0, ratio))
+    const oXY = pr.toXY(o)
+    const q = pr.toLL(closestOnPolyline(oXY, innerXY))
     out.push({
-      latitude: a.latitude + (b.latitude - a.latitude) * r,
-      longitude: a.longitude + (b.longitude - a.longitude) * r,
+      latitude: Number(q.latitude) + (o.latitude - Number(q.latitude)) * r,
+      longitude: Number(q.longitude) + (o.longitude - Number(q.longitude)) * r,
     })
   }
   return out

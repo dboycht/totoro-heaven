@@ -9,7 +9,7 @@
  *
  * 存储：本机 localStorage，按 lineId 保存（`mp_track_rings_v1`）——运行时数据不入库。
  */
-import { laneLoop, laneRatioFor, laneRatioProfile, makeSeedRng, ringLengthM, ringWidthM, smoothClosedRing, type TrackRings } from '~/utils/mp/trackEditor'
+import { laneLoop, laneRatioFor, laneRatioProfile, makeSeedRng, ringLengthM, ringWidthM, smoothClosedRing, validateRings, insetClosedRing, type TrackRings } from '~/utils/mp/trackEditor'
 import { entrySummaryText } from '~/utils/mp/trackLibrary'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
@@ -278,7 +278,19 @@ const laneNo = ref(2)
 const seed = ref(20260917)
 const rings = computed<TrackRings>(() => ({ outer: outer.value, inner: inner.value }))
 const ringsReady = computed(() => outer.value.length >= 3 && inner.value.length >= 3)
+/** 内外圈合法性（用户要求：外圈必须包着内圈、不许相交、环宽要像跑道） */
+const ringCheck = computed(() => (ringsReady.value ? validateRings(rings.value) : null))
 const widthM = computed(() => (ringsReady.value ? ringWidthM(rings.value) : 0))
+/** 按外圈自动生成内圈（法向向内缩 N 米）——只画一条外圈就够了 */
+const insetM = ref(8)
+const makeInnerFromOuter = () => {
+  if (outer.value.length < 3) {
+    showSnackbar('先画好外圈（至少 3 个点）', 'warning')
+    return
+  }
+  setRing('inner', insetClosedRing(outer.value, insetM.value).map(num))
+  showSnackbar(`已按外圈向内 ${insetM.value} m 生成内圈`)
+}
 const laneRatio = computed(() => laneRatioFor(laneNo.value, laneCount.value))
 const lane = computed<N[]>(() => (ringsReady.value ? laneLoop(rings.value, laneProfile.value ?? laneRatio.value, 240).map(num) : []))
 
@@ -452,6 +464,30 @@ const removeEntry = (id: string) => {
             <v-btn block size="small" variant="tonal" class="mb-2" prepend-icon="mdi-undo" @click="undo">撤销上一个点</v-btn>
             <v-btn block size="small" variant="tonal" color="info" class="mb-2" prepend-icon="mdi-auto-fix" @click="smoothRing">
               把这一圈平滑一下（描的点难免有折角）
+            </v-btn>
+            <v-text-field v-model.number="insetM" type="number" density="compact" hide-details label="内缩米数（≈跑道宽度）" class="mb-2" />
+            <v-btn block size="small" variant="tonal" color="info" class="mb-2" prepend-icon="mdi-arrow-collapse-all" @click="makeInnerFromOuter">
+              按外圈自动生成内圈（向内缩 {{ insetM }} m）
+            </v-btn>
+            <!-- 合法性判定（用户要求：外圈必须包着内圈） -->
+            <v-alert v-if="ringCheck && !ringCheck.ok" type="error" variant="tonal" density="compact" class="mb-2">
+              <div class="font-weight-bold">内外圈不合法，先修好再保存：</div>
+              <ul class="text-caption mt-1">
+                <li v-for="(t, i) in ringCheck.problems" :key="i">{{ t }}</li>
+              </ul>
+            </v-alert>
+            <v-alert v-else-if="ringCheck && ringCheck.ok" type="success" variant="tonal" density="compact" class="mb-2">
+              内外圈合法 ✅ 跑道宽度 {{ ringCheck.widthM.toFixed(1) }} m
+            </v-alert>
+            <v-btn
+              block
+              size="small"
+              color="primary"
+              prepend-icon="mdi-content-save-outline"
+              :disabled="Boolean(ringCheck && !ringCheck.ok)"
+              @click="save"
+            >
+              保存（本机）
             </v-btn>
             <v-btn block size="small" variant="tonal" color="error" class="mb-2" prepend-icon="mdi-delete-outline" @click="clearRing">清空这一圈</v-btn>
             <v-btn block size="small" variant="text" color="error" class="mb-2" prepend-icon="mdi-restore" @click="reset">把这条线路的内外圈都清空</v-btn>

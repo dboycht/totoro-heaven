@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { laneLoop, laneRatioFor, laneRatioProfile, ringLengthM, ringWidthM, smoothClosedRing, type TrackRings } from '../../utils/mp/trackEditor.ts'
+import { laneLoop, laneRatioFor, laneRatioProfile, ringLengthM, ringWidthM, smoothClosedRing, pointInRing, validateRings, insetClosedRing, type TrackRings } from '../../utils/mp/trackEditor.ts'
 import { normalizeLibrary, entrySummaryText } from '../../utils/mp/trackLibrary.ts'
 
 const CENTER = { latitude: 31.37, longitude: 119.48 }
@@ -158,6 +158,70 @@ test('★ laneRatioProfile：指定 baseLane 时必须真的用那道（用户�
   const a1 = laneRatioProfile(mkRng(7), 6, 400, { maxChanges: 0, baseLane: 1 })(200)
   const a6 = laneRatioProfile(mkRng(7), 6, 400, { maxChanges: 0, baseLane: 6 })(200)
   assert.ok(Math.abs(a1 - a6) > 0.5, `第 1 道(${a1}) 与第 6 道(${a6}) 必须明显不同`)
+})
+
+test('★ laneLoop：内外圈**形状不一致**时，车道线也必须整条夹在两圈之间（用户报的"一头贴外、一头贴内"）', () => {
+  // 复现用户情形：外圈是"圆角方"、内圈是"六边形且整体偏移" —— 两圈的拐角完全对不上。
+  const outer = circle(100, 24)
+  const inner = Array.from({ length: 6 }, (_, i) => {
+    const a = (2 * Math.PI * i) / 6
+    return {
+      latitude: CENTER.latitude + (78 * Math.sin(a)) / mLat + 8 / mLat, // 整体向北偏 8 m
+      longitude: CENTER.longitude + (78 * Math.cos(a)) / mLng,
+    }
+  })
+  for (const ratio of [0.15, 0.5, 0.85]) {
+    const lane = laneLoop({ outer, inner }, ratio, 240)
+    assert.equal(lane.length, 240)
+    // ① 每个点都必须在外圈**之内**
+    const outsideOuter = lane.filter((p) => !pointInRing(p, outer)).length
+    assert.equal(outsideOuter, 0, `ratio=${ratio}：有 ${outsideOuter} 个点跑到外圈之外`)
+    // ② 每个点都必须在**内圈之外**（否则就是压到内圈上/里面了）
+    const insideInner = lane.filter((p) => pointInRing(p, inner)).length
+    assert.equal(insideInner, 0, `ratio=${ratio}：有 ${insideInner} 个点落进内圈里`)
+  }
+})
+
+test('★ validateRings：外圈必须包着内圈（不相交 / 内圈不许露到外面）', () => {
+  // 合法：同心圆
+  const good = validateRings(rings)
+  assert.equal(good.ok, true, JSON.stringify(good.problems))
+  assert.ok(Math.abs(good.widthM - 10) < 0.6)
+
+  // 非法：内圈整体偏出去（部分点在外圈之外）
+  const shiftedInner = circle(90, 60).map((p) => ({ latitude: p.latitude + 40 / 111320, longitude: p.longitude }))
+  const bad1 = validateRings({ outer: circle(100, 60), inner: shiftedInner })
+  assert.equal(bad1.ok, false)
+  assert.ok(bad1.innerOutside > 0, '应报"内圈有点在外圈之外"')
+  assert.ok(bad1.problems.some((t) => t.includes('外圈之外')), JSON.stringify(bad1.problems))
+
+  // 非法：两圈相交（内圈比外圈大）
+  const bad2 = validateRings({ outer: circle(90, 60), inner: circle(100, 60) })
+  assert.equal(bad2.ok, false)
+  assert.ok(bad2.problems.length > 0, JSON.stringify(bad2.problems))
+
+  // 非法：环宽太窄
+  const bad3 = validateRings({ outer: circle(100, 60), inner: circle(99, 60) })
+  assert.equal(bad3.ok, false)
+  assert.ok(bad3.problems.some((t) => t.includes('太窄')), JSON.stringify(bad3.problems))
+})
+
+test('insetClosedRing：按法向向内缩（圆缩完还是同心圆；方形的直边仍是直的）', () => {
+  // 圆：半径 100 → 缩 8 m ⇒ 半径 ≈ 92
+  const c = insetClosedRing(circle(100, 120), 8)
+  const rs = c.map((p) => radiusOf(p as { latitude: number; longitude: number }))
+  assert.ok(Math.max(...rs.map((r) => Math.abs(r - 92))) < 0.5, `半径应为 92，实测 ${rs[0]!.toFixed(2)}`)
+  // 方形：缩完所有点仍在原方形内，且直边中点只向内缩约 8 m
+  const square = [
+    { latitude: CENTER.latitude + 100 / 111320, longitude: CENTER.longitude - 100 / mLng },
+    { latitude: CENTER.latitude + 100 / 111320, longitude: CENTER.longitude + 100 / mLng },
+    { latitude: CENTER.latitude - 100 / 111320, longitude: CENTER.longitude + 100 / mLng },
+    { latitude: CENTER.latitude - 100 / 111320, longitude: CENTER.longitude - 100 / mLng },
+  ]
+  const sq = insetClosedRing(square, 10)
+  assert.ok(sq.every((p) => pointInRing(p, square)), '内缩后的点必须仍在原图之内')
+  const northY = Math.max(...sq.map((p) => (p.latitude - CENTER.latitude) * 111320))
+  assert.ok(Math.abs(northY - 90) < 0.6, `北边应向内缩 10 m（90 m），实测 ${northY.toFixed(1)} m`)
 })
 
 test('laneRatioProfile：随机道次 + 偶尔换道，比例恒在 [0,1] 且能复现', () => {
