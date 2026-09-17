@@ -215,6 +215,18 @@ try {
     if (code === 0) failures.push('出现完全空的 catch 但检查器仍然通过（留痕守卫失效）')
     else if (!out.includes('完全空的 catch')) failures.push(`报错信息不是预期的：\n${out}`)
   }
+  // ---------- 注入 10：把夜间限制套回「开始跑步」（夜间只该拦真实提交）----------
+  {
+    const dir = copyBase()
+    const file = join(dir, 'pages/run.vue')
+    const text = readFileSync(file, 'utf8')
+    const injected = text.replace(':disabled="!activeTask"', ':disabled="!activeTask || gateStatus.blockedBy === \'night\'"')
+    if (injected === text) failures.push('注入 10：pages/run.vue 里找不到「开始跑步」的 disabled 绑定（自测需同步更新）')
+    writeFileSync(file, injected, 'utf8')
+    const { code, out } = run(dir)
+    if (code === 0) failures.push('夜间限制被套回「开始跑步」但检查器仍然通过（适用面守卫失效）')
+    else if (!out.includes('只停真实提交')) failures.push(`报错信息不是预期的：\n${out}`)
+  }
 } finally {
   rmSync(sandbox, { recursive: true, force: true })
 }
@@ -226,6 +238,7 @@ if (failures.length) {
   process.exit(1)
 }
 console.log(
-  '✅ 自测通过：基线通过、9 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
-    '代理重复声明前缀 / 模板裸取可空状态 / 空 catch）都被抓到且退出码非 0，且"写了 v-if 守卫"的反向用例不会被误报。',
+  '✅ 自测通过：基线通过、10 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
+    '代理重复声明前缀 / 模板裸取可空状态 / 空 catch / 夜间限制套回「开始跑步」）都被抓到且退出码非 0，' +
+    '且"写了 v-if 守卫"的反向用例不会被误报。',
 )

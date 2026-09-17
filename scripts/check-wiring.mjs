@@ -389,6 +389,23 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
   }
 }
 
+// ---------- R9：夜间停用的**适用面**（2026-09-17 用户澄清口径）----------
+// 夜间 22:30~06:00 **只停「真实提交」**；本地模拟/预览必须照旧可用。
+// 曾经的错法：把 `gateStatus.blockedBy === 'night'` 也挂在「开始跑步」按钮的 disabled 上 ⇒ 夜里连模拟都点不了。
+{
+  const runPageText = read('pages/run.vue') ?? ''
+  const startBtn = runPageText.match(/:disabled="([^"]*)"[\s\S]{0,160}?开始跑步/)
+  if (!startBtn) {
+    failures.push('pages/run.vue：找不到「开始跑步」按钮的 disabled 绑定（检查器需同步更新）')
+  } else if (/night/.test(startBtn[1])) {
+    failures.push('「开始跑步」按钮被夜间时段拦住了 —— 夜间**只停真实提交**，本地模拟必须可用（用户 2026-09-17 澄清）')
+  }
+  const submitBtn = runPageText.match(/:disabled="([^"]*gateStatus[^"]*)"/)
+  if (!submitBtn) {
+    failures.push('pages/run.vue：「真实提交」按钮的 disabled 里必须仍含门禁（gateStatus.*）—— 夜间/风控都要拦得住')
+  }
+}
+
 // ---------- 报告 ----------
 console.log('=== check-wiring：接线与契约检查（源码级）===\n')
 console.log(

@@ -156,13 +156,17 @@ export function isNightBlocked(now: Date = new Date()): boolean {
   return minutes >= NIGHT_BLOCK_START_MIN || minutes < NIGHT_BLOCK_END_MIN
 }
 
-/** 夜间停用时的提示文案（含当前时间，便于用户判断） */
+/**
+ * 夜间停用时的提示文案（含当前时间，便于用户判断）。
+ * ⚠️ 2026-09-17 用户澄清口径：夜间只停「**真实提交**」，**本地模拟/预览照旧可用**
+ *    （生成轨迹、看自检表与报文预览都不受影响）—— 所以文案里不再写"停止开跑"。
+ */
 export function nightBlockReason(now: Date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   const hhmm = `${pad(now.getHours())}:${pad(now.getMinutes())}`
   return (
-    `现在是 ${hhmm}，处于**夜间停用时段（22:30~06:00）**：为避免不必要的麻烦，已停止开跑与提交。` +
-    `请在**每天 06:00 之后**再使用（只读功能仍可用：读取账号/任务、取 token、看记录与日志）。`
+    `现在是 ${hhmm}，处于**夜间停用时段（22:30~06:00）**：为避免不必要的麻烦，已停止**真实提交**。` +
+    `本地模拟与预览仍可正常使用（跑一条看形状、自检、报文预览都可以）；要真提交请在**每天 06:00 之后**。`
   )
 }
 

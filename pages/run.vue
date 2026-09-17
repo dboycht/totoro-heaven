@@ -89,7 +89,7 @@
                 color="primary"
                 block
                 prepend-icon="mdi-play"
-                :disabled="!activeTask || gateStatus.blockedBy === 'night'"
+                :disabled="!activeTask"
                 @click="start"
               >
                 开始跑步
@@ -273,7 +273,7 @@
             <v-list-item title="自检" :subtitle="run.result?.check.pass ? '硬性项全部通过' : '存在不通过项，建议先修正'" prepend-icon="mdi-clipboard-check-outline" />
             <v-list-item
               title="开跑前门禁（人脸 / 抽查 / 摄像头杆）"
-              :subtitle="gateStatus.allow ? '三项均关闭或无阻碍，可开跑' : gateStatus.reason"
+              :subtitle="gateStatus.blockedBy === 'night' ? '夜间停用：只能模拟与预览，不能真实提交' : gateStatus.allow ? '三项均关闭或无阻碍，可开跑' : gateStatus.reason"
               prepend-icon="mdi-shield-check-outline"
             />
             <v-list-item
