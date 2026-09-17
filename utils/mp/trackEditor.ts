@@ -201,9 +201,12 @@ export function validateRings(rings: TrackRings): { ok: boolean; problems: strin
   }
   if (crossings > 0) problems.push(`内外圈**相交** ${crossings} 处 —— 两条圈不能交叉，否则插出来的车道线会一头贴外圈、一头贴内圈`)
 
-  // ③ 环宽（跑道宽度）合理
+  // ③ 环宽（跑道宽度）合理 —— 标准田径场约 8~10 m（含内场缓冲也不该到 20 m）
   if (widthM < 2) problems.push(`内外圈间距只有 ${widthM.toFixed(1)} m，太窄（不像跑道）`)
-  else if (widthM > 40) problems.push(`内外圈间距 ${widthM.toFixed(1)} m，太宽（不像一条跑道）`)
+  else if (widthM > 20)
+    problems.push(
+      `内外圈间距 ${widthM.toFixed(1)} m，**太宽**（标准跑道约 8~10 m）—— 这样"第 2 道"离内圈会有好几米，看起来就像压在圈上；建议把外圈贴着跑道外沿、或用「按外圈自动生成内圈」`,
+    )
 
   return { ok: problems.length === 0, problems, widthM, innerOutside, crossings }
 }
@@ -248,6 +251,20 @@ export function insetClosedRing<T extends { latitude: number | string; longitude
     out.push(pr.toLL({ x: cur.x + nx * d, y: cur.y + ny * d }))
   }
   return out as T[]
+}
+
+/** 点到**闭合折线**的最短距离（米）——用于把"车道线离内圈/外圈各多少米"直接显示给用户 */
+export function distanceToRingM(p: { latitude: number | string; longitude: number | string }, ring: { latitude: number | string; longitude: number | string }[]): number {
+  if (ring.length < 2) return 0
+  const pr = makeProjector(ringCentroidLat(ring))
+  const q = pr.toXY(p)
+  const poly = ring.map(pr.toXY)
+  let best = Number.POSITIVE_INFINITY
+  for (let i = 0; i < poly.length; i++) {
+    const c = closestOnSegment(q, poly[i]!, poly[(i + 1) % poly.length]!)
+    best = Math.min(best, Math.hypot(c.x - q.x, c.y - q.y))
+  }
+  return best
 }
 
 /**

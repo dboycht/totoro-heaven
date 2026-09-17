@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { laneLoop, laneRatioFor, laneRatioProfile, ringLengthM, ringWidthM, smoothClosedRing, pointInRing, validateRings, insetClosedRing, type TrackRings } from '../../utils/mp/trackEditor.ts'
+import { laneLoop, laneRatioFor, laneRatioProfile, ringLengthM, ringWidthM, smoothClosedRing, pointInRing, validateRings, insetClosedRing, distanceToRingM, type TrackRings } from '../../utils/mp/trackEditor.ts'
 import { normalizeLibrary, entrySummaryText } from '../../utils/mp/trackLibrary.ts'
 
 const CENTER = { latitude: 31.37, longitude: 119.48 }
@@ -222,6 +222,18 @@ test('insetClosedRing：按法向向内缩（圆缩完还是同心圆；方形�
   assert.ok(sq.every((p) => pointInRing(p, square)), '内缩后的点必须仍在原图之内')
   const northY = Math.max(...sq.map((p) => (p.latitude - CENTER.latitude) * 111320))
   assert.ok(Math.abs(northY - 90) < 0.6, `北边应向内缩 10 m（90 m），实测 ${northY.toFixed(1)} m`)
+})
+
+test('distanceToRingM：同心圆下"点到圈的距离"= 半径差；环宽 >20 m 要报"太宽"', () => {
+  // 距圆心 95 m 的点：离 r=100 的圈 5 m、离 r=90 的圈 5 m
+  const p = { latitude: CENTER.latitude + 95 / mLat, longitude: CENTER.longitude }
+  assert.ok(Math.abs(distanceToRingM(p, circle(100, 60)) - 5) < 0.2)
+  assert.ok(Math.abs(distanceToRingM(p, circle(90, 60)) - 5) < 0.2)
+
+  // 环宽 22 m ⇒ 必须报"太宽"（标准跑道 8~10 m；这也是用户"看着像压在内圈上"的成因之一）
+  const wide = validateRings({ outer: circle(100, 60), inner: circle(78, 60) })
+  assert.equal(wide.ok, false)
+  assert.ok(wide.problems.some((t) => t.includes('太宽')), JSON.stringify(wide.problems))
 })
 
 test('laneRatioProfile：随机道次 + 偶尔换道，比例恒在 [0,1] 且能复现', () => {

@@ -9,7 +9,7 @@
  *
  * 存储：本机 localStorage，按 lineId 保存（`mp_track_rings_v1`）——运行时数据不入库。
  */
-import { laneLoop, laneRatioFor, laneRatioProfile, makeSeedRng, ringLengthM, ringWidthM, smoothClosedRing, validateRings, insetClosedRing, type TrackRings } from '~/utils/mp/trackEditor'
+import { laneLoop, laneRatioFor, laneRatioProfile, makeSeedRng, ringLengthM, ringWidthM, smoothClosedRing, validateRings, insetClosedRing, distanceToRingM, type TrackRings } from '~/utils/mp/trackEditor'
 import { entrySummaryText } from '~/utils/mp/trackLibrary'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
@@ -274,13 +274,29 @@ const zoomBy = (d: number) => {
 
 // ---------- 车道 + 轨迹预览 ----------
 const laneCount = ref(6)
-const laneNo = ref(2)
+const laneNo = ref(3) // 默认**居中**那道（第 1 道=最内道；居中才不会看着"压在内圈上"）
 const seed = ref(20260917)
 const rings = computed<TrackRings>(() => ({ outer: outer.value, inner: inner.value }))
 const ringsReady = computed(() => outer.value.length >= 3 && inner.value.length >= 3)
 /** 内外圈合法性（用户要求：外圈必须包着内圈、不许相交、环宽要像跑道） */
 const ringCheck = computed(() => (ringsReady.value ? validateRings(rings.value) : null))
 const widthM = computed(() => (ringsReady.value ? ringWidthM(rings.value) : 0))
+/** 车道线实测：到内圈/外圈各多少米 —— 一眼看出"是不是夹在两圈中间"（免得误会"贴在内圈上"） */
+const laneGap = computed(() => {
+  if (!ringsReady.value || lane.value.length < 3) return null
+  let toInner = 0
+  let toOuter = 0
+  for (const p of lane.value) {
+    toInner += distanceToRingM(p, inner.value)
+    toOuter += distanceToRingM(p, outer.value)
+  }
+  return { inner: toInner / lane.value.length, outer: toOuter / lane.value.length }
+})
+/** 一键居中：道次设为正中那道 */
+const centerLane = () => {
+  laneNo.value = Math.max(1, Math.round((laneCount.value + 1) / 2))
+  randomLane.value = false
+}
 /** 按外圈自动生成内圈（法向向内缩 N 米）——只画一条外圈就够了 */
 const insetM = ref(8)
 const makeInnerFromOuter = () => {
@@ -512,11 +528,16 @@ const removeEntry = (id: string) => {
               <v-switch v-model="laneChanges" density="compact" hide-details color="primary" class="mt-1" label="偶尔缓慢换道（最多 2 次）" />
               <v-text-field v-model.number="seed" label="随机种子（换一条不同的抖动）" density="compact" hide-details class="mb-2" />
               <div class="text-caption">
-                基准道次：<b>{{ randomLane ? '随机' : `第 ${laneNo} 道` }}</b>（共 {{ laneCount }} 道）{{
+                基准道次：<b>{{ randomLane ? '随机' : `第 ${laneNo} 道` }}</b>（共 {{ laneCount }} 道，**第 1 道=最内道**）{{
                   laneChanges ? ' · 偶尔缓慢换道' : ' · 不换道'
                 }}
+                <v-btn size="x-small" variant="text" class="ml-1" @click="centerLane">居中</v-btn>
                 <br />车道比例（起点）<b>{{ (laneProfile ? laneProfile(0) : laneRatio).toFixed(3) }}</b>
                 （0=贴内圈，1=贴外圈）　车道周长 {{ lane.length ? ringLengthM(lane).toFixed(0) : '—' }} m
+                <template v-if="laneGap">
+                  <br />车道线实测：离内圈 <b>{{ laneGap.inner.toFixed(1) }} m</b> · 离外圈
+                  <b>{{ laneGap.outer.toFixed(1) }} m</b>（两者之和 ≈ 跑道宽度就是夹在中间）
+                </template>
                 <br />最终轨迹 {{ trajectory.length }} 点（含真实抖动：直道恒定 + 0.15 m 颗粒 + 偶发小凸起）
               </div>
             </template>
