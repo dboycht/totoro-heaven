@@ -1,23 +1,6 @@
 <template>
   <div>
-    <!-- 🌙 夜间停用（22:30~06:00）：放**页面最顶部**，任何模式下都先说明（避免白等一场 20 分钟的跑步） -->
-    <v-alert
-      v-if="gateStatus.blockedBy === 'night'"
-      type="warning"
-      variant="flat"
-      density="comfortable"
-      class="mb-4"
-    >
-      <div class="font-weight-bold">🌙 夜间停用时段（22:30~06:00）</div>
-      <div class="text-body-2">
-        为避免不必要的麻烦，此时间段<b>已停止开跑与提交</b>（只读功能仍可用）。请在每天 <b>06:00 之后</b>再使用。
-      </div>
-      <div class="text-caption mt-1">{{ gateStatus.reason }}</div>
-    </v-alert>
-
-    <v-alert v-if="!isLoggedIn" type="warning" variant="tonal" density="comfortable" class="mb-4">
-      未建立会话 —— 回到 <NuxtLink to="/">工作台</NuxtLink> 填 token 并点「读取真实账号与任务」。
-    </v-alert>
+    <RunGateNotice :gate-status="gateStatus" :is-logged-in="isLoggedIn" />
 
     <v-card class="mb-4" variant="tonal">
       <v-card-text class="d-flex align-center flex-wrap ga-3 py-2">
@@ -42,74 +25,15 @@
 
     <v-row>
       <v-col cols="12" md="8">
-        <v-card>
-          <v-card-title class="d-flex align-center flex-wrap ga-2">
-            <v-icon color="primary" class="mr-2">mdi-run-fast</v-icon>
-            {{ activeTask?.paperName ?? '（未载入任务）' }}
-            <v-chip size="small" variant="tonal" :color="statusColor">{{ statusText }}</v-chip>
-            <v-spacer />
-            <v-chip v-if="run.plan && run.status !== 'idle'" size="small" variant="tonal" color="info">
-              本次计划 {{ run.plan.targetKm }} km · {{ formatDuration(run.plan.durationSeconds) }} ·
-              {{ formatPace(run.paceSecPerKm) }}/km
-            </v-chip>
-          </v-card-title>
-          <v-card-subtitle v-if="activeTask">
-            目标 {{ activeTask.mileage }} km · 拟合度阈值 {{ activeTask.fitDegree }} · 有效期 {{ formatTaskPeriod(activeTask) }}
-          </v-card-subtitle>
-          <v-card-text>
-            <v-row dense>
-              <v-col cols="6" sm="3">
-                <div class="text-caption text-medium-emphasis">已跑里程</div>
-                <div class="text-h5 font-weight-bold">{{ (run.distanceM / 1000).toFixed(2) }}<span class="text-body-2"> km</span></div>
-              </v-col>
-              <v-col cols="6" sm="3">
-                <div class="text-caption text-medium-emphasis">已用时长</div>
-                <div class="text-h5 font-weight-bold">{{ formatDuration(run.elapsedS) }}</div>
-              </v-col>
-              <v-col cols="6" sm="3">
-                <div class="text-caption text-medium-emphasis">平均配速</div>
-                <div class="text-h5 font-weight-bold">{{ paceText }}</div>
-              </v-col>
-              <v-col cols="6" sm="3">
-                <div class="text-caption text-medium-emphasis">拟合度（自算）</div>
-                <div class="text-h5 font-weight-bold" :class="fitClass">{{ run.fitDegree.toFixed(2) }}</div>
-              </v-col>
-            </v-row>
-
-            <v-progress-linear :model-value="progress * 100" height="10" rounded color="primary" class="mt-4" />
-            <div class="d-flex justify-space-between text-caption text-medium-emphasis mt-1">
-              <span>{{ (progress * 100).toFixed(1) }}% / 目标 {{ run.targetKm }} km</span>
-              <span>轨迹点 {{ run.visibleCount }} / {{ run.points.length }}</span>
-            </div>
-
-            <v-row dense class="mt-4">
-              <v-col cols="4">
-                <v-card variant="tonal" color="info">
-                  <v-card-text class="text-center py-2">
-                    <div class="text-caption">应过点</div>
-                    <div class="text-h6">{{ run.passPoints.all }}</div>
-                  </v-card-text>
-                </v-card>
-              </v-col>
-              <v-col cols="4">
-                <v-card variant="tonal" color="success">
-                  <v-card-text class="text-center py-2">
-                    <div class="text-caption">已过点</div>
-                    <div class="text-h6">{{ run.passPoints.done }}</div>
-                  </v-card-text>
-                </v-card>
-              </v-col>
-              <v-col cols="4">
-                <v-card variant="tonal" color="warning">
-                  <v-card-text class="text-center py-2">
-                    <div class="text-caption">未过点</div>
-                    <div class="text-h6">{{ run.passPoints.notPassed }}</div>
-                  </v-card-text>
-                </v-card>
-              </v-col>
-            </v-row>
-          </v-card-text>
-        </v-card>
+        <RunMetricsCard
+          :active-task="activeTask"
+          :run="run"
+          :status-text="statusText"
+          :status-color="statusColor"
+          :pace-text="paceText"
+          :fit-class="fitClass"
+          :progress="progress"
+        />
       </v-col>
 
       <v-col cols="12" md="4">
@@ -213,172 +137,96 @@
       </v-col>
     </v-row>
 
-    <v-card v-if="run.result" class="mt-4">
-      <v-card-title class="d-flex align-center flex-wrap ga-2">
-        <v-icon :color="run.result.check.pass ? 'success' : 'error'" class="mr-2">
-          {{ run.result.check.pass ? 'mdi-check-decagram' : 'mdi-alert-circle-outline' }}
-        </v-icon>
-        结算（本地预判）
-        <v-chip :color="run.result.check.pass ? 'success' : 'error'" variant="flat" size="small">
-          {{ run.result.check.pass ? '预计合格' : '预计不合格' }}
-        </v-chip>
-        <v-spacer />
-        <span class="text-caption text-medium-emphasis">
-          {{ run.result.km.toFixed(2) }} km · {{ formatDuration(run.result.durationSeconds) }} ·
-          拟合度 {{ run.result.fitDegree.toFixed(2) }}
-        </span>
-      </v-card-title>
-      <v-card-text>
-        <v-table density="compact" class="mb-3">
-          <thead>
-            <tr>
-              <th style="width: 140px">校验项</th>
-              <th>实际情况</th>
-              <th style="width: 90px">结论</th>
-              <th style="width: 90px">口径</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="item in run.result.check.items" :key="item.key">
-              <td>{{ item.label }}</td>
-              <td class="text-body-2">{{ item.detail }}</td>
-              <td>
-                <v-icon v-if="item.ok === true" color="success" size="18">mdi-check</v-icon>
-                <v-icon v-else-if="item.ok === false" :color="item.confidence === 'hard' ? 'error' : 'warning'" size="18">
-                  {{ item.confidence === 'hard' ? 'mdi-close' : 'mdi-alert-outline' }}
-                </v-icon>
-                <v-icon v-else color="warning" size="18">mdi-help</v-icon>
-              </td>
-              <td>
-                <v-chip
-                  size="x-small"
-                  variant="tonal"
-                  :color="confidenceColor(item.confidence)"
-                  :title="item.note || undefined"
-                >
-                  {{ confidenceText(item.confidence) }}
-                </v-chip>
-              </td>
-            </tr>
-          </tbody>
-        </v-table>
-        <div v-if="run.result.check.problems.length" class="text-body-2 text-error mb-2">
-          硬性不通过：{{ run.result.check.problems.join('；') }}
-        </div>
-        <div v-if="run.result.statsProblems.length" class="text-body-2 text-warning mb-2">
-          自洽校验告警：{{ run.result.statsProblems.join('；') }}
-        </div>
-        <div class="text-caption text-medium-emphasis mb-3">
-          口径说明：<b>硬性</b> = 本地能确定判的（参与预判）；<b>待实测</b> = 单位或"服务端是否强校验"的<b>边界</b>未验证的项，
-          只提示、<b>不阻断</b>（这类项的中段数值已随真实提交验证过；边界要验证得做"贴边提交"，会在账号留异常记录，故故意不做）。
-          把鼠标停在「口径」标签上可看各项的具体依据。
-          步数提交值 <code>"{{ run.result.stepsSubmitted }}"</code>（照实测真包口径）。
-        </div>
-
-        <!-- ===== 真实提交 ===== -->
-        <v-divider class="my-3" />
-        <div class="d-flex align-center flex-wrap ga-2 mb-2">
-          <v-btn
-            color="error"
-            variant="flat"
-            prepend-icon="mdi-cloud-upload-outline"
-            :disabled="!realReady || run.status !== 'finished' || phase === 'waiting' || phase === 'submitting' || !gateStatus.allow"
-            @click="confirmOpen = true"
-          >
-            真实提交
-          </v-btn>
-          <v-btn
-            v-if="result?.scantronId"
-            variant="tonal"
-            color="primary"
-            prepend-icon="mdi-clipboard-check-outline"
-            @click="fetchVerdict()"
-          >
-            查询判定
-          </v-btn>
-          <v-chip v-if="phase !== 'idle'" size="small" variant="tonal" :color="phaseColor">{{ phaseMessage }}</v-chip>
-        </div>
-
-        <!-- 未读到真实任务时的提示（演示模式不算——它本来就不是真实数据） -->
-        <v-alert v-if="!realReady && !demoMode" type="info" variant="tonal" density="compact">
-          尚未读取真实数据：先在<NuxtLink to="/">工作台</NuxtLink>粘贴 token 并点「读取真实账号与任务」。
-          演示数据只能用于试界面与报文预览，<b>不会</b>真实提交。
-        </v-alert>
-        <!-- ⛔ 开跑前门禁：三个否决项任一开启（或状态未知）→ 从源头阻止创建场次 -->
-        <v-alert
-          v-else-if="!gateStatus.allow"
-          type="error"
-          variant="tonal"
-          density="compact"
-          class="mt-2"
+    <RunSelfCheckCard :run="run">
+      <!-- ⚠️ 本段是**插槽内容**：它必须与自检表处在**同一张卡**里 ——
+           拆分前「结算表 + 真实提交」就是一张卡、一个 v-card-text；
+           先前拆成两张卡会多出一层边框与间距（已由结构对照脚本抓出并修正）。 -->
+      <!-- ===== 真实提交 ===== -->
+      <v-divider class="my-3" />
+      <div class="d-flex align-center flex-wrap ga-2 mb-2">
+        <v-btn
+          color="error"
+          variant="flat"
+          prepend-icon="mdi-cloud-upload-outline"
+          :disabled="!realReady || run.status !== 'finished' || phase === 'waiting' || phase === 'submitting' || !gateStatus.allow"
+          @click="confirmOpen = true"
         >
-          <div class="font-weight-bold">已阻止真实提交（不会创建场次）</div>
-          <div class="text-body-2">{{ gateStatus.reason }}</div>
-          <div v-if="cameraFlagError" class="text-caption mt-1">读取异常：{{ cameraFlagError }}</div>
-          <!-- 线路开关读取失败/切换线路后未重查 → 给一个显式重试入口（不必刷新页面） -->
-          <v-btn
-            v-if="gateStatus.blockedBy === 'camera_unknown'"
-            size="small"
-            variant="tonal"
-            class="mt-2"
-            prepend-icon="mdi-refresh"
-            @click="retryCameraFlag()"
-          >
-            重新读取该线路的开关
-          </v-btn>
-        </v-alert>
+          真实提交
+        </v-btn>
+        <v-btn
+          v-if="result?.scantronId"
+          variant="tonal"
+          color="primary"
+          prepend-icon="mdi-clipboard-check-outline"
+          @click="fetchVerdict()"
+        >
+          查询判定
+        </v-btn>
+        <v-chip v-if="phase !== 'idle'" size="small" variant="tonal" :color="phaseColor">{{ phaseMessage }}</v-chip>
+      </div>
 
-        <v-alert v-if="phase === 'waiting'" type="info" variant="tonal" class="mt-2">
-          <div class="d-flex align-center ga-3">
-            <v-progress-circular indeterminate size="22" />
-            <div>
-              <div class="font-weight-bold">正在真实等待：还剩 {{ formatDuration(remainingSeconds) }}</div>
-              <div class="text-caption">
-                为保证 <code>endTime - startTime</code> 与服务器观测一致（避免"秒级完成长距离"的破绽），
-                提交前必须真等够报备时长。可以切到别的页面，倒计时会继续。
-              </div>
-              <!-- 用户要求：等待期间明确提醒三条 -->
-              <div class="text-body-2 mt-2 font-weight-bold">
-                ⛔ 等待期间请勿在<b>任意端</b>登录「龙猫」相关账号；🚫 请勿关闭此网页/程序；⏳ 请等到倒计时结束。
-              </div>
+      <!-- 未读到真实任务时的提示（演示模式不算——它本来就不是真实数据） -->
+      <v-alert v-if="!realReady && !demoMode" type="info" variant="tonal" density="compact">
+        尚未读取真实数据：先在<NuxtLink to="/">工作台</NuxtLink>粘贴 token 并点「读取真实账号与任务」。
+        演示数据只能用于试界面与报文预览，<b>不会</b>真实提交。
+      </v-alert>
+      <!-- ⛔ 开跑前门禁：三个否决项任一开启（或状态未知）→ 从源头阻止创建场次 -->
+      <v-alert
+        v-else-if="!gateStatus.allow"
+        type="error"
+        variant="tonal"
+        density="compact"
+        class="mt-2"
+      >
+        <div class="font-weight-bold">已阻止真实提交（不会创建场次）</div>
+        <div class="text-body-2">{{ gateStatus.reason }}</div>
+        <div v-if="cameraFlagError" class="text-caption mt-1">读取异常：{{ cameraFlagError }}</div>
+        <!-- 线路开关读取失败/切换线路后未重查 → 给一个显式重试入口（不必刷新页面） -->
+        <v-btn
+          v-if="gateStatus.blockedBy === 'camera_unknown'"
+          size="small"
+          variant="tonal"
+          class="mt-2"
+          prepend-icon="mdi-refresh"
+          @click="retryCameraFlag()"
+        >
+          重新读取该线路的开关
+        </v-btn>
+      </v-alert>
+
+      <v-alert v-if="phase === 'waiting'" type="info" variant="tonal" class="mt-2">
+        <div class="d-flex align-center ga-3">
+          <v-progress-circular indeterminate size="22" />
+          <div>
+            <div class="font-weight-bold">正在真实等待：还剩 {{ formatDuration(remainingSeconds) }}</div>
+            <div class="text-caption">
+              为保证 <code>endTime - startTime</code> 与服务器观测一致（避免"秒级完成长距离"的破绽），
+              提交前必须真等够报备时长。可以切到别的页面，倒计时会继续。
+            </div>
+            <!-- 用户要求：等待期间明确提醒三条 -->
+            <div class="text-body-2 mt-2 font-weight-bold">
+              ⛔ 等待期间请勿在<b>任意端</b>登录「龙猫」相关账号；🚫 请勿关闭此网页/程序；⏳ 请等到倒计时结束。
             </div>
           </div>
-        </v-alert>
+        </div>
+      </v-alert>
 
-        <v-alert
-          v-if="result"
-          :type="result.scoreOk ? 'success' : 'error'"
-          variant="tonal"
-          class="mt-2"
-        >
-          <div class="font-weight-bold">提交结果：{{ result.scoreMessage }}</div>
-          <div class="text-caption">
-            scantronId={{ result.scantronId }} ·
-            轨迹：{{ result.detailOk === undefined ? '未提交（成绩未成功，按源码不发）' : result.detailOk ? '已提交' : '失败：' + result.detailMessage }}
-          </div>
-          <div v-if="result.verdictText" class="text-body-2 mt-1">★ 判定：{{ result.verdictText }}</div>
-        </v-alert>
+      <v-alert
+        v-if="result"
+        :type="result.scoreOk ? 'success' : 'error'"
+        variant="tonal"
+        class="mt-2"
+      >
+        <div class="font-weight-bold">提交结果：{{ result.scoreMessage }}</div>
+        <div class="text-caption">
+          scantronId={{ result.scantronId }} ·
+          轨迹：{{ result.detailOk === undefined ? '未提交（成绩未成功，按源码不发）' : result.detailOk ? '已提交' : '失败：' + result.detailMessage }}
+        </div>
+        <div v-if="result.verdictText" class="text-body-2 mt-1">★ 判定：{{ result.verdictText }}</div>
+      </v-alert>
 
-        <v-expansion-panels variant="accordion" class="mt-3">
-          <v-expansion-panel title="sunRunExercises 提交报文（18 字段）">
-            <v-expansion-panel-text>
-              <div class="d-flex justify-end mb-1">
-                <v-btn size="small" variant="text" prepend-icon="mdi-content-copy" @click="copy(run.result.scoreRequest)">复制</v-btn>
-              </div>
-              <pre class="json-box">{{ pretty(run.result.scoreRequest) }}</pre>
-            </v-expansion-panel-text>
-          </v-expansion-panel>
-          <v-expansion-panel title="sunRunExercisesDetail 轨迹报文">
-            <v-expansion-panel-text>
-              <div class="text-caption text-medium-emphasis mb-1">
-                共 {{ run.result.detailRequest.pointList.length }} 个轨迹点（此处只预览前 3 个）
-              </div>
-              <pre class="json-box">{{ pretty(detailPreview) }}</pre>
-            </v-expansion-panel-text>
-          </v-expansion-panel>
-        </v-expansion-panels>
-      </v-card-text>
-    </v-card>
+      <RunPayloadPreview :run="run" />
+    </RunSelfCheckCard>
 
     <!-- 真实提交确认框 -->
     <v-dialog v-model="confirmOpen" max-width="620">
@@ -429,7 +277,6 @@
 </template>
 
 <script setup lang="ts">
-import { formatTaskPeriod } from '~/utils/mp/taskRules'
 import { formatDuration, formatPace } from '~/utils/mp/runData'
 import { useMpDemo } from '~/composables/useMpDemo'
 import { useMpReal } from '~/composables/useMpReal'
@@ -565,25 +412,6 @@ const paceItems = [
   { value: 390, label: `6'30" /km（轻松）` },
 ]
 
-const detailPreview = computed(() => {
-  const detail = run.value.result?.detailRequest
-  if (!detail) return null
-  return { ...detail, pointList: detail.pointList.slice(0, 3) }
-})
-
-const pretty = (value: unknown) => JSON.stringify(value, null, 2)
-const copy = async (value: unknown) => {
-  try {
-    await navigator.clipboard.writeText(pretty(value))
-    showSnackbar('已复制到剪贴板', 'success')
-  } catch {
-    showSnackbar('复制失败（浏览器未授权剪贴板）', 'warning')
-  }
-}
-
-const confidenceText = (value: string) => ({ hard: '硬性', inferred: '待实测', info: '仅展示' })[value] ?? value
-const confidenceColor = (value: string) => ({ hard: 'success', inferred: 'warning', info: 'info' })[value] ?? 'info'
-
 /** 页面挂载：把当前任务（若已有）注入跑步机；**不再自动回填缓存**（刷新后默认干净） */
 onMounted(() => {
   applyToRunner()
@@ -628,19 +456,3 @@ const doRealSubmit = async () => {
   }
 }
 </script>
-
-<style scoped>
-.json-box {
-  max-height: 320px;
-  overflow: auto;
-  margin: 0;
-  padding: 12px;
-  border-radius: 8px;
-  background: #101418;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-</style>

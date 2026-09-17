@@ -57,231 +57,49 @@
 
     <v-row>
       <v-col cols="12" md="6">
-        <v-card height="100%">
-          <v-card-title class="d-flex align-center">
-            <v-icon color="primary" class="mr-2">mdi-account-key-outline</v-icon>
-            会话与真实 token
-          </v-card-title>
-          <v-card-subtitle>真实链路只认 token：留空则走演示数据</v-card-subtitle>
-          <v-card-text>
-            <v-text-field
-              v-model="manualToken"
-              label="真实 token（从抓包的 Authorization: Bearer 后面复制）"
-              density="comfortable"
-              hint="只存本机 localStorage；不打印、不入库、不提交"
-              persistent-hint
-              class="mb-4"
-            />
-
-            <div class="d-flex align-center flex-wrap ga-2 mb-3">
-              <v-btn
-                color="primary"
-                prepend-icon="mdi-cloud-download-outline"
-                :loading="realStatus === 'loading'"
-                @click="doLoadReal"
-              >
-                读取真实账号与任务
-              </v-btn>
-              <v-btn
-                color="success"
-                prepend-icon="mdi-radar"
-                :loading="tokenScanState.running"
-                @click="doTokenScan"
-              >
-                一键获取 token
-              </v-btn>
-              <v-btn variant="text" prepend-icon="mdi-flask-outline" @click="doEnableDemo">载入演示数据（试界面）</v-btn>
-              <v-btn v-if="isLoggedIn" variant="text" prepend-icon="mdi-logout" @click="doLogout">清除会话</v-btn>
-              <v-btn variant="text" color="warning" prepend-icon="mdi-broom" @click="confirmClearOpen = true">
-                清空本机数据
-              </v-btn>
-            </div>
-
-            <!-- 一键获取 token 的状态（扫描中 / 验活 / 就绪 / 失败） -->
-            <v-alert
-              v-if="tokenScanState.phase === 'scanning' || tokenScanState.phase === 'validating'"
-              type="info"
-              variant="tonal"
-              density="compact"
-              class="mt-2"
-            >
-              <div class="d-flex align-center ga-2">
-                <v-progress-circular indeterminate size="20" />
-                <span>{{ tokenScanState.message }}</span>
-              </div>
-              <div class="text-caption mt-1">
-                请确认：电脑版微信已打开并登录「龙猫体育锻炼」（扫描器只读它自己的进程内存，不需要管理员）。
-              </div>
-            </v-alert>
-            <v-alert v-else-if="tokenScanState.phase === 'ready'" type="success" variant="tonal" density="compact" class="mt-2">
-              ✅ 已获取 token：{{ tokenScanState.masked }} —— 会话已写入，正在读取真实数据…
-            </v-alert>
-            <v-alert v-else-if="tokenScanState.phase === 'error'" type="error" variant="tonal" density="compact" class="mt-2">
-              {{ tokenScanState.message }}
-              <div class="text-caption mt-1">
-                仍不行就回到「抓包粘贴」路线：Fiddler 抓一条 <code>wxxcx.xtotoro.com</code> 请求，把
-                <code>Authorization: Bearer …</code> 粘到上面的输入框。
-              </div>
-            </v-alert>
-
-            <v-chip v-if="isLoggedIn" color="success" variant="tonal" size="small" class="mr-2">
-              <v-icon start size="14">mdi-account-check</v-icon>
-              真实会话
-            </v-chip>
-            <v-chip v-if="realStatus === 'ready'" color="success" variant="tonal" size="small">
-              <v-icon start size="14">mdi-database-check-outline</v-icon>
-              真实任务已就绪
-            </v-chip>
-
-            <v-alert v-if="realStatus === 'error'" type="error" variant="tonal" density="compact" class="mt-3">
-              {{ realError }}
-            </v-alert>
-            <v-alert v-else-if="manualToken.trim() && !isRealSession" type="info" variant="tonal" density="compact" class="mt-3">
-              已填入 token —— 点「读取真实账号与任务」即可校验并拉取真实数据（自动识别学校；非已验证学校会被拒绝）。
-            </v-alert>
-
-            <!-- 上次读取的任务：**刷新后不自动恢复**（默认干净），这里给显式入口 -->
-            <v-alert v-if="hasCachedTask && !realTask" type="info" variant="tonal" density="compact" class="mt-3">
-              <div class="text-body-2">本机存有<b>上次读取的任务</b>：{{ cachedTaskLabel }}</div>
-              <div class="d-flex flex-wrap ga-2 mt-2">
-                <v-btn size="small" variant="tonal" prepend-icon="mdi-history" @click="doRestoreCached">
-                  恢复上次任务
-                </v-btn>
-                <v-btn size="small" variant="text" prepend-icon="mdi-delete-outline" @click="clearCachedTask()">
-                  忽略并清除
-                </v-btn>
-              </div>
-            </v-alert>
-          </v-card-text>
-        </v-card>
+        <HomeTokenCard
+          v-model:manual-token="manualToken"
+          :is-logged-in="isLoggedIn"
+          :real-status="realStatus"
+          :real-error="realError"
+          :is-real-session="isRealSession"
+          :token-scan-state="tokenScanState"
+          :has-cached-task="hasCachedTask"
+          :cached-task-label="cachedTaskLabel"
+          :real-task="realTask"
+          @load-real="doLoadReal"
+          @token-scan="doTokenScan"
+          @enable-demo="doEnableDemo"
+          @logout="doLogout"
+          @clear-all="confirmClearOpen = true"
+          @restore-cached="doRestoreCached"
+          @clear-cached="clearCachedTask()"
+        />
       </v-col>
 
       <v-col cols="12" md="6">
-        <v-card height="100%">
-          <v-card-title class="d-flex align-center flex-wrap ga-2">
-            <v-icon color="secondary" class="mr-2">mdi-account-details-outline</v-icon>
-            真实账号
-            <v-spacer />
-            <v-btn
-              v-if="realStatus === 'ready' || realStatus === 'loading'"
-              size="small"
-              variant="text"
-              prepend-icon="mdi-refresh"
-              :loading="realStatus === 'loading'"
-              @click="doLoadReal"
-            >
-              刷新任务
-            </v-btn>
-          </v-card-title>
-          <v-card-text>
-            <template v-if="realProfileMasked">
-              <v-list density="compact">
-                <v-list-item title="学号 / 姓名" :subtitle="`${realProfileMasked.snCode} · ${realProfileMasked.studentName}`" prepend-icon="mdi-card-account-details-outline" />
-                <v-list-item title="学校" :subtitle="realProfileMasked.schoolName" prepend-icon="mdi-school-outline" />
-                <v-list-item title="校区（campusId）" :subtitle="realProfileMasked.campusId" prepend-icon="mdi-map-marker-outline" />
-                <v-list-item title="班级" :subtitle="realProfileMasked.className || '—'" prepend-icon="mdi-account-group-outline" />
-              </v-list>
-            </template>
-            <v-alert v-else type="info" variant="tonal" density="compact">
-              还没读取真实账号。填入 token 后点左侧「读取真实账号与任务」。
-            </v-alert>
-
-            <!-- 未验证学校：只提示"判分口径未实测"，不阻断（**读到档案后才显示**，否则还不知道是哪所学校） -->
-            <v-alert v-if="realProfileMasked && realSchoolNotice" type="info" variant="tonal" density="compact" class="mt-3">
-              {{ realSchoolNotice }}
-            </v-alert>
-
-            <v-divider class="my-3" />
-            <div class="text-caption text-medium-emphasis mb-2">一票否决项（真实数据读取后自动查）</div>
-            <v-list density="compact">
-              <v-list-item
-                title="开场人脸 sunrunStartFace"
-                :subtitle="switchText(realSwitches?.sunrunStartFace, '开启（需实时拍脸）', '关闭')"
-                prepend-icon="mdi-camera-outline"
-              />
-              <v-list-item
-                title="随机抽查 sunrunPointRandom"
-                :subtitle="switchText(realSwitches?.sunrunPointRandom, '开启（跑动中可能弹脸）', '关闭')"
-                prepend-icon="mdi-shuffle-variant"
-              />
-              <v-list-item
-                title="摄像头杆 getCameraConfig.flag"
-                :subtitle="cameraFlag === null ? '未读取' : cameraFlag ? '当前选中线路启用（需人到杆附近）' : '当前选中线路未启用'"
-                prepend-icon="mdi-video-outline"
-              />
-            </v-list>
-            <v-alert v-if="!gateStatus.allow" type="error" variant="tonal" density="compact" class="mt-2">
-              <div class="font-weight-bold">⛔ 开跑前门禁未通过（真实提交会被阻止，不会创建场次）</div>
-              <div class="text-body-2">{{ gateStatus.reason }}</div>
-              <div v-if="cameraFlagError" class="text-caption mt-1">读取异常：{{ cameraFlagError }}</div>
-              <v-btn
-                v-if="gateStatus.blockedBy === 'camera_unknown'"
-                size="small"
-                variant="tonal"
-                class="mt-2"
-                prepend-icon="mdi-refresh"
-                @click="retryCameraFlag()"
-              >
-                重新读取该线路的开关
-              </v-btn>
-            </v-alert>
-            <v-alert v-else type="success" variant="tonal" density="compact" class="mt-2">
-              ✅ 开跑前门禁通过：三项（开场人脸 / 随机抽查 / 摄像头杆）均无阻碍。
-            </v-alert>
-          </v-card-text>
-        </v-card>
+        <HomeProfileCard
+          :real-profile-masked="realProfileMasked"
+          :real-status="realStatus"
+          :real-school-notice="realSchoolNotice"
+          :real-switches="realSwitches"
+          :camera-flag="cameraFlag"
+          :gate-status="gateStatus"
+          :camera-flag-error="cameraFlagError"
+          @load-real="doLoadReal"
+          @retry-camera-flag="retryCameraFlag()"
+        />
       </v-col>
     </v-row>
 
     <v-row class="mt-1">
       <v-col cols="12" md="6">
-        <v-card height="100%">
-          <v-card-title class="text-subtitle-1 d-flex align-center">
-            <v-icon color="primary" class="mr-2">mdi-run-fast</v-icon>
-            任务与约束
-            <v-chip class="ml-2" size="x-small" :color="usingRealTask ? 'success' : 'accent'" variant="tonal">
-              {{ usingRealTask ? '真实' : '演示' }}
-            </v-chip>
-          </v-card-title>
-          <v-card-text>
-            <v-list density="compact">
-              <v-list-item title="任务" :subtitle="activeTask?.paperName ?? '—'" prepend-icon="mdi-clipboard-text-outline" />
-              <v-list-item title="目标里程" :subtitle="`${activeTask?.mileage ?? '—'} km`" prepend-icon="mdi-map-marker-distance" />
-              <v-list-item title="拟合度阈值" :subtitle="String(activeTask?.fitDegree ?? '—')" prepend-icon="mdi-chart-bell-curve" />
-              <v-list-item
-                title="速度区间"
-                :subtitle="`${activeTask?.minSpeed ?? '—'} ~ ${activeTask?.maxSpeed ?? '—'} km/h`"
-                prepend-icon="mdi-speedometer"
-              />
-              <v-list-item
-                title="时长区间"
-                :subtitle="`${activeTask?.minTime ?? '—'} ~ ${activeTask?.maxTime ?? '—'} 分钟`"
-                prepend-icon="mdi-timer-outline"
-              />
-              <v-list-item title="有效期" :subtitle="activeTask ? formatTaskPeriod(activeTask) : '—'" prepend-icon="mdi-calendar-range" />
-              <!-- 线路：按坐标校区分组展示（本校区在前；跨校区标距离），避免"名称看不出是哪个校区" -->
-              <template v-if="routeGroups.clusters.length">
-                <v-list-item
-                  v-for="c in routeGroups.clusters"
-                  :key="c.index"
-                  :title="c.label"
-                  :subtitle="c.routes.map((r) => r.line.pointName).join('、')"
-                  :prepend-icon="c.kind === 'home' ? 'mdi-map-marker-check-outline' : 'mdi-map-marker-distance'"
-                />
-                <v-list-item
-                  v-if="routeGroups.inferred"
-                  title="分组提示"
-                  :subtitle="routeGroups.note"
-                  prepend-icon="mdi-alert-circle-outline"
-                />
-              </template>
-              <v-list-item v-else title="线路" :subtitle="lineNames" prepend-icon="mdi-map-outline" />
-            </v-list>
-            <v-alert v-if="!usingRealTask" type="warning" variant="tonal" density="compact" class="mt-2">
-              当前是<b>演示取值</b>。点「读取真实账号与任务」换成真实约束（自动识别学校）。
-            </v-alert>
-          </v-card-text>
-        </v-card>
+        <HomeTaskLines
+          :active-task="activeTask"
+          :route-groups="routeGroups"
+          :line-names="lineNames"
+          :using-real-task="usingRealTask"
+        />
       </v-col>
 
       <v-col cols="12" md="6">
@@ -379,7 +197,6 @@
 </template>
 
 <script setup lang="ts">
-import { formatTaskPeriod } from '~/utils/mp/taskRules'
 import { VERIFIED_SCHOOLS } from '~/utils/mp/schoolGate'
 import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
 import { logError, logInfo, logWarn } from '~/composables/useEventLog'
@@ -446,9 +263,6 @@ const lineNames = computed(() => (activeTask.value?.runPointList ?? []).map((lin
 const routeGroups = computed(() =>
   groupRoutesByCampus(activeTask.value?.runPointList ?? [], realProfileMasked.value?.campusName),
 )
-
-const switchText = (value: string | undefined, on: string, off: string) =>
-  value === undefined ? '未读取' : value === '1' ? on : off
 
 onMounted(() => {
   // 首次启动弹教程（用户要求）；已看过则不再自动弹，可用页面上的「查看教程」再打开
