@@ -323,7 +323,7 @@ const save = () => {
     inner: inner.value,
     laneCount: laneCount.value,
   })
-  showSnackbar(`已存入本机路线库（创建于 ${e.createdAt.slice(0, 16).replace('T', ' ')} · v${e.appVersion}）`)
+  showSnackbar(`已存入本机路线库（v${e.appVersion}；创建日期见右侧列表）`)
 }
 const reset = () => {
   setRing('outer', [])

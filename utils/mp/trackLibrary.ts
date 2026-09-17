@@ -67,9 +67,21 @@ export function normalizeLibrary(raw: unknown, fallbackVersion = '未知'): Trac
   return out
 }
 
-/** 一条路线的摘要（列表展示用）：点位数 · 创建日期 · 创建版本 */
+/**
+ * ISO 字符串 → **本机时间** "yyyy-MM-dd HH:mm"。
+ * ⚠️ 必须转本地：`createdAt` 存的是 `toISOString()`（UTC），直接截前 16 位会显示成 UTC 时间
+ * （实测：本机 22:21 存进去、列表却显示 14:21 —— 用户看的是本机时间）。
+ */
+export function formatLocalDateTime(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 16).replace('T', ' ')
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/** 一条路线的摘要（列表展示用）：点位数 · 创建日期（本机时间） · 创建版本 */
 export function entrySummaryText(e: TrackRouteEntry): string {
-  const when = e.createdAt ? e.createdAt.replace('T', ' ').slice(0, 16) : '创建日期未知'
+  const when = e.createdAt ? formatLocalDateTime(e.createdAt) : '创建日期未知'
   const version = e.appVersion ? `v${e.appVersion.replace(/^v/, '')}` : '版本未知'
   return `外圈 ${e.outer.length} 点 · 内圈 ${e.inner.length} 点 · ${when} · ${version}`
 }

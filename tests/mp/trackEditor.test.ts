@@ -126,7 +126,9 @@ test('entrySummaryText：列表摘要必须带点位数、创建日期与版本�
   })
   assert.ok(text.includes('外圈 12 点'), text)
   assert.ok(text.includes('内圈 10 点'), text)
-  assert.ok(text.includes('2026-09-17 21:00'), text)
+  // ⚠️ 日期必须转**本机时间**（存的是 UTC ISO）—— 所以这里只断言"格式"，不断言具体钟点，
+  //    否则测试会随运行环境的时区而挂。
+  assert.match(text, /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/, text)
   assert.ok(text.includes('v1.1.7'), text)
   const bare = entrySummaryText({ lineId: 'x', lineName: 'x', outer: [], inner: [], createdAt: '', appVersion: '' })
   assert.ok(bare.includes('创建日期未知') && bare.includes('版本未知'), bare)
