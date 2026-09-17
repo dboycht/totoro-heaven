@@ -49,7 +49,7 @@ export function useTrackLibrary() {
   }
 
   /** 新建或覆盖（覆盖时**保留原创建日期**，只更新几何与"本次版本"） */
-  const upsert = (input: { lineId: string; lineName: string; outer: LatLng[]; inner: LatLng[]; laneCount?: number; note?: string }) => {
+  const upsert = (input: { lineId: string; lineName: string; outer: LatLng[]; inner: LatLng[]; laneNo?: number; laneCount?: number; note?: string }) => {
     const old = entries.value.find((e) => String(e.lineId) === String(input.lineId))
     const entry: TrackRouteEntry = {
       lineId: input.lineId,
@@ -59,6 +59,7 @@ export function useTrackLibrary() {
       createdAt: old?.createdAt || new Date().toISOString(),
       appVersion: String(appVersion.value ?? '未知'),
       laneCount: input.laneCount ?? old?.laneCount,
+      laneNo: input.laneNo ?? old?.laneNo,
       note: input.note ?? old?.note,
     }
     entries.value = [entry, ...entries.value.filter((e) => String(e.lineId) !== String(input.lineId))]

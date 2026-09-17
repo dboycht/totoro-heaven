@@ -12,7 +12,7 @@
  */
 import { calculateRouteSimilarity } from '~/utils/mp/routeSimilarity'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
-import { laneLoop, laneRatioProfile, makeSeedRng, ringLengthM } from '~/utils/mp/trackEditor'
+import { laneLoop, laneRatioFor } from '~/utils/mp/trackEditor'
 import { buildRunStats, buildTimeFields } from '~/utils/mp/runData'
 import { buildScoreDetailRequest, buildScoreRequest } from '~/utils/mp/submitPayload'
 import { evaluateRunAgainstTask } from '~/utils/mp/taskRules'
@@ -128,12 +128,13 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
       const trackEntry = lib.get(line.pointId)
       let geometry: { latitude: number | string; longitude: number | string }[] = line.pointList
       if (trackEntry && trackEntry.outer.length >= 3 && trackEntry.inner.length >= 3) {
-        const totalM = ringLengthM(trackEntry.outer)
-        const profile = laneRatioProfile(makeSeedRng(newRunSeed()), Math.max(2, trackEntry.laneCount ?? 6), totalM, {
-          maxChanges: 2,
-          changeLenM: 30,
-        })
-        geometry = laneLoop({ outer: trackEntry.outer, inner: trackEntry.inner }, profile, 240)
+        // ⚠️ **按这条本地路线里存的"所选道次"**生成 —— 不再随机、不再换道
+        //    （2026-09-17 用户确认："缓慢换道"就是车道线看着乱的根因，已删除该功能）
+        geometry = laneLoop(
+          { outer: trackEntry.outer, inner: trackEntry.inner },
+          laneRatioFor(trackEntry.laneNo ?? 3, trackEntry.laneCount ?? 6),
+          240,
+        )
       }
       const generated = generateCorridorRoute(geometry, {
         targetKm: plan.targetKm,

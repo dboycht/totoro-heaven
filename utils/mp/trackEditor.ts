@@ -302,17 +302,6 @@ export function laneLoop(rings: TrackRings, ratio: number | ((arcM: number) => n
   return out
 }
 
-/** 可复现随机源（mulberry32）——编辑器与跑步机共用，保证"同种子同车道" */
-export function makeSeedRng(seed: number): () => number {
-  let a = (seed >>> 0) || 20260917
-  return () => {
-    a = (a + 0x6d2b79f5) | 0
-    let t = Math.imul(a ^ (a >>> 15), 1 | a)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
 /**
  * 把手工描的闭合圈**平滑**（Chaikin 圆角）。
  * 用途：手上描的点必然有折角，直接拿去插值出来的车道线也是折线；
@@ -347,59 +336,4 @@ export function rotateLoop(lane: LatLng[], startIndex: number): LatLng[] {
   if (!lane.length) return lane
   const i = ((startIndex % lane.length) + lane.length) % lane.length
   return [...lane.slice(i), ...lane.slice(0, i)]
-}
-
-/**
- * 车道比例曲线：**基准道次**（可由用户指定或随机）+ 偶尔缓慢换道（用户选定）。
- * 返回一条**按弧长**的车道比例曲线（0=内圈边，1=外圈边），供生成器按弧长取用：
- *   - `baseLane` **给了就用它**（用户在前端选"第几道"时必须走这条 —— 否则滑块会没反应）；
- *     没给就随机一道（"随机道次"模式）；
- *   - `maxChanges` 次换道，每次用**循环滑动平均**过渡（默认跨 `changeLenM` 米）⇒ 看起来就是"慢慢切进去"。
- * @param rng 取值 [0,1) 的随机源（传入可复现的种子随机数）
- */
-export function laneRatioProfile(
-  rng: () => number,
-  laneCount: number,
-  loopLengthM: number,
-  options: { maxChanges?: number; changeLenM?: number; baseLane?: number } = {},
-): (arcM: number) => number {
-  const n = Math.max(1, Math.round(laneCount))
-  const maxChanges = options.maxChanges ?? 2
-  const changeLenM = options.changeLenM ?? 30
-  const baseLane = options.baseLane ?? 1 + Math.floor(rng() * n)
-  const base = laneRatioFor(baseLane, n)
-
-  const changes: { fromM: number; toLane: number }[] = []
-  const count = Math.floor(rng() * (maxChanges + 1)) // 0 ~ maxChanges 次
-  for (let i = 0; i < count; i++) {
-    changes.push({ fromM: rng() * Math.max(1, loopLengthM), toLane: 1 + Math.floor(rng() * n) })
-  }
-  changes.sort((a, b) => a.fromM - b.fromM)
-
-  /**
-   * 实现：先做"阶跃"（基准道 + 若干次换道），再对整圈做**循环滑动平均**平滑。
-   * ⚠️ 为什么不用"逐次叠加余弦"（第一版就是那样）：换道起点处仍会出现台阶（实测跳变 0.166 = 整整一道），
-   *    而且**圈首与圈尾不连续**（跑第二圈时会横跳一次）。循环平滑两个问题一起解决。
-   */
-  const N = 240 // 一圈的采样格
-  const idx: number[] = new Array<number>(N).fill(base)
-  for (const c of changes) {
-    const at = Math.floor((c.fromM / Math.max(1, loopLengthM)) * N) % N
-    const target = laneRatioFor(c.toLane, n)
-    for (let i = at; i < N; i++) idx[i] = target
-  }
-  const w = Math.max(1, Math.round((changeLenM / Math.max(1, loopLengthM)) * N))
-  const smoothIdx = idx.map((_, i) => {
-    let s = 0
-    for (let k = i - w; k <= i + w; k++) s += idx[((k % N) + N) % N]!
-    return s / (2 * w + 1)
-  })
-
-  return (arcM: number) => {
-    const t = (((((arcM % loopLengthM) + loopLengthM) % loopLengthM) / loopLengthM) * N) % N
-    const i = Math.floor(t)
-    const f = t - i
-    const v = smoothIdx[i]! * (1 - f) + smoothIdx[(i + 1) % N]! * f
-    return Math.min(1, Math.max(0, v))
-  }
 }

@@ -24,8 +24,10 @@ export interface TrackRouteEntry {
   createdAt: string
   /** 创建时的软件版本（用户要求"显示对应版本"） */
   appVersion: string
-  /** 这条跑道一共几道（生成时"随机一道 + 缓慢换道"用；默认 6） */
+  /** 这条跑道一共几道（默认 6） */
   laneCount?: number
+  /** **所选道次**（第 1 道=最内道；生成轨迹就按它，不再随机 —— 用户 2026-09-17 确认） */
+  laneNo?: number
   note?: string
 }
 
@@ -50,6 +52,7 @@ export function normalizeLibrary(raw: unknown, fallbackVersion = '未知'): Trac
       createdAt: String(v.createdAt ?? ''),
       appVersion: String(v.appVersion ?? fallbackVersion),
       laneCount: typeof v.laneCount === 'number' && v.laneCount > 0 ? v.laneCount : undefined,
+      laneNo: typeof v.laneNo === 'number' && v.laneNo > 0 ? v.laneNo : undefined,
       note: typeof v.note === 'string' ? v.note : undefined,
     })
   }
@@ -83,5 +86,6 @@ export function formatLocalDateTime(iso: string): string {
 export function entrySummaryText(e: TrackRouteEntry): string {
   const when = e.createdAt ? formatLocalDateTime(e.createdAt) : '创建日期未知'
   const version = e.appVersion ? `v${e.appVersion.replace(/^v/, '')}` : '版本未知'
-  return `外圈 ${e.outer.length} 点 · 内圈 ${e.inner.length} 点 · ${when} · ${version}`
+  const lane = e.laneNo ? `第 ${e.laneNo} 道${e.laneCount ? `/${e.laneCount}` : ''}` : '道次未记录'
+  return `外圈 ${e.outer.length} 点 · 内圈 ${e.inner.length} 点 · ${lane} · ${when} · ${version}`
 }

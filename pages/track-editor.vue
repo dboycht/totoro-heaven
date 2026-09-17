@@ -9,7 +9,7 @@
  *
  * 存储：本机 localStorage，按 lineId 保存（`mp_track_rings_v1`）——运行时数据不入库。
  */
-import { laneLoop, laneRatioFor, laneRatioProfile, makeSeedRng, ringLengthM, ringWidthM, smoothClosedRing, validateRings, insetClosedRing, distanceToRingM, type TrackRings } from '~/utils/mp/trackEditor'
+import { laneLoop, laneRatioFor, ringLengthM, ringWidthM, smoothClosedRing, validateRings, insetClosedRing, distanceToRingM, type TrackRings } from '~/utils/mp/trackEditor'
 import { entrySummaryText } from '~/utils/mp/trackLibrary'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
@@ -295,7 +295,6 @@ const laneGap = computed(() => {
 /** 一键居中：道次设为正中那道 */
 const centerLane = () => {
   laneNo.value = Math.max(1, Math.round((laneCount.value + 1) / 2))
-  randomLane.value = false
 }
 /** 按外圈自动生成内圈（法向向内缩 N 米）——只画一条外圈就够了 */
 const insetM = ref(8)
@@ -308,7 +307,7 @@ const makeInnerFromOuter = () => {
   showSnackbar(`已按外圈向内 ${insetM.value} m 生成内圈`)
 }
 const laneRatio = computed(() => laneRatioFor(laneNo.value, laneCount.value))
-const lane = computed<N[]>(() => (ringsReady.value ? laneLoop(rings.value, laneProfile.value ?? laneRatio.value, 240).map(num) : []))
+const lane = computed<N[]>(() => (ringsReady.value ? laneLoop(rings.value, laneRatio.value, 240).map(num) : []))
 
 /** 最终轨迹：以车道线为参考几何，叠加"真实抖动"（直道恒定、小颗粒、偶发小凸起） */
 const trajectory = computed<N[]>(() => {
@@ -323,19 +322,11 @@ const pathOf = (pts: P[], close = false) => {
   return close ? `${d} Z` : d
 }
 
-/** 车道：把"道次 + 偶尔缓慢换道"的按弧长比例喂给 laneLoop（换道平滑由 laneRatioProfile 负责） */
-const randomLane = ref(false) // 默认"按你选的那一道"（⚠️ 滑块必须真的生效）；勾上才随机
-const laneChanges = ref(true) // 是否偶尔缓慢换道（最多 2 次）
-const laneProfile = computed(() => {
-  const totalM = ringsReady.value ? ringLengthM(outer.value) : 0
-  if (!totalM) return null
-  return laneRatioProfile(makeSeedRng(seed.value), laneCount.value, totalM, {
-    maxChanges: laneChanges.value ? 2 : 0,
-    changeLenM: 30,
-    // ⚠️ 关键：不随机时**必须把用户选的道次传进去** —— 少了这一句，滑块就完全没反应（实测 bug）
-    baseLane: randomLane.value ? undefined : laneNo.value,
-  })
-})
+/**
+ * 车道线：**就用你选的那一道**（0=贴内圈，1=贴外圈）。
+ * ⚠️ 2026-09-17 用户确认：之前的"随机道次 + 偶尔缓慢换道"是**错误功能**（车道线看着乱、还让滑块失效），
+ *    已整块删除；现在整圈**恒定**在该道上，所选道次会随路线一起存进本地路线库。
+ */
 
 const save = () => {
   if (!lineId.value) {
@@ -347,6 +338,8 @@ const save = () => {
     lineName: String(currentLine.value?.pointName ?? lineId.value),
     outer: outer.value,
     inner: inner.value,
+    // ⭐ 把"所选道次"一起存起来（跑步页就按它生成，不再随机）
+    laneNo: laneNo.value,
     laneCount: laneCount.value,
   })
   showSnackbar(`已存入本机路线库（v${e.appVersion}；创建日期见右侧列表）`)
@@ -524,15 +517,14 @@ const removeEntry = (id: string) => {
               </div>
               <v-slider v-model="laneNo" :min="1" :max="laneCount" :step="1" label="第几道（1=最内）" thumb-label />
               <v-slider v-model="laneCount" :min="2" :max="8" :step="1" label="一共几道" thumb-label />
-              <v-switch v-model="randomLane" density="compact" hide-details color="primary" class="mt-1" label="随机道次（勾上则每次随机一道）" />
-              <v-switch v-model="laneChanges" density="compact" hide-details color="primary" class="mt-1" label="偶尔缓慢换道（最多 2 次）" />
+              <div class="text-caption text-medium-emphasis mt-1">
+                车道线整圈恒定在这一道上（不再随机、不再换道）。所选道次会随路线一起存进本地路线库。
+              </div>
               <v-text-field v-model.number="seed" label="随机种子（换一条不同的抖动）" density="compact" hide-details class="mb-2" />
               <div class="text-caption">
-                基准道次：<b>{{ randomLane ? '随机' : `第 ${laneNo} 道` }}</b>（共 {{ laneCount }} 道，**第 1 道=最内道**）{{
-                  laneChanges ? ' · 偶尔缓慢换道' : ' · 不换道'
-                }}
+                所选道次：<b>第 {{ laneNo }} 道</b>（共 {{ laneCount }} 道，第 1 道=最内道）
                 <v-btn size="x-small" variant="text" class="ml-1" @click="centerLane">居中</v-btn>
-                <br />车道比例（起点）<b>{{ (laneProfile ? laneProfile(0) : laneRatio).toFixed(3) }}</b>
+                <br />车道比例 <b>{{ laneRatio.toFixed(3) }}</b>
                 （0=贴内圈，1=贴外圈）　车道周长 {{ lane.length ? ringLengthM(lane).toFixed(0) : '—' }} m
                 <template v-if="laneGap">
                   <br />车道线实测：离内圈 <b>{{ laneGap.inner.toFixed(1) }} m</b> · 离外圈
