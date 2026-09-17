@@ -9,7 +9,7 @@
  *
  * 存储：本机 localStorage，按 lineId 保存（`mp_track_rings_v1`）——运行时数据不入库。
  */
-import { laneLoop, laneRatioFor, ringLengthM, ringWidthM, type TrackRings } from '~/utils/mp/trackEditor'
+import { laneLoop, laneRatioFor, ringLengthM, ringWidthM, smoothClosedRing, type TrackRings } from '~/utils/mp/trackEditor'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
 
@@ -46,6 +46,19 @@ const y2lat = (y: number, z: number) => {
 }
 
 const viewport = ref({ w: 900, h: 560 })
+/**
+ * 地图图层：
+ *   road      = 高德街道图（style=7）
+ *   satellite = 卫星影像（style=6，webst0x 域）—— 看操场实景最清楚
+ *   hybrid    = 卫星影像 + 路网/地名标注（style=8，wprd0x 域叠在上层）
+ */
+const mapStyle = ref<'road' | 'satellite' | 'hybrid'>('satellite')
+const roadTileUrl = (x: number, y: number, z: number, style: number) => {
+  const sub = ((x + y) % 4) + 1
+  return style === 7 || style === 8
+    ? `https://wprd0${sub}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=${style}&x=${x}&y=${y}&z=${z}`
+    : `https://webst0${sub}.is.autonavi.com/appmaptile?style=${style}&x=${x}&y=${y}&z=${z}`
+}
 const centerPx = computed(() => ({ x: lng2x(center.value.longitude, zoom.value) * TILE, y: lat2y(center.value.latitude, zoom.value) * TILE }))
 const originPx = computed(() => ({ x: centerPx.value.x - viewport.value.w / 2, y: centerPx.value.y - viewport.value.h / 2 }))
 
@@ -63,28 +76,43 @@ const toLatLng = (x: number, y: number): N => ({
   latitude: y2lat((y + originPx.value.y) / TILE, zoom.value),
 })
 
-const tiles = computed(() => {
+const tileRange = computed(() => {
   const z = zoom.value
   const x0 = Math.floor(originPx.value.x / TILE)
   const y0 = Math.floor(originPx.value.y / TILE)
   const x1 = Math.floor((originPx.value.x + viewport.value.w) / TILE)
   const y1 = Math.floor((originPx.value.y + viewport.value.h) / TILE)
   const max = 2 ** z
-  const out: { key: string; url: string; left: number; top: number }[] = []
+  const out: { x: number; y: number; wx: number; key: string }[] = []
   for (let x = x0; x <= x1; x++) {
     for (let y = y0; y <= y1; y++) {
       if (y < 0 || y >= max) continue
-      const wx = ((x % max) + max) % max
-      out.push({
-        key: `${z}/${x}/${y}`,
-        url: `https://wprd0${((wx + y) % 4) + 1}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=7&x=${wx}&y=${y}&z=${z}`,
-        left: x * TILE - originPx.value.x,
-        top: y * TILE - originPx.value.y,
-      })
+      out.push({ x, y, wx: ((x % max) + max) % max, key: `${z}/${x}/${y}` })
     }
   }
   return out
 })
+
+/** 底图瓦片（按图层选 style） */
+const tiles = computed(() =>
+  tileRange.value.map((t) => ({
+    key: `b-${t.key}`,
+    url: roadTileUrl(t.wx, t.y, zoom.value, mapStyle.value === 'road' ? 7 : 6),
+    left: t.x * TILE - originPx.value.x,
+    top: t.y * TILE - originPx.value.y,
+  })),
+)
+/** 叠加层：卫星图时再叠一层"路网 + 地名"（style=8），否则没有 */
+const overlayTiles = computed(() =>
+  mapStyle.value === 'hybrid'
+    ? tileRange.value.map((t) => ({
+        key: `o-${t.key}`,
+        url: roadTileUrl(t.wx, t.y, zoom.value, 8),
+        left: t.x * TILE - originPx.value.x,
+        top: t.y * TILE - originPx.value.y,
+      }))
+    : [],
+)
 
 // ---------- 线路与两圈数据 ----------
 const lines = computed(() => activeLines.value ?? [])
@@ -144,6 +172,15 @@ const undo = () => {
   const pts = [...editingPts.value]
   pts.pop()
   setRing(editing.value, pts)
+}
+/** 手工描的点必然有折角 ⇒ Chaikin 圆滑两轮，观感立刻像"跑道圈" */
+const smoothRing = () => {
+  if (editingPts.value.length < 3) {
+    showSnackbar('先描够 3 个点再平滑', 'warning')
+    return
+  }
+  setRing(editing.value, smoothClosedRing(editingPts.value, 2))
+  showSnackbar('已平滑这一圈')
 }
 const clearRing = () => setRing(editing.value, [])
 
@@ -254,6 +291,11 @@ const reset = () => {
             <v-chip size="small" variant="tonal" color="success">绿=车道线</v-chip>
             <v-chip size="small" variant="tonal" color="warning">橙=最终轨迹</v-chip>
             <v-spacer />
+            <v-btn-toggle v-model="mapStyle" mandatory density="compact" class="mr-2">
+              <v-btn value="road" size="small">街道图</v-btn>
+              <v-btn value="satellite" size="small">卫星图</v-btn>
+              <v-btn value="hybrid" size="small">卫星+标注</v-btn>
+            </v-btn-toggle>
             <v-btn size="small" variant="tonal" prepend-icon="mdi-magnify-plus-outline" @click="zoomBy(1)">放大</v-btn>
             <v-btn size="small" variant="tonal" prepend-icon="mdi-magnify-minus-outline" @click="zoomBy(-1)">缩小</v-btn>
           </v-card-title>
@@ -272,6 +314,14 @@ const reset = () => {
                 :src="t.url"
                 class="tile"
                 :style="{ left: `${t.left}px`, top: `${t.top}px` }"
+                draggable="false"
+              />
+              <img
+                v-for="t in overlayTiles"
+                :key="t.key"
+                :src="t.url"
+                class="tile"
+                :style="{ left: `${t.left}px`, top: `${t.top}px`, opacity: 0.85 }"
                 draggable="false"
               />
               <svg class="overlay" :width="viewport.w" :height="viewport.h">
@@ -323,6 +373,9 @@ const reset = () => {
               用官方路线打底（再微调）
             </v-btn>
             <v-btn block size="small" variant="tonal" class="mb-2" prepend-icon="mdi-undo" @click="undo">撤销上一个点</v-btn>
+            <v-btn block size="small" variant="tonal" color="info" class="mb-2" prepend-icon="mdi-auto-fix" @click="smoothRing">
+              把这一圈平滑一下（描的点难免有折角）
+            </v-btn>
             <v-btn block size="small" variant="tonal" color="error" class="mb-2" prepend-icon="mdi-delete-outline" @click="clearRing">清空这一圈</v-btn>
             <v-btn block size="small" variant="text" color="error" class="mb-2" prepend-icon="mdi-restore" @click="reset">把这条线路的内外圈都清空</v-btn>
             <v-btn block size="small" color="primary" prepend-icon="mdi-content-save-outline" @click="save">保存（本机）</v-btn>

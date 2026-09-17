@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { laneLoop, laneRatioFor, laneRatioProfile, ringLengthM, ringWidthM, type TrackRings } from '../../utils/mp/trackEditor.ts'
+import { laneLoop, laneRatioFor, laneRatioProfile, ringLengthM, ringWidthM, smoothClosedRing, type TrackRings } from '../../utils/mp/trackEditor.ts'
 
 const CENTER = { latitude: 31.37, longitude: 119.48 }
 const mLat = 111320
@@ -59,6 +59,20 @@ test('★ laneLoop：车道周长必须落在内外圈周长之间（不许穿�
     const per = ringLengthM(laneLoop(rings, ratio))
     assert.ok(per >= lo - 1 && per <= hi + 1, `ratio=${ratio} 周长 ${per.toFixed(1)} m 不在 [${lo.toFixed(1)}, ${hi.toFixed(1)}] 内`)
   }
+})
+
+test('smoothClosedRing：手工描的圈平滑后仍是同一个圈（圆→圆），点数按轮数翻倍', () => {
+  const src = circle(100, 60)
+  const out = smoothClosedRing(src, 2)
+  assert.equal(out.length, src.length * 4)
+  const rs = out.map((p) => radiusOf(p as { latitude: number; longitude: number }))
+  const worst = Math.max(...rs.map((r) => Math.abs(r - 100)))
+  assert.ok(worst < 1, `平滑后半径偏离 ${worst.toFixed(2)} m（应仍是同心圆）`)
+  const perBefore = ringLengthM(src)
+  const perAfter = ringLengthM(out)
+  assert.ok(Math.abs(perAfter - perBefore) / perBefore < 0.02, `周长变化 ${(((perAfter - perBefore) / perBefore) * 100).toFixed(2)}%`)
+  // 少于 3 个点时不动（避免把两点"平滑"成一条线）
+  assert.deepEqual(smoothClosedRing(circle(100, 2), 2).length, 2)
 })
 
 test('laneRatioProfile：随机道次 + 偶尔换道，比例恒在 [0,1] 且能复现', () => {

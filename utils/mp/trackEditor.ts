@@ -133,8 +133,30 @@ export function laneLoop(rings: TrackRings, ratio: number, samples = 240): LatLn
   return out
 }
 
-/** 车道的**起跑点**（最靠"东侧"的那个点）——让起跑位置稳定、可复现 */
-export function laneStartIndex(lane: LatLng[]): number {
+/**
+ * 把手工描的闭合圈**平滑**（Chaikin 圆角）。
+ * 用途：手上描的点必然有折角，直接拿去插值出来的车道线也是折线；
+ *      平滑后人眼一看就是"跑道那种圆滑的圈"。
+ * @param iterations 轮数（每轮点数翻倍；2 轮足够，4 轮开始"糊"）
+ */
+export function smoothClosedRing<T extends { latitude: number; longitude: number }>(ring: T[], iterations = 2): T[] {
+  let out: T[] = ring.map((p) => ({ ...p }))
+  const rounds = Math.max(0, Math.min(4, Math.round(iterations)))
+  for (let it = 0; it < rounds; it++) {
+    if (out.length < 3) break
+    const next: T[] = []
+    for (let i = 0; i < out.length; i++) {
+      const a = out[i]!
+      const b = out[(i + 1) % out.length]!
+      next.push({ ...a, latitude: a.latitude * 0.75 + b.latitude * 0.25, longitude: a.longitude * 0.75 + b.longitude * 0.25 })
+      next.push({ ...a, latitude: a.latitude * 0.25 + b.latitude * 0.75, longitude: a.longitude * 0.25 + b.longitude * 0.75 })
+    }
+    out = next
+  }
+  return out
+}
+
+/** 车道的**起跑点**（最靠"东侧"的那个点）——让起跑位置稳定、可复现 */export function laneStartIndex(lane: LatLng[]): number {
   let best = 0
   for (let i = 1; i < lane.length; i++) if (lane[i]!.longitude > lane[best]!.longitude) best = i
   return best
