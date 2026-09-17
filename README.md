@@ -1,5 +1,7 @@
 # 龙猫天堂 · 阳光跑助手
 
+[![CI](https://github.com/dboycht/totoro-heaven/actions/workflows/ci.yml/badge.svg)](https://github.com/dboycht/totoro-heaven/actions/workflows/ci.yml)
+
 > ## 📌 版本说明（先看这个）
 >
 > - **建议使用 `1.2.*` 的发行版**；
@@ -79,12 +81,17 @@
 ```bash
 npm install
 npm run dev            # http://localhost:3000
-npm run test:mp        # 113 个单测（Node 内置 test runner，零依赖）
+npm run verify         # ★一键验证：单测 + 4 类类型检查 + 接线契约（改完代码先跑这个；CI 也会跑）
+npm run test:mp        # 163 个单测（Node 内置 test runner，零依赖）
 npm run typecheck:mp   # 纯逻辑模块类型检查
 npm run typecheck:ui   # composables / src / utils / server 的 .ts 类型检查
+npm run typecheck:vue  # .vue 模板类型检查（nuxi typecheck）
+npm run check:wiring   # 接线契约：门禁在写操作前 / 提交顺序 / 明细单一构造器
 npm run build          # 产出 .output/
 npm run sea            # 打单文件 EXE（见 pack/sea/build-sea.ps1）
 ```
+
+> 🤖 提交与 PR 会自动跑 `npm run verify`（见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)）。
 
 ---
 
