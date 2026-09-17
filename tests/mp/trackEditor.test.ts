@@ -134,6 +134,32 @@ test('entrySummaryText：列表摘要必须带点位数、创建日期与版本�
   assert.ok(bare.includes('创建日期未知') && bare.includes('版本未知'), bare)
 })
 
+test('★ laneRatioProfile：指定 baseLane 时必须真的用那道（用户报过"选第几道没变化"）', () => {
+  const mkRng = (seed: number) => {
+    let a = seed >>> 0
+    return () => {
+      a = (a + 0x6d2b79f5) | 0
+      let t = Math.imul(a ^ (a >>> 15), 1 | a)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+  }
+  // 不换道：整圈恒等于"第 N 道"的比例
+  for (const lane of [1, 2, 4, 6]) {
+    const f = laneRatioProfile(mkRng(7), 6, 400, { maxChanges: 0, baseLane: lane })
+    const vals = Array.from({ length: 40 }, (_, i) => f(i * 10))
+    const want = laneRatioFor(lane, 6)
+    assert.ok(vals.every((v) => Math.abs(v - want) < 1e-9), `第 ${lane} 道应恒为 ${want}，实际 ${JSON.stringify(vals.slice(0, 4))}`)
+  }
+  // **换道开启时起点仍应是你选的那道**（否则用户改了道次看不到变化 —— 这正是本次修的 bug）
+  const f2 = laneRatioProfile(mkRng(7), 6, 400, { maxChanges: 2, changeLenM: 30, baseLane: 5 })
+  assert.ok(Math.abs(f2(0) - laneRatioFor(5, 6)) < 0.02, `起点应是第 5 道，实际 ${f2(0)}`)
+  // 不同道次必须给出**不同**的车道比例（用中点采样比对，避免换道干扰）
+  const a1 = laneRatioProfile(mkRng(7), 6, 400, { maxChanges: 0, baseLane: 1 })(200)
+  const a6 = laneRatioProfile(mkRng(7), 6, 400, { maxChanges: 0, baseLane: 6 })(200)
+  assert.ok(Math.abs(a1 - a6) > 0.5, `第 1 道(${a1}) 与第 6 道(${a6}) 必须明显不同`)
+})
+
 test('laneRatioProfile：随机道次 + 偶尔换道，比例恒在 [0,1] 且能复现', () => {
   const mkRng = (seed: number) => {
     let a = seed >>> 0

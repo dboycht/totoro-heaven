@@ -9,7 +9,7 @@
  *
  * 存储：本机 localStorage，按 lineId 保存（`mp_track_rings_v1`）——运行时数据不入库。
  */
-import { laneLoop, laneRatioFor, laneRatioProfile, ringLengthM, ringWidthM, smoothClosedRing, type TrackRings } from '~/utils/mp/trackEditor'
+import { laneLoop, laneRatioFor, laneRatioProfile, makeSeedRng, ringLengthM, ringWidthM, smoothClosedRing, type TrackRings } from '~/utils/mp/trackEditor'
 import { entrySummaryText } from '~/utils/mp/trackLibrary'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
@@ -295,20 +295,18 @@ const pathOf = (pts: P[], close = false) => {
   return close ? `${d} Z` : d
 }
 
-/** 车道：把"随机道次 + 偶尔缓慢换道"的按弧长比例喂给 laneLoop（换道平滑由 laneRatioProfile 负责） */
+/** 车道：把"道次 + 偶尔缓慢换道"的按弧长比例喂给 laneLoop（换道平滑由 laneRatioProfile 负责） */
+const randomLane = ref(false) // 默认"按你选的那一道"（⚠️ 滑块必须真的生效）；勾上才随机
+const laneChanges = ref(true) // 是否偶尔缓慢换道（最多 2 次）
 const laneProfile = computed(() => {
   const totalM = ringsReady.value ? ringLengthM(outer.value) : 0
   if (!totalM) return null
-  const rng = (() => {
-    let a = (seed.value >>> 0) || 20260917
-    return () => {
-      a = (a + 0x6d2b79f5) | 0
-      let t = Math.imul(a ^ (a >>> 15), 1 | a)
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-    }
-  })()
-  return laneRatioProfile(rng, laneCount.value, totalM, { maxChanges: 2, changeLenM: 30 })
+  return laneRatioProfile(makeSeedRng(seed.value), laneCount.value, totalM, {
+    maxChanges: laneChanges.value ? 2 : 0,
+    changeLenM: 30,
+    // ⚠️ 关键：不随机时**必须把用户选的道次传进去** —— 少了这一句，滑块就完全没反应（实测 bug）
+    baseLane: randomLane.value ? undefined : laneNo.value,
+  })
 })
 
 const save = () => {
@@ -474,9 +472,15 @@ const removeEntry = (id: string) => {
               </div>
               <v-slider v-model="laneNo" :min="1" :max="laneCount" :step="1" label="第几道（1=最内）" thumb-label />
               <v-slider v-model="laneCount" :min="2" :max="8" :step="1" label="一共几道" thumb-label />
+              <v-switch v-model="randomLane" density="compact" hide-details color="primary" class="mt-1" label="随机道次（勾上则每次随机一道）" />
+              <v-switch v-model="laneChanges" density="compact" hide-details color="primary" class="mt-1" label="偶尔缓慢换道（最多 2 次）" />
               <v-text-field v-model.number="seed" label="随机种子（换一条不同的抖动）" density="compact" hide-details class="mb-2" />
               <div class="text-caption">
-                车道比例 {{ laneRatio.toFixed(3) }}　车道周长 {{ lane.length ? ringLengthM(lane).toFixed(0) : '—' }} m
+                基准道次：<b>{{ randomLane ? '随机' : `第 ${laneNo} 道` }}</b>（共 {{ laneCount }} 道）{{
+                  laneChanges ? ' · 偶尔缓慢换道' : ' · 不换道'
+                }}
+                <br />车道比例（起点）<b>{{ (laneProfile ? laneProfile(0) : laneRatio).toFixed(3) }}</b>
+                （0=贴内圈，1=贴外圈）　车道周长 {{ lane.length ? ringLengthM(lane).toFixed(0) : '—' }} m
                 <br />最终轨迹 {{ trajectory.length }} 点（含真实抖动：直道恒定 + 0.15 m 颗粒 + 偶发小凸起）
               </div>
             </template>

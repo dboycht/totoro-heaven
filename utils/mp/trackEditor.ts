@@ -185,22 +185,23 @@ export function rotateLoop(lane: LatLng[], startIndex: number): LatLng[] {
 }
 
 /**
- * 随机道次 + 偶尔缓慢换道（用户选定："随机选一道 + 偶尔缓慢换道"）。
+ * 车道比例曲线：**基准道次**（可由用户指定或随机）+ 偶尔缓慢换道（用户选定）。
  * 返回一条**按弧长**的车道比例曲线（0=内圈边，1=外圈边），供生成器按弧长取用：
- *   - 基准道次随机；
- *   - 全程 0~2 次换道，每次用**余弦平滑**跨 `changeLenM` 米（默认 30 m）过渡 ⇒ 看起来就是"慢慢切进去"。
+ *   - `baseLane` **给了就用它**（用户在前端选"第几道"时必须走这条 —— 否则滑块会没反应）；
+ *     没给就随机一道（"随机道次"模式）；
+ *   - `maxChanges` 次换道，每次用**循环滑动平均**过渡（默认跨 `changeLenM` 米）⇒ 看起来就是"慢慢切进去"。
  * @param rng 取值 [0,1) 的随机源（传入可复现的种子随机数）
  */
 export function laneRatioProfile(
   rng: () => number,
   laneCount: number,
   loopLengthM: number,
-  options: { maxChanges?: number; changeLenM?: number } = {},
+  options: { maxChanges?: number; changeLenM?: number; baseLane?: number } = {},
 ): (arcM: number) => number {
   const n = Math.max(1, Math.round(laneCount))
   const maxChanges = options.maxChanges ?? 2
   const changeLenM = options.changeLenM ?? 30
-  const baseLane = 1 + Math.floor(rng() * n)
+  const baseLane = options.baseLane ?? 1 + Math.floor(rng() * n)
   const base = laneRatioFor(baseLane, n)
 
   const changes: { fromM: number; toLane: number }[] = []
