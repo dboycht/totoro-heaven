@@ -228,6 +228,13 @@
       <RunPayloadPreview :run="run" />
     </RunSelfCheckCard>
 
+    <!-- 轨迹预览（矢量、离线）：看"有没有贴着官方路线走" —— 提交前就能判断像不像真跑 -->
+    <RunTrajectoryPreview
+      :points="run.points"
+      :route="selectedLine?.pointList ?? []"
+      :fit-degree="run.fitDegree"
+    />
+
     <!-- 真实提交确认框 -->
     <v-dialog v-model="confirmOpen" max-width="620">
       <v-card>
@@ -344,6 +351,8 @@ const lineItems = computed(() => toSelectItems(routeGroups.value))
 /** 选了其他校区线路时的提示（未跨校区为空串） */
 const crossCampusWarning = computed(() => warnForSelection(routeGroups.value, run.value.lineId))
 const selectedLineName = computed(() => activeLines.value.find((l) => l.pointId === run.value.lineId)?.pointName ?? '—')
+/** 当前选中的线路（含官方路线点列）—— 给「轨迹预览」当参考线用 */
+const selectedLine = computed(() => activeLines.value.find((l) => l.pointId === run.value.lineId))
 
 // 线路集变化后校正选中项：
 //   - 已选线路仍在新列表里 → **保持不动**（不覆盖用户选择，也不覆盖服务器/缓存给的默认）；
