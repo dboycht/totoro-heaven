@@ -441,7 +441,7 @@ const removeEntry = (id: string) => {
           <v-card-text>
             <v-select
               v-model="lineId"
-              :items="lines.map((l) => ({ title: `${l.pointName}`, value: String(l.pointId) }))"
+              :items="lines.map((l) => ({ title: String(l.pointName ?? '').trim() || `未命名线路（${l.pointId}）`, value: String(l.pointId) }))"
               label="要编辑哪条线路"
               density="compact"
               hide-details

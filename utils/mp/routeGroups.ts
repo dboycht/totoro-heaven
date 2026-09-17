@@ -248,7 +248,9 @@ export function toSelectItems(groups: RouteGroupsResult): RouteSelectItem[] {
   for (const c of groups.clusters) {
     items.push({ title: c.label, props: { disabled: true } })
     for (const r of c.routes) {
-      const name = String(r.line.pointName ?? r.line.pointId)
+      // ⚠️ 线路名缺失时**不要裸显示 ID** —— 用户看到 `sunrunLine-2021...` 会以为是 bug（2026-09-17 反馈）
+    const rawName = String(r.line.pointName ?? '').trim()
+    const name = rawName || `未命名线路（${String(r.line.pointId)}）`
       const count = r.line.pointList?.length ?? 0
       const len = r.lengthM >= 1000 ? `${(r.lengthM / 1000).toFixed(2)} km` : `${r.lengthM} m`
       const away = r.kind === 'home' ? '' : ` · 跨校区 ${kmText(r.distanceFromHomeM)}`
