@@ -12,7 +12,7 @@
     </v-alert>
 
     <!-- 当前版本：贺图 + 更新日志 -->
-    <v-card>
+    <v-card class="version-card">
       <v-card-title class="d-flex align-center flex-wrap ga-2">
         <v-icon :color="entry.channel === 'stable' ? 'success' : 'primary'" class="mr-1">
           {{ entry.channel === 'stable' ? 'mdi-star-circle-outline' : 'mdi-test-tube' }}
@@ -89,3 +89,48 @@ const isCurrentEntry = computed(() => entry.value.version === currentVersion.val
 
 useHead({ title: '版本信息 · 龙猫天堂' })
 </script>
+
+<style scoped>
+/*
+ * 进场动画（2026-09-18）：卡片淡入上浮，贺图再晚一点点淡入 —— 只有页面首次进入时播一次。
+ * ⚠️ 刻意不用 `#__nuxt` 级或全局选择器，避免与 Vuetify 的过渡打架；也不做循环动画（会分心）。
+ */
+.version-card {
+  animation: version-card-in 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+@keyframes version-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 贺图本身淡入+轻微放大（延迟到卡片基本落位之后，观感更连贯） */
+.version-card :deep(.art-img),
+.version-card :deep(.art-placeholder) {
+  animation: version-art-in 0.5s ease 0.08s both;
+}
+@keyframes version-art-in {
+  from {
+    opacity: 0;
+    transform: scale(1.015);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 尊重"减少动态效果"偏好 */
+@media (prefers-reduced-motion: reduce) {
+  .version-card,
+  .version-card :deep(.art-img),
+  .version-card :deep(.art-placeholder) {
+    animation: none;
+  }
+}
+</style>

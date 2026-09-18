@@ -8,30 +8,34 @@
       全局提示条（**普通矩形**，2026-09-18 按用户要求把云朵浮层整块删掉）：
       · 顶部居中、成功/警告/错误各有底色（Vuetify 语义色）；
       · **点一下（或点右侧 ×）立即关闭**，不点则到点自动消失；
-      · 浮层之外不挡鼠标 —— 只有提示条本身接收点击。
+      · 浮层之外不挡鼠标 —— 只有提示条本身接收点击；
+      · 🆕 **进出场动画**（2026-09-18 用户问"为啥没有动画"后补上）：自上而下淡入 + 轻微放大，
+        关闭时淡出并向上收起（点条身或点 × 都一样）。
     -->
-    <div v-if="notice.show" class="notice-wrap" @click="hideNotice">
-      <v-alert
-        :type="alertType"
-        variant="flat"
-        density="comfortable"
-        elevation="8"
-        class="notice-bar"
-        role="status"
-      >
-        <div class="d-flex align-center ga-2">
-          <span class="notice-text">{{ notice.text }}</span>
-          <v-btn
-            icon="mdi-close"
-            size="x-small"
-            variant="text"
-            class="ml-2"
-            title="关闭"
-            @click.stop="hideNotice"
-          />
-        </div>
-      </v-alert>
-    </div>
+    <Transition name="notice-in">
+      <div v-if="notice.show" class="notice-wrap" @click="hideNotice">
+        <v-alert
+          :type="alertType"
+          variant="flat"
+          density="comfortable"
+          elevation="8"
+          class="notice-bar"
+          role="status"
+        >
+          <div class="d-flex align-center ga-2">
+            <span class="notice-text">{{ notice.text }}</span>
+            <v-btn
+              icon="mdi-close"
+              size="x-small"
+              variant="text"
+              class="ml-2"
+              title="关闭"
+              @click.stop="hideNotice"
+            />
+          </div>
+        </v-alert>
+      </div>
+    </Transition>
   </v-app>
 </template>
 
@@ -130,5 +134,53 @@ provide(NOTICE_KEY, (msg: string, c = 'info', options?: NoticeOptions) => {
 
 .notice-text {
   word-break: break-word;
+}
+
+/*
+ * 进出场动画（2026-09-18 用户问"为啥没有动画"后补上）
+ *
+ * 关键：**过渡要加在 `.notice-bar`（v-alert）上，不能加在 `.notice-wrap` 上** ——
+ * wrap 是 `position: fixed` 的定位层，对它做位移不会让提示条动（这是常见的"动画看不出效果"原因）。
+ * 另外 v-alert 自带 `opacity` 过渡（v-alert--variant-flat 的 transition），
+ * 我们只覆盖 `transition-duration`（更跟手），**不动 transition 属性本身**，避免和 Vuetify 打架。
+ */
+.notice-bar {
+  transition-duration: 0.22s;
+}
+
+/* 进入：自上而下淡入 + 轻微放大（从 0.96 长到 1） */
+.notice-in-enter-from,
+.notice-in-enter-to {
+  transition-duration: 0.22s;
+}
+.notice-in-enter-from {
+  opacity: 0;
+  transform: translateY(-12px) scale(0.96);
+}
+.notice-in-enter-to {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+/* 离开：淡出 + 略缩小并向上收起（关闭的方向与"从上方飘来"一致，看着不突兀） */
+.notice-in-leave-from,
+.notice-in-leave-to {
+  transition-duration: 0.18s;
+}
+.notice-in-leave-from {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+.notice-in-leave-to {
+  opacity: 0;
+  transform: translateY(-10px) scale(0.97);
+}
+
+/* 尊重系统"减少动态效果"：直接不做位移，只保留极短的淡入淡出 */
+@media (prefers-reduced-motion: reduce) {
+  .notice-in-enter-from,
+  .notice-in-leave-to {
+    transform: none;
+  }
 }
 </style>
