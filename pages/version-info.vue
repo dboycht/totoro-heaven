@@ -21,14 +21,14 @@
         <v-chip size="small" :color="entry.channel === 'stable' ? 'success' : 'primary'" variant="tonal">
           {{ channelText(entry.channel) }}
         </v-chip>
-        <v-chip v-if="isCurrentEntry" size="small" variant="text">当前版本</v-chip>
+        <v-chip v-if="isCurrentEntry" size="small" color="primary" variant="flat">当前版本</v-chip>
         <v-chip v-else size="small" variant="tonal" color="warning">当前运行 v{{ currentVersion }}（开发中）</v-chip>
-        <v-chip v-if="entry.date" size="small" variant="text">{{ entry.date }}</v-chip>
-        <v-spacer />
-        <span class="text-body-2 text-medium-emphasis">{{ entry.title }}</span>
+        <v-chip v-if="entry.date" size="small" variant="text" class="text-medium-emphasis">{{ entry.date }}</v-chip>
       </v-card-title>
 
       <v-card-text>
+        <!-- 一句话标题：**放在正文第一行**（原先挂在标题栏右侧、被 spacer 顶到最右，读起来别扭） -->
+        <div class="text-subtitle-1 font-weight-medium mb-3">{{ entry.title }}</div>
         <v-row dense>
           <v-col cols="12" md="7">
             <VersionArt :version="entry.version" />

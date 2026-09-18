@@ -115,12 +115,16 @@ provide(NOTICE_KEY, (msg: string, c = 'info', options?: NoticeOptions) => {
   padding: 0 12px;
 }
 
-/* 矩形提示条：本身接收点击（点一下即关） */
+/* 矩形提示条：本身接收点击（点一下即关）
+   ⚠️ 2026-09-18 用户反馈"右边一堆空白不美观"：`v-alert` 作为 flex 子项默认会被拉伸到满宽
+   （`flex-grow`）⇒ 用 `flex: 0 0 auto` + `width: fit-content` 让它**只占文字宽度**；
+   文案很长时才由 `max-width` 兜底换行。 */
 .notice-bar {
   pointer-events: auto;
   cursor: pointer;
+  flex: 0 0 auto;
+  width: fit-content;
   max-width: min(88vw, 640px);
-  width: auto;
   border-radius: 6px;
 }
 
