@@ -71,6 +71,7 @@
               <th style="width: 100px">用时</th>
               <th style="width: 110px">拟合度</th>
               <th style="width: 90px">类型</th>
+              <th style="width: 150px">异常标记</th>
               <th>判定</th>
             </tr>
           </thead>
@@ -82,6 +83,12 @@
               <td class="text-body-2">{{ record.usedTime ?? '--' }}</td>
               <td>{{ record.trajectorySimilary ?? '--' }}</td>
               <td class="text-body-2">{{ record.runType === 0 ? '阳光跑' : '自由跑' }}</td>
+              <td class="text-body-2">
+                <template v-if="warnLabel(record)">
+                  <v-chip size="small" variant="tonal" color="warning">{{ warnLabel(record) }}</v-chip>
+                </template>
+                <span v-else class="text-medium-emphasis">--</span>
+              </td>
               <td>
                 <v-chip size="small" variant="flat" :color="statusColor(record.scorePassType)">
                   {{ statusText(record.scorePassType) }}
@@ -100,14 +107,39 @@
           状态映射（源码 SetValue，逐字）：0 无效 / 1 有效 / 2 申诉有效 / 3 补录有效；
           <code>startTmie</code> / <code>endTmie</code> 是服务端拼写错误，逐字保留。
         </div>
+        <div class="text-caption text-medium-emphasis mt-2">
+          <b>关于「异常标记」</b>：这是服务端记录里的 <code>warnType</code>（源码 <code>SetwarnType</code> 映射表）。
+          <b>实测事实</b>：真人真跑与工具记录都可以带 <code>warnType=3（拟合度异常）</code>——
+          它有<b>不代表</b>这段成绩是用工具跑的（2026-09-17 真实提交前后各一条真跑记录实测）。
+          ⚠️ 手机端记录详情页那个 ⚠ 图标是<b>厂商自身的显示问题</b>（判据写成
+          <code>scorePassType != '0'</code>，且文案取了记录里不存在的 <code>scorePassRemark</code> 字段），
+          与我们是否用工具无关。以本表「判定」列的<b>有效/无效</b>为准。
+        </div>
       </v-card-text>
     </v-card>
   </div>
 </template>
 
 <script setup lang="ts">
+import { MP_WARN_TYPE } from '~/src/mp/models'
+import type { MpRunRecord } from '~/src/mp/types'
+
 const { records, stats, term, resetRecords } = useMpDemo()
 const showSnackbar = useNotice()
+
+/**
+ * 异常标记文案（`warnType` → 文案）。
+ * ⚠️ 两条纪律：
+ *   ① 映射表来自源码 `SetwarnType`（`MP_WARN_TYPE`），**不自己编**；
+ *   ② **未实测过的取值不外显成"已知异常"** —— 只显示"未知标记（N）"，避免把没验证过的东西讲成结论。
+ */
+const warnLabel = (record: MpRunRecord): string => {
+  const raw = record.warnType
+  if (raw === undefined || raw === null || String(raw) === '' || String(raw) === '0') return ''
+  const key = Number(raw)
+  const known = (MP_WARN_TYPE as Record<number, string>)[key]
+  return known ? `${known}（warnType=${key}）` : `未知标记（warnType=${raw}）`
+}
 
 const statusText = (value: number | string) =>
   ({ 0: '无效', 1: '有效', 2: '申诉有效', 3: '补录有效' })[Number(value)] ?? '- -'

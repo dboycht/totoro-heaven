@@ -238,6 +238,12 @@ export interface MpRunRecord {
   usedTime?: string
   /** 轨迹拟合度 */
   trajectorySimilary?: string | number
+  /**
+   * **异常标记**（源码 `SetwarnType` 映射表：1 步数异常 / 2 人脸异常 / 3 拟合度异常）。
+   * ⚠️ 实测（2026-09-17）：**真跑与工具记录都可能带 `warnType=3`**，它不代表"用了工具"；
+   *    0 或缺失 = 无标记。取值未实测过的**不要当成已知异常**（「记录」页按"未知标记（N）"显示）。
+   */
+  warnType?: number | string
   /** 0 阳光跑 / 1 自由跑 */
   runType?: number
   /** 成绩来源：1 补录 / 2 小程序申诉 / 3 App 申诉 / 4 补卡机 */
