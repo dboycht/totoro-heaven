@@ -300,13 +300,14 @@ const focus = computed(() => {
     <v-card-text>
       <template v-if="view">
         <!-- ⚠️ 描的圈与本次轨迹相距极远（多半是描错了圈/选了别的校区）：
-             此时整图会被撑到几十公里尺度 ⇒ 图上看不清任何东西，必须明确告诉用户怎么修 -->
+             此时整图会被撑到几十公里尺度 ⇒ 图上看不清任何东西，必须明确告诉用户怎么修。
+             📌 2026-09-18 措辞修正（用户反馈"看着像劝我别用自己描的跑道"）：
+                不说"删掉这条本地路线"，而是给"重描 / 换一条库里的路线"两条正向出路。 -->
         <v-alert v-if="view.scaleBroken" type="error" variant="tonal" density="compact" class="mb-3">
-          <div class="font-weight-bold">预览比例已失衡：你描的圈与本次轨迹不在同一处。</div>
+          <div class="font-weight-bold">这张图的比例失衡了：你描的圈与本次轨迹不在同一处。</div>
           <div class="text-caption mt-1">
-            两者相距约 <b>{{ (view.gapM / 1000).toFixed(1) }} km</b> —— 多半是<b>描错了线路</b>（选了别的校区）
-            或这条本地路线是用别的线路的几何存的。请回「跑道编辑」用「快速定位」对着卫星图重描，
-            或删掉这条本地路线（删掉后会用官方模板跑）。
+            两者相距约 <b>{{ (view.gapM / 1000).toFixed(1) }} km</b> —— 多半是<b>描错了线路</b>（描到别的校区去了），
+            或这条本地路线是用别的线路的几何存的。请回「跑道编辑」：选对线路 →「快速定位」→ 对着<b>卫星图</b>重描一次即可。
           </div>
         </v-alert>
         <v-row dense>
@@ -367,13 +368,16 @@ const focus = computed(() => {
         </v-row>
 
         <div class="text-caption text-medium-emphasis mt-2">
+          <!-- 📌 2026-09-18 措辞修正：明确"轨迹是按你描的跑道生成的"，避免被读成"没用上你描的跑道" -->
           <template v-if="view.outerPath">
-            蓝实线 = 你描的跑道外圈　紫线 = 内圈　绿线 = 所选第 {{ view.laneNo }} 道　
+            <b>本次轨迹是按你描的跑道（绿线=所选第 {{ view.laneNo }} 道）生成的。</b>
+            蓝实线 = 外圈　紫线 = 内圈　
           </template>
-          灰虚线 = 官方路线（{{ view.routePoints }} 点）
+          灰虚线 = 官方路线（{{ view.routePoints }} 点），仅作对照
           <template v-if="view.maxDev !== null">
-            　离路线最远 <b>{{ view.maxDev.toFixed(1) }} m</b>（P95 {{ view.p95 !== null ? view.p95.toFixed(1) : '—' }} m）
-            —— 越小越"在跑道上"
+            　轨迹离这条<b>官方路线</b>最远 <b>{{ view.maxDev.toFixed(1) }} m</b>（P95 {{ view.p95 !== null ? view.p95.toFixed(1) : '—' }} m）
+            —— ⚠️ 这个数是<b>到官方路线</b>的距离，偏大<b>不代表你跑偏了</b>：
+            官方路线本身就可能与真实跑道差十几米到几十米（提交时服务端仍按官方路线算拟合度，所以它仍有参考意义）。
           </template>
         </div>
         <!-- 按圈图例：直接回答"是不是真的一圈"；有逐圈漂移量时一并显示（例：第 3 圈 +0.7 m） -->
@@ -395,9 +399,11 @@ const focus = computed(() => {
           density="compact"
           class="mt-2"
         >
-          最大偏离已超过拟合度判据的容差（25 m）：这条轨迹看起来可能"没沿路线跑"。
+          轨迹离<b>官方路线</b>超过了拟合度判据的容差（25 m）。
           <div class="mt-1">
-            ⚠️ 但也可能是<b>官方数据偏移较大</b>（实测官方模板与真实跑道可差十几到几十米），一切以实际为准！
+            ⚠️ <b>这不代表你跑偏了</b> —— 官方路线本身就可能与真实跑道差十几到几十米
+            （实测中位 11.6 m、最远 50 m）；本轨迹是按<b>你描的跑道</b>生成的，以图上那两圈为准。
+            该数值偏大时，服务端判分可能不认这段轨迹，所以依然值得留意。
           </div>
         </v-alert>
       </template>
