@@ -5,33 +5,33 @@
     </NuxtLayout>
 
     <!--
-      提示条有两种形态（1.1.9）：
-      · 普通提示 = 原来的 v-snackbar（行为逐字不变：default 色、3 秒自动消失）；
-      · **流体云**（`cloud: true`）= 顶部云朵浮层，用于「导入/读取数据」这类有过程的操作，
-        点一下立即消失，未点则到点自动淡出（`CloudNotice` 只负责画，逻辑都在这里）。
+      全局提示条（**普通矩形**，2026-09-18 按用户要求把云朵浮层整块删掉）：
+      · 顶部居中、成功/警告/错误各有底色（Vuetify 语义色）；
+      · **点一下（或点右侧 ×）立即关闭**，不点则到点自动消失；
+      · 浮层之外不挡鼠标 —— 只有提示条本身接收点击。
     -->
-    <v-snackbar
-      v-if="!notice.cloud"
-      :model-value="notice.show"
-      :color="notice.color"
-      location="top"
-      timeout="3000"
-      @update:model-value="(v: boolean) => (notice.show = v)"
-    >
-      {{ notice.text }}
-    </v-snackbar>
-
-    <ClientOnly v-else>
-      <Transition name="cloud-fade">
-        <CloudNotice
-          v-if="notice.show"
-          :text="notice.text"
-          :color="notice.color"
-          :clickable="notice.clickable"
-          @dismiss="hideNotice"
-        />
-      </Transition>
-    </ClientOnly>
+    <div v-if="notice.show" class="notice-wrap" @click="hideNotice">
+      <v-alert
+        :type="alertType"
+        variant="flat"
+        density="comfortable"
+        elevation="8"
+        class="notice-bar"
+        role="status"
+      >
+        <div class="d-flex align-center ga-2">
+          <span class="notice-text">{{ notice.text }}</span>
+          <v-btn
+            icon="mdi-close"
+            size="x-small"
+            variant="text"
+            class="ml-2"
+            title="关闭"
+            @click.stop="hideNotice"
+          />
+        </div>
+      </v-alert>
+    </div>
   </v-app>
 </template>
 
@@ -41,27 +41,33 @@ import { NOTICE_KEY, type NoticeOptions } from '~/composables/useNotice'
 /**
  * 全局提示条（唯一出口）：页面/组件通过 `useNotice()`（见 `composables/useNotice.ts`）调用。
  *
- * 签名（1.1.9 起扩展，**旧调用全部原样可用**）：
- *   showNotice(text, color?)                       // 老形态：顶部条，3 秒自动消失
- *   showNotice(text, color, { cloud: true })        // 流体云：点一下消失，默认 5.5 秒淡出
- *   showNotice(text, color, { cloud: true, timeout: 0 })  // 云 + 不自动消失（等点击）
+ * 签名（**未变**，调用方无需改动）：
+ *   showNotice(text, color?)                                 // 默认 3 秒后自动消失
+ *   showNotice(text, color, { timeout: 0 })                   // 不自动消失，等用户点掉
+ *   showNotice(text, color, { cloud: true })                  // ⚠️ 兼容参数，**现在与普通提示完全一样**
  *
- * ⚠️ 同一条提示**位置不变**：这里只有一份状态，云与条只会出现一个（`cloud` 切换形态）。
+ * 📌 2026-09-18：用户看过一版"流体云式"浮层后**明确否掉**（要求换成正常矩形、可点击关闭），
+ *    所以云朵组件（`components/CloudNotice.vue`）已**删除**；`cloud` 这个字段保留但**不再有形态含义**，
+ *    仅为不改动 7 处调用方而存在（后续轮次可安全清理）。
  */
 const notice = useState('globalSnackbar', () => ({
   show: false,
   text: '',
   color: 'info' as string,
-  /** ✅ 用云朵浮层（默认 false = 原来的顶部条） */
-  cloud: false,
-  /** 云是否可点击消失（默认 true） */
-  clickable: true,
 }))
 
-/** 普通提示的固定时长（与 1.1.8 及以前完全一致，不改既有手感） */
+/** 普通提示的固定时长（与 1.1.8 及以前完全一致） */
 const PLAIN_TIMEOUT_MS = 3000
-/** 云的默认时长：比普通提示长一点，够看清"正在读取…"又不至于赖着不走 */
-const CLOUD_TIMEOUT_MS = 5500
+
+/**
+ * 语义色 → Vuetify alert 类型。
+ * 映射表**固定**：不用 `:type="notice.color"` 直传，避免以后有人往 `color` 里塞非语义值
+ * （如 `#22c55e`）导致 alert 类型失效、静默变成默认蓝色。
+ */
+const alertType = computed(() => {
+  const c = String(notice.value.color ?? '')
+  return c === 'success' || c === 'warning' || c === 'error' ? c : 'info'
+})
 
 let timer: ReturnType<typeof setTimeout> | null = null
 const clearTimer = () => {
@@ -72,8 +78,8 @@ const clearTimer = () => {
 }
 
 /**
- * 关闭提示。**必须能重复调用**：点击消失后定时器还会到点，重复关闭不能报错、不能把新提示关掉
- * （E29 的教训：状态被上一次的收尾动作改掉 ⇒ 卡死/闪没）。
+ * 关闭提示。**必须能重复调用**：点击关闭后定时器还会到点，重复关闭不能报错、
+ * 也不能把"之后新弹的那条"关掉（E29 的教训：收尾动作改错状态 ⇒ 卡死/闪没）。
  */
 const hideNotice = () => {
   clearTimer()
@@ -82,16 +88,9 @@ const hideNotice = () => {
 
 provide(NOTICE_KEY, (msg: string, c = 'info', options?: NoticeOptions) => {
   clearTimer()
-  const cloud = options?.cloud === true
-  notice.value = {
-    show: true,
-    text: msg,
-    color: c,
-    cloud,
-    clickable: options?.clickable !== false,
-  }
+  notice.value = { show: true, text: msg, color: c }
   // 每条提示**重新计时**（连续调用 = 一直显示最新那条，而不是被第一条的定时器提前关掉）
-  const timeout = options?.timeout ?? (cloud ? CLOUD_TIMEOUT_MS : PLAIN_TIMEOUT_MS)
+  const timeout = options?.timeout ?? PLAIN_TIMEOUT_MS
   if (timeout > 0) {
     timer = setTimeout(() => {
       // 期间又被换成别的提示时不关（比较 text：这是唯一能区分"同一条"的字段）
@@ -103,14 +102,29 @@ provide(NOTICE_KEY, (msg: string, c = 'info', options?: NoticeOptions) => {
 </script>
 
 <style scoped>
-/* 云的进出场：淡入 + 轻微下坠（比"啪"地出现更像云飘过来） */
-.cloud-fade-enter-active,
-.cloud-fade-leave-active {
-  transition: opacity 0.28s ease, transform 0.28s ease;
+/* 定位层：顶部居中；pointer-events:none 让提示条之外的区域照常可点 */
+.notice-wrap {
+  position: fixed;
+  top: 74px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 2600;
+  padding: 0 12px;
 }
-.cloud-fade-enter-from,
-.cloud-fade-leave-to {
-  opacity: 0;
-  transform: translateY(-10px) scale(0.97);
+
+/* 矩形提示条：本身接收点击（点一下即关） */
+.notice-bar {
+  pointer-events: auto;
+  cursor: pointer;
+  max-width: min(88vw, 640px);
+  width: auto;
+  border-radius: 6px;
+}
+
+.notice-text {
+  word-break: break-word;
 }
 </style>

@@ -223,7 +223,7 @@ const {
   cameraFlagError,
   retryCameraFlag,
 } = useMpReal()
-// 全局提示（唯一契约见 composables/useNotice.ts；云式形态见 app.vue + components/CloudNotice.vue）
+// 全局提示（唯一契约见 composables/useNotice.ts；渲染在 app.vue —— 普通矩形提示条，点一下关闭）
 const showSnackbar = useNotice()
 
 /** 已验证学校名单（登记表仅用于"判分口径是否实测过"的提示） */

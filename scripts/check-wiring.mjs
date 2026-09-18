@@ -394,6 +394,8 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
 // 新增一个可选参数就要改 7 处、漏一处就是 `Expected 1-2 arguments, but got 3`（1.1.9 真踩到）。
 // 判据：装配层不得再出现 `inject('showSnackbar'`（字符串键已废弃，改由 `NOTICE_KEY` 提供）；
 //       并且 `app.vue` 必须真的 provide 那个键（否则调用方拿到的永远是兜底空实现 ⇒ 点了没反应、还没报错）。
+// ⚠️ 2026-09-18：提示的**外形**改为普通矩形（用户否掉了云朵浮层，`components/CloudNotice.vue` 已删），
+//    但"单一契约"这条规则与外形无关，继续有效。
 {
   // 注意：`listDir` 给出的相对路径以 `/` 开头（如 `/pages/index.vue`），且不含根目录的 `app.vue`
   const frontFiles = [...listDir('pages'), ...listDir('components'), ...listDir('layouts')]
