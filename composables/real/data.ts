@@ -11,6 +11,7 @@
 import { MpApiWrapper, MP_DEFAULT_BASE_URL } from '~/src/wrappers/MpApiWrapper'
 import type { MpRunLine, MpSunrunTask } from '~/src/mp/types'
 import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
+import { normalizeCachePayload, serializeCachePayload, type RealCachePayload } from '~/utils/mp/realCache'
 import { TOKEN_EXPIRED_HINT } from '~/utils/mp/tokenScan'
 import { looksLikeTokenExpired } from '~/src/mp/envelope'
 import {
@@ -21,7 +22,7 @@ import {
   unverifiedSchoolNotice,
 } from '~/utils/mp/schoolGate'
 import { logError, logInfo, logWarn } from '../useEventLog'
-import { TASK_CACHE_KEY, useRealState } from './state'
+import { TASK_CACHE_KEY, useRealState, type MpRealProfile } from './state'
 
 export function useMpRealData() {
   const { session, clearSession } = useMpSession()
@@ -178,15 +179,16 @@ export function useMpRealData() {
     applyToRunner()
 
     if (import.meta.client) {
-      try {
-        localStorage.setItem(
-          TASK_CACHE_KEY,
-          JSON.stringify({ at: loadedAt.value, task: task.value, lineId: String(run.value.lineId || '') }),
-        )
-        syncCacheState() // 同步"可恢复上次任务"的界面状态（否则要等下次刷新才显示）
-      } catch {
-        /* 忽略配额错误 */
-      }
+      // ⚠️ 除任务外**连账号与开关一起存**（2026-09-18）：只存任务的话，
+      //    "恢复上次任务"后账号面板/一票否决项永远是"未读取"（用户实测反馈）。
+      writeCachePayload({
+        at: loadedAt.value,
+        task: task.value,
+        lineId: String(run.value.lineId || ''),
+        profile: profile.value,
+        switches: switches.value,
+        cameraFlag: cameraFlag.value,
+      })
     }
 
     const selectedId = String(run.value.lineId || (task.value.runPointList ?? [])[0]?.pointId || '')
@@ -199,14 +201,13 @@ export function useMpRealData() {
     return true
   }
 
-  /** 读整个缓存负载（不存在/损坏返回 null） */
-  function readCachePayload(): { at?: number; task?: MpSunrunTask; lineId?: string } | null {
+  /** 读整个缓存负载（不存在/损坏/没有任务 → null）；解析与归一化走纯函数 `normalizeCachePayload` */
+  function readCachePayload(): RealCachePayload | null {
     if (!import.meta.client) return null
     try {
       const raw = localStorage.getItem(TASK_CACHE_KEY)
       if (!raw) return null
-      const parsed = JSON.parse(raw) as { at?: number; task?: MpSunrunTask; lineId?: string }
-      return parsed?.task ? parsed : null
+      return normalizeCachePayload(JSON.parse(raw))
     } catch {
       return null
     }
@@ -215,7 +216,7 @@ export function useMpRealData() {
   /** 刷新"是否存在可恢复的上次任务"这个界面状态（非响应式存储，需手动同步） */
   function syncCacheState(): void {
     const p = readCachePayload()
-    cacheAt.value = p ? (p.at ?? 1) : 0
+    cacheAt.value = p ? (p.at || 1) : 0
     cachePaperName.value = p?.task?.paperName ?? ''
     cacheLineId.value = p?.lineId ?? ''
   }
@@ -223,31 +224,72 @@ export function useMpRealData() {
   /** 把当前选中的线路写回缓存（用户换线路时调用；"恢复上次任务"时保持选线） */
   function persistSelectedLine(): void {
     if (!import.meta.client) return
+    const p = readCachePayload()
+    if (!p) return
+    writeCachePayload({ ...p, lineId: String(run.value.lineId || '') })
+  }
+
+  /** 统一写缓存（**补上账号/开关**，见 `utils/mp/realCache.ts` 的沿革说明） */
+  function writeCachePayload(p: {
+    at: number
+    task: MpSunrunTask | null
+    lineId: string
+    profile?: MpRealProfile | null
+    switches?: Record<string, string> | null
+    cameraFlag?: boolean | null
+  }): void {
+    if (!import.meta.client || !p.task) return
     try {
-      const raw = localStorage.getItem(TASK_CACHE_KEY)
-      if (!raw) return
-      const parsed = JSON.parse(raw) as { at?: number; task?: MpSunrunTask; lineId?: string }
-      if (!parsed?.task) return
-      localStorage.setItem(TASK_CACHE_KEY, JSON.stringify({ ...parsed, lineId: String(run.value.lineId || '') }))
-      syncCacheState()
+      localStorage.setItem(TASK_CACHE_KEY, serializeCachePayload({ ...p, task: p.task }))
+      syncCacheState() // 同步"可恢复上次任务"的界面状态（否则要等下次刷新才显示）
     } catch {
-      /* 忽略配额/解析错误 */
+      /* 忽略配额错误 */
     }
   }
   /**
-   * **显式**恢复上次读取的任务（刷新页面后**不再自动回填** —— 用户要求"刷新默认是干净状态"）。
-   * 任务/线路/开关会恢复到缓存时的样子，并沿用当时选中的线路。
+   * 「恢复上次读取」——**先恢复，再用 token 重新读取一遍**（2026-09-18 按用户要求改）
+   *
+   * 用户实测反馈：只点「恢复上次任务」时，右侧账号面板与一票否决项（人脸/抽查/摄像头杆）
+   * **永远是"未读取"** —— 因为老实现只恢复了 `task`，从来不动 `profile` / `switches`。
+   *
+   * 现在的两段式：
+   *   ① **先即时恢复**缓存里的账号 / 任务 / 开关 / 摄像头杆（界面立刻可用，即便没网也能看）；
+   *   ② 若本机**存有真实 token** ⇒ 立刻用 token **重新读取一遍**（拿到最新的任务与开关；
+   *      token 过期时会走已有的"可操作提示"分支）；没有 token 就只能用缓存。
+   *
+   * 返回"是否恢复了缓存"（`false` = 没有可用缓存；此时若仍有 token，页面应改走「读取真实账号与任务」）。
    */
   function restoreCachedTask(): boolean {
     if (task.value) return false
     const p = readCachePayload()
     const cachedTask = p?.task
-    if (!cachedTask?.runPointList?.length) return false
-    task.value = cachedTask
-    loadedAt.value = p?.at ?? Date.now()
-    status.value = 'ready'
-    applyToRunner(p?.lineId)
-    return true
+    let restored = false
+    if (cachedTask?.runPointList?.length) {
+      task.value = cachedTask
+      loadedAt.value = p?.at || Date.now()
+      status.value = 'ready'
+      // 账号与开关一起恢复（老缓存没有这些字段 ⇒ 保持 undefined/原值，由第 ② 步重新读取补齐）
+      if (p?.profile) profile.value = p.profile
+      if (p?.switches) switches.value = p.switches
+      if (typeof p?.cameraFlag === 'boolean') {
+        cameraFlag.value = p.cameraFlag
+        cameraFlagLineId.value = String(p.lineId || '')
+      }
+      applyToRunner(p?.lineId)
+      restored = true
+      logInfo('real', '已从本机缓存恢复上次读取（账号/任务/开关）', {
+        paperName: cachedTask.paperName,
+        hasProfile: Boolean(p?.profile),
+        hasSwitches: Boolean(p?.switches),
+      })
+    }
+    // ② 有真实 token 就再读一遍（异步；失败会走 status/error 的既有分支，不会吞掉缓存里已恢复的内容）
+    const token = session.value?.token
+    if (token && !token.startsWith('demo-')) {
+      logInfo('real', '恢复后自动重新读取真实数据', { tokenLen: token.length })
+      void loadRealData()
+    }
+    return restored
   }
 
   /** 清掉"上次任务"缓存（界面"忽略并清除"用） */

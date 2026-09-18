@@ -88,12 +88,19 @@
         已填入 token —— 点「读取真实账号与任务」即可校验并拉取真实数据（自动识别学校；非已验证学校会被拒绝）。
       </v-alert>
 
-      <!-- 上次读取的任务：<b>刷新后不自动恢复</b>（默认干净），这里给显式入口 -->
+      <!-- 上次读取的会话：<b>刷新后不自动恢复</b>（默认干净），这里给显式入口。
+           📌 2026-09-18：恢复时会**先即时恢复缓存（账号/任务/开关），再用 token 重新读取一遍** ——
+           此前只恢复任务 ⇒ 恢复后账号面板与一票否决项永远"未读取"（用户实测反馈）。 -->
       <v-alert v-if="hasCachedTask && !realTask" type="info" variant="tonal" density="compact" class="mt-3">
-        <div class="text-body-2">本机存有<b>上次读取的任务</b>：{{ cachedTaskLabel }}</div>
+        <div class="text-body-2">本机存有<b>上次读取的会话</b>：{{ cachedTaskLabel }}</div>
+        <div class="text-caption mt-1">
+          点下面会<b>先立即恢复</b>这份缓存（账号 / 任务 / 开关），
+          <template v-if="isRealSession">再用本机 token <b>重新读取一遍</b>（拿最新的任务与开关）。</template>
+          <template v-else>但本机没有可用 token ⇒ 只能恢复缓存里的内容，去重新取一次 token 更可靠。</template>
+        </div>
         <div class="d-flex flex-wrap ga-2 mt-2">
           <v-btn size="small" variant="tonal" prepend-icon="mdi-history" @click="emit('restore-cached')">
-            恢复上次任务
+            {{ isRealSession ? '恢复并重新读取' : '恢复上次会话' }}
           </v-btn>
           <v-btn size="small" variant="text" prepend-icon="mdi-delete-outline" @click="emit('clear-cached')">
             忽略并清除

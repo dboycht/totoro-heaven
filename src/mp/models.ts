@@ -251,6 +251,22 @@ export interface MpRunRecord {
   [key: string]: unknown
 }
 
+/**
+ * 学生档案（`GetStudentInfoByToken` 读到的本人信息）。
+ * 📌 2026-09-18 从 `composables/real/state.ts` 移到契约层：`utils/mp/realCache.ts` 也要用它，
+ * 而算法层不允许反向依赖 composables（分层规则）。
+ */
+export interface MpRealProfile {
+  snCode: string
+  studentName: string
+  schoolCode: string
+  schoolName: string
+  /** 校区（实测是中文名，如「天目湖」；同时作为 getSunrunPaper 的 campusId） */
+  campusId: string
+  campusName: string
+  className: string
+}
+
 /** 成绩状态：0 无效 / 1 有效 / 2 申诉有效 / 3 补录有效（getSunrunArch.scorePassType） */
 export const MP_SCORE_STATUS = {
   0: '无效',
