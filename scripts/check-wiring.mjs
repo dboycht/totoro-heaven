@@ -511,7 +511,12 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
 // 曾经的错法：把 `gateStatus.blockedBy === 'night'` 也挂在「开始跑步」按钮的 disabled 上 ⇒ 夜里连模拟都点不了。
 {
   const runPageText = read('pages/run.vue') ?? ''
-  const startBtn = runPageText.match(/:disabled="([^"]*)"[\s\S]{0,160}?开始跑步/)
+  /**
+   * ⚠️ 2026-09-18 修正：原来用 `:disabled="!activeTask"` 做**精确**匹配，
+   * 一旦这个绑定加上别的条件（本轮加了"没描过跑道也不能跑"⇒ `!activeLines.length`）就匹配不到了
+   * （表现是自测报"找不到按钮"）。改成**先锚定按钮文本、再取其前面的 disabled 绑定**，与内容解耦。
+   */
+  const startBtn = /(:disabled="[^"]*")[\s\S]{0,200}?开始跑步/.exec(runPageText)
   if (!startBtn) {
     failures.push('pages/run.vue：找不到「开始跑步」按钮的 disabled 绑定（检查器需同步更新）')
   } else if (/night/.test(startBtn[1])) {
@@ -520,6 +525,18 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
   const submitBtn = runPageText.match(/:disabled="([^"]*gateStatus[^"]*)"/)
   if (!submitBtn) {
     failures.push('pages/run.vue：「真实提交」按钮的 disabled 里必须仍含门禁（gateStatus.*）—— 夜间/风控都要拦得住')
+  }
+
+  /**
+   * 🆕 2026-09-18（用户实测反馈"没弄路线也能选路线"）：「开始跑步」还必须**受"已配置跑道"约束** ——
+   * 本版的生成基准是**用户自己描的跑道**，没描过就不该能开跑（否则会静默用官方模板生成，形状偏十几米）。
+   * 判据：`disabled` 表达式里出现"路线库/已配置线路"的约束（`libEntries` 或 `activeLines`）。
+   */
+  if (startBtn && !/libEntries|activeLines/.test(startBtn[1])) {
+    failures.push(
+      'pages/run.vue：「开始跑步」的 disabled 必须包含"已配置跑道"的约束（`!libEntries.length` / `!activeLines.length`）' +
+        ' —— 本版只允许用用户自己描的跑道生成轨迹（用户 2026-09-18 要求）',
+    )
   }
 }
 

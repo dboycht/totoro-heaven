@@ -228,12 +228,30 @@ try {
     const dir = copyBase()
     const file = join(dir, 'pages/run.vue')
     const text = readFileSync(file, 'utf8')
-    const injected = text.replace(':disabled="!activeTask"', ':disabled="!activeTask || gateStatus.blockedBy === \'night\'"')
+    // ⚠️ 2026-09-18：该按钮的 disabled 现在含多个条件（!activeTask / !libEntries.length / !activeLines.length），
+    //    所以注入要**就地追加**夜间条件，而不是替换成某个固定串。
+    const injected = text.replace(/(:disabled="!activeTask[^"]*)"/, '$1 || gateStatus.blockedBy === \'night\'"')
     if (injected === text) failures.push('注入 10：pages/run.vue 里找不到「开始跑步」的 disabled 绑定（自测需同步更新）')
     writeFileSync(file, injected, 'utf8')
     const { code, out } = run(dir)
     if (code === 0) failures.push('夜间限制被套回「开始跑步」但检查器仍然通过（适用面守卫失效）')
     else if (!out.includes('只停真实提交')) failures.push(`报错信息不是预期的：\n${out}`)
+  }
+
+  // ---------- 注入 13：去掉「开始跑步」的"已配置跑道"约束（2026-09-18 用户要求收紧）----------
+  {
+    const dir = copyBase()
+    const file = join(dir, 'pages/run.vue')
+    const text = readFileSync(file, 'utf8')
+    const injected = text.replace(
+      ':disabled="!activeTask || !libEntries.length || !activeLines.length"',
+      ':disabled="!activeTask"',
+    )
+    if (injected === text) failures.push('注入 13：pages/run.vue 里找不到「开始跑步」的完整 disabled 绑定（自测需同步更新）')
+    writeFileSync(file, injected, 'utf8')
+    const { code, out } = run(dir)
+    if (code === 0) failures.push('「开始跑步」不再要求"已配置跑道"，但检查器仍然通过（R9 收紧失效）')
+    else if (!out.includes('已配置跑道')) failures.push(`报错信息不是预期的：\n${out}`)
   }
 
   // ---------- 注入 11：提示函数退回"各自内联声明"的字符串注入键（1.1.9 的 useNotice 契约）----------
@@ -277,7 +295,8 @@ if (failures.length) {
   process.exit(1)
 }
 console.log(
-  '✅ 自测通过：基线通过、12 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
+  '✅ 自测通过：基线通过、13 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
     '代理重复声明前缀 / 模板裸取可空状态 / 空 catch / 夜间限制套回「开始跑步」/ 提示退回字符串注入键 / ' +
-    'kebab 绑定丢 prop）都被抓到且退出码非 0，且"写了 v-if 守卫"的反向用例不会被误报。',
+    'kebab 绑定丢 prop / **开始跑步不再要求已配置跑道**）都被抓到且退出码非 0，' +
+    '且"写了 v-if 守卫"的反向用例不会被误报。',
 )

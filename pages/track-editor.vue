@@ -415,6 +415,18 @@ const lineOptions = computed(() =>
       还没读取真实任务：回「工作台」点「一键获取 token」后这里才有线路可选（也可先用演示数据试手感）。
     </v-alert>
 
+    <!-- ⚠️ 用户 2026-09-18 明确要求加的提示（置顶、常驻）：官方路线只能当"大致位置"参考 -->
+    <v-alert type="warning" variant="tonal" density="comfortable" class="mb-3">
+      <div class="font-weight-bold">
+        <v-icon class="mr-1">mdi-alert-outline</v-icon>描圈请以<b>卫星图</b>为准，不要照着灰虚线（官方路线）描！
+      </div>
+      <div class="text-body-2 mt-1">
+        部分线路的<b>官方路线偏差极大</b>（实测官方模板与真实跑道可差十几米到几十米），
+        照它描会把偏差直接带进轨迹里。正确做法：切到「<b>卫星图</b>」→ 看清操场红色的跑道 →
+        「<b>快速定位</b>」把地图移到这条线路 → 沿跑道边缘描外圈。
+      </div>
+    </v-alert>
+
     <v-row dense>
       <v-col cols="12" md="8">
         <v-card>

@@ -89,7 +89,7 @@
                 color="primary"
                 block
                 prepend-icon="mdi-play"
-                :disabled="!activeTask"
+                :disabled="!activeTask || !libEntries.length || !activeLines.length"
                 @click="start"
               >
                 开始跑步
@@ -110,14 +110,23 @@
             </div>
 
             <v-alert v-if="run.error" type="error" variant="tonal" density="compact" class="mt-3">{{ run.error }}</v-alert>
-            <!-- 路线来源说明（2026-09-17 用户要求：阳光跑只选"已配置好的路线"） -->
+      <!-- 路线来源（2026-09-18 收紧）：**只列你描好的路线**，并以它的几何为基准生成轨迹 -->
       <v-alert v-if="hasConfigured" type="success" variant="tonal" density="compact" class="mt-3">
-        只列出你在「跑道编辑」里配置好的 <b>{{ libEntries.length }}</b> 条路线 —— 轨迹按你描的
-        <b>真跑道</b>生成（随机一道 + 缓慢换道），拟合度按官方模板算。
+        只列出你在「跑道编辑」里配置好的 <b>{{ libEntries.length }}</b> 条路线 —— 轨迹以<b>你描的真跑道</b>为基准生成；
+        官方模板只作对照（提交时服务端的拟合度仍按官方模板算）。
       </v-alert>
-      <v-alert v-else-if="activeLinesRaw.length" type="info" variant="tonal" density="compact" class="mt-3">
-        还没有配置任何跑道 ⇒ 当前先列出全部 <b>{{ activeLinesRaw.length }}</b> 条官方线路（用官方模板生成，形状会偏）。
-        去「<b>跑道编辑</b>」描一条内外圈并保存，这里就只列你配置过的路线。
+      <v-alert v-else-if="activeLinesRaw.length" type="warning" variant="tonal" density="compact" class="mt-3">
+        <div class="font-weight-bold">还没有可用的跑道：请先描一条。</div>
+        <div class="text-body-2 mt-1">
+          本版<b>只会用你自己描的跑道</b>生成轨迹（官方模板偏差十几米，不再作为生成基准）。
+          去「<b>跑道编辑</b>」选一条线路 → 「快速定位」→ 沿卫星图描外圈 → 「按外圈自动生成内圈」→ 保存（本机）。
+          保存后回到本页，这条线路就会出现在下面的下拉框里。
+        </div>
+        <div class="mt-2">
+          <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-vector-polyline" to="/track-editor">
+            去「跑道编辑」描一条
+          </v-btn>
+        </div>
       </v-alert>
 
       <v-alert v-if="!realReady && !demoMode" type="warning" variant="tonal" density="compact" class="mt-3">
@@ -341,17 +350,20 @@ const activeTask = computed(() => realTask.value ?? task.value)
 const activeLinesRaw = computed(() => activeTask.value?.runPointList ?? [])
 
 /**
- * 本地路线库（用户要求）：**阳光跑页只列"在跑道编辑里配置好的路线"** ——
- * 这样每次开跑都用你描过的真跑道几何（而不是那个偏差 39 m 的官方模板）。
- * 库里为空时仍列出全部线路（否则新用户完全没法开跑），界面上会提示去配置。
+ * 本地路线库（用户要求，2026-09-18 收紧为**强制**）：
+ * **阳光跑页只列"在跑道编辑里配置好的路线"，并以那条路线的几何为基准生成轨迹。**
+ *
+ * ⚠️ 2026-09-18 变更（用户实测反馈）：此前"库里为空时先列出全部官方线路"的兜底**已删除** ——
+ * 用户的原话是"我们就是要弄新的版本，在下拉框里面选择我们已经编辑好的路径，再以这个路径为基础来进行生成"。
+ * 那条兜底会让人**在没配过跑道时直接跑官方模板**（形状偏十几米），而且提示不醒目 ⇒ 容易被当成 bug。
+ * 现在：没配置过 ⇒ 下拉框为空、**开跑按钮禁用**，并给出"先去描一条"的明确指引。
  */
 const { entries: libEntries, load: loadTrackLibrary } = useTrackLibrary()
 onMounted(() => loadTrackLibrary())
 const configuredIds = computed(() => new Set(libEntries.value.map((e) => String(e.lineId))))
 const hasConfigured = computed(() => libEntries.value.length > 0)
-const activeLines = computed(() =>
-  hasConfigured.value ? activeLinesRaw.value.filter((l) => configuredIds.value.has(String(l.pointId))) : activeLinesRaw.value,
-)
+/** 只列"本机路线库里配置过"的线路（**没有兜底**：没配置就是空列表） */
+const activeLines = computed(() => activeLinesRaw.value.filter((l) => configuredIds.value.has(String(l.pointId))))
 const isBusy = computed(() => run.value.status === 'running' || run.value.status === 'paused')
 
 /** 载入演示数据（按需功能，不发任何请求） */
