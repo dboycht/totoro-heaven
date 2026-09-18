@@ -65,7 +65,7 @@
  */
 withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
 
-const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
+const showSnackbar = useNotice()
 const { latest, hasUpdate, checking, error, checkedAt, fromCache, appVersion, releasesUrl, repoUrl, checkForUpdate, forceCheck, dismissUpdate } =
   useUpdateCheck()
 

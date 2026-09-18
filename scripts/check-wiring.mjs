@@ -389,6 +389,32 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
   }
 }
 
+// ---------- R10：全局提示必须走 `useNotice()` 单一契约（2026-09-18，1.1.9）----------
+// 起因：提示函数的签名原先在 7 个页面/组件里**各自内联声明**（`inject<(msg, color?) => void>(...)`），
+// 新增一个可选参数就要改 7 处、漏一处就是 `Expected 1-2 arguments, but got 3`（1.1.9 真踩到）。
+// 判据：装配层不得再出现 `inject('showSnackbar'`（字符串键已废弃，改由 `NOTICE_KEY` 提供）；
+//       并且 `app.vue` 必须真的 provide 那个键（否则调用方拿到的永远是兜底空实现 ⇒ 点了没反应、还没报错）。
+{
+  // 注意：`listDir` 给出的相对路径以 `/` 开头（如 `/pages/index.vue`），且不含根目录的 `app.vue`
+  const frontFiles = [...listDir('pages'), ...listDir('components'), ...listDir('layouts')]
+  for (const rel of frontFiles) {
+    const text = read(rel)
+    // ⚠️ 别写 `inject\s*<[^>]*>` —— 泛型里含 `=>`（`<(...) => void>`），`[^>]*` 会在 `=` 后就停下匹配不上
+    //    （R10 自测第一次就是被这个正则坑了：注入了违规却"通过"）。这里用码点区间 + 关键字双重判据。
+    if (/inject\s*(?:<[\s\S]{0,200}?>)?\s*\(\s*['"]showSnackbar['"]/.test(text)) {
+      failures.push(`${rel}：仍在用废弃的字符串注入键 \`inject('showSnackbar')\` —— 请改用 \`useNotice()\`（composables/useNotice.ts）`)
+    }
+  }
+  const appText = read('app.vue')
+  if (appText && !/provide\(\s*NOTICE_KEY/.test(appText)) {
+    failures.push("app.vue：没有用 `provide(NOTICE_KEY, ...)` 提供全局提示（调用方必须走 useNotice()，键的唯一来源是 composables/useNotice.ts）")
+  }
+  const noticeContract = read('composables/useNotice.ts')
+  if (noticeContract && !/export const NOTICE_KEY/.test(noticeContract)) {
+    failures.push('composables/useNotice.ts：缺少 `export const NOTICE_KEY`（检查器需同步更新）')
+  }
+}
+
 // ---------- R9：夜间停用的**适用面**（2026-09-17 用户澄清口径）----------
 // 夜间 22:30~06:00 **只停「真实提交」**；本地模拟/预览必须照旧可用。
 // 曾经的错法：把 `gateStatus.blockedBy === 'night'` 也挂在「开始跑步」按钮的 disabled 上 ⇒ 夜里连模拟都点不了。

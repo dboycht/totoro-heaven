@@ -16,8 +16,14 @@ export const TRACK_LIBRARY_KEY_LEGACY = 'mp_track_rings_v1'
 export interface TrackRouteEntry {
   /** 厂商线路 id（主键；**提交时仍用它** —— 我们只换"生成用的几何"，不动报文口径） */
   lineId: string
-  /** 线路名快照（任务换版后仍看得懂这条记录是什么） */
+  /** 线路名快照（任务换版后仍看得懂这条记录是什么；**厂商线路名**，我们不覆写它） */
   lineName: string
+  /**
+   * **用户自己起的名字**（2026-09-18 新增，1.1.9 需求②：本地路线库支持重命名）。
+   * 与 `lineName`（厂商快照）分开存 —— 重命名只动这条本机记录，**不动厂商线路名**；
+   * 清空（改成空串/空白）＝ 恢复显示厂商原名快照。
+   */
+  customName?: string
   outer: LatLng[]
   inner: LatLng[]
   /** 创建时间（ISO 字符串；旧数据迁移过来时为空 ⇒ 显示"创建日期未知"） */
@@ -34,6 +40,37 @@ export interface TrackRouteEntry {
 const isPts = (v: unknown): v is LatLng[] =>
   Array.isArray(v) && v.every((p) => !!p && typeof p === 'object' && 'latitude' in p && 'longitude' in p)
 
+/** 自定义路名长度上限（按**码点**算，别把 emoji 截成半个 —— 用户可能起「🏃 西操场」这种名字） */
+export const TRACK_NAME_MAX = 24
+
+/**
+ * 自定义路名**归一化**（纯函数，唯一入口）：折叠空白、去掉控制字符（含零宽字符）、按码点截断、限长。
+ *
+ * 判据：
+ *   · `sanitizeLineName('  西 操场 ')` → `'西 操场'`（首尾去空白、中间连续空白折成一个空格）
+ *   · 控制字符/零宽字符（`\u0000-\u001f`、`\u007f`、`\u200b-\u200f`、`\ufeff`）被删掉
+ *   · 超过 `TRACK_NAME_MAX` 个码点则截断；emoji 不会被截成半个
+ *   · 结果为空（原样是空白/只有控制字符/不是字符串）→ `''`，含义是「恢复厂商原名」
+ */
+export function sanitizeLineName(raw: unknown): string {
+  if (typeof raw !== 'string') return ''
+  const cleaned = raw
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f\u200b-\u200f\ufeff]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const cps = Array.from(cleaned) // 按码点切，emoji/代理对不会被劈开
+  return cps.length > TRACK_NAME_MAX ? cps.slice(0, TRACK_NAME_MAX).join('') : cleaned
+}
+
+/**
+ * 这条路线**该显示什么名字**（纯函数，唯一入口，列表/下拉/摘要都用它）：
+ * 自定义名优先 → 厂商名快照 → 线路 id（**绝不返回空串**，免得界面上出现一行空白）。
+ */
+export function resolveEntryName(e: Pick<TrackRouteEntry, 'lineId' | 'lineName' | 'customName'>): string {
+  return sanitizeLineName(e.customName) || String(e.lineName ?? '').trim() || String(e.lineId ?? '')
+}
+
 /**
  * 把任意历史数据**归一化**成新格式（纯函数，便于单测与迁移）：
  *   · 新格式数组 → 原样（补齐缺失字段）
@@ -44,9 +81,12 @@ export function normalizeLibrary(raw: unknown, fallbackVersion = '未知'): Trac
   const out: TrackRouteEntry[] = []
   const push = (lineId: string, v: Record<string, unknown>) => {
     if (!lineId || !isPts(v.outer) || !isPts(v.inner)) return
+    // 用户自定义名：归一化后为空（历史数据里可能存过空白）⇒ 归一化成 undefined，一律走 `resolveEntryName` 兜底
+    const customName = sanitizeLineName(v.customName)
     out.push({
       lineId,
       lineName: String(v.lineName ?? lineId),
+      ...(customName ? { customName } : {}),
       outer: v.outer,
       inner: v.inner,
       createdAt: String(v.createdAt ?? ''),
@@ -87,5 +127,8 @@ export function entrySummaryText(e: TrackRouteEntry): string {
   const when = e.createdAt ? formatLocalDateTime(e.createdAt) : '创建日期未知'
   const version = e.appVersion ? `v${e.appVersion.replace(/^v/, '')}` : '版本未知'
   const lane = e.laneNo ? `第 ${e.laneNo} 道${e.laneCount ? `/${e.laneCount}` : ''}` : '道次未记录'
-  return `外圈 ${e.outer.length} 点 · 内圈 ${e.inner.length} 点 · ${lane} · ${when} · ${version}`
+  // 改过名时**顺带标出厂商原名**：改的是本机显示名，提交用的仍是厂商 lineId，
+  // 把原名留在摘要里，用户才不会"改完就不知道这条对应哪条官方线路"（2026-09-18）。
+  const renamed = sanitizeLineName(e.customName) ? `（官方名：${String(e.lineName ?? '').trim() || e.lineId}）` : ''
+  return `外圈 ${e.outer.length} 点 · 内圈 ${e.inner.length} 点 · ${lane} · ${when} · ${version}${renamed}`
 }

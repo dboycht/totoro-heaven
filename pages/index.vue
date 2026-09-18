@@ -223,7 +223,8 @@ const {
   cameraFlagError,
   retryCameraFlag,
 } = useMpReal()
-const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
+// 全局提示（唯一契约见 composables/useNotice.ts；云式形态见 app.vue + components/CloudNotice.vue）
+const showSnackbar = useNotice()
 
 /** 已验证学校名单（登记表仅用于"判分口径是否实测过"的提示） */
 const verifiedSchoolText = computed(() => {
@@ -295,9 +296,9 @@ const doLoadReal = async () => {
   if (ok) {
     // loadRealData() 内部已 applyToRunner()（定选线 + 退出演示 + 触发摄像头杆开关读取），此处不再重复注入
     const t = realTask.value!
-    showSnackbar(`真实数据已就绪：${t.paperName}（${t.runPointList?.length ?? 0} 条线路）`, 'success')
+    showSnackbar(`真实数据已读取：${t.paperName}（${t.runPointList?.length ?? 0} 条线路）`, 'success', { cloud: true })
   } else {
-    showSnackbar(realError.value || '读取失败', 'error')
+    showSnackbar(realError.value || '读取失败', 'error', { cloud: true })
   }
 }
 
@@ -309,8 +310,9 @@ const doLogout = () => {
 
 /** 恢复"上次读取的任务"（刷新后默认不自动恢复，这是显式入口） */
 const doRestoreCached = () => {
-  if (restoreCachedTask()) showSnackbar('已恢复上次读取的任务（含当时选中的线路）', 'success')
-  else showSnackbar('没有可恢复的任务', 'warning')
+  // 从本机缓存恢复任务也属于「读取数据」⇒ 云式提示（1.1.9 需求①）
+  if (restoreCachedTask()) showSnackbar('已恢复上次读取的任务（含当时选中的线路）', 'success', { cloud: true })
+  else showSnackbar('没有可恢复的任务', 'warning', { cloud: true })
 }
 
 /** 一键清空本机数据（会话 + 任务缓存 + 记录） */
@@ -337,6 +339,8 @@ const doTokenScan = async () => {
   tokenScanState.running = true
   tokenScanState.phase = 'scanning'
   tokenScanState.message = '正在启动扫描器…'
+  // 云式顶部提示：这是"读取数据"的入口，用户 2026-09-17 要求用云提示（点一下可关）
+  showSnackbar('正在从微信小程序进程读取登录凭据…', 'info', { cloud: true })
   logInfo('token', '点击「一键获取 token」')
   try {
     const started = await $fetch<{ ok: boolean; nonce?: string; message?: string }>('/api/local/token-scan/start', {
@@ -374,18 +378,20 @@ const doTokenScan = async () => {
               fingerprint: st.fingerprint,
               candidates: st.candidates,
             })
-            showSnackbar(`已获取 token（${st.masked}），正在读取真实数据…`, 'success')
+            showSnackbar(`已获取 token（${st.masked}），正在读取真实数据…`, 'success', { cloud: true })
             await doLoadReal()
           } else if (st.phase === 'error' || st.phase === 'idle') {
             stopScanPolling()
             tokenScanState.running = false
             logWarn('token', `取 token 失败：${st.message ?? ''}`, { phase: st.phase })
+            showSnackbar(st.message || '取 token 失败：请确认电脑版微信已登录小程序后重试', 'error', { cloud: true })
           } else if (Date.now() - startedAt > 70_000) {
             stopScanPolling()
             tokenScanState.phase = 'error'
             tokenScanState.message = '扫描超时：请确认电脑版微信已打开并登录小程序，然后重试'
             tokenScanState.running = false
             logWarn('token', '取 token 超时（70 秒）')
+            showSnackbar(tokenScanState.message, 'error', { cloud: true })
           }
         } catch {
           /* 本地端点偶发失败 → 下一轮继续 */
@@ -397,6 +403,7 @@ const doTokenScan = async () => {
     tokenScanState.message = err instanceof Error ? err.message : '启动扫描失败'
     tokenScanState.running = false
     logError('token', '启动扫描失败', { message: tokenScanState.message })
+    showSnackbar(`取 token 失败：${tokenScanState.message}`, 'error', { cloud: true })
   }
 }
 </script>

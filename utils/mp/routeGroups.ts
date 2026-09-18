@@ -243,18 +243,21 @@ export interface RouteSelectItem {
   props?: { disabled: boolean }
 }
 
-export function toSelectItems(groups: RouteGroupsResult): RouteSelectItem[] {
+export function toSelectItems(groups: RouteGroupsResult, customNameOf?: (lineId: string) => string | undefined): RouteSelectItem[] {
   const items: RouteSelectItem[] = []
   for (const c of groups.clusters) {
     items.push({ title: c.label, props: { disabled: true } })
     for (const r of c.routes) {
       // ⚠️ 线路名缺失时**不要裸显示 ID** —— 用户看到 `sunrunLine-2021...` 会以为是 bug（2026-09-17 反馈）
-    const rawName = String(r.line.pointName ?? '').trim()
-    const name = rawName || `未命名线路（${String(r.line.pointId)}）`
+      const rawName = String(r.line.pointName ?? '').trim()
+      const name = rawName || `未命名线路（${String(r.line.pointId)}）`
+      // 用户在本机路线库改过名 ⇒ 下拉里也用他起的名字（1.1.9 需求②；没改过时行为逐字不变）
+      const custom = customNameOf?.(String(r.line.pointId))?.trim()
+      const shown = custom || name
       const count = r.line.pointList?.length ?? 0
       const len = r.lengthM >= 1000 ? `${(r.lengthM / 1000).toFixed(2)} km` : `${r.lengthM} m`
       const away = r.kind === 'home' ? '' : ` · 跨校区 ${kmText(r.distanceFromHomeM)}`
-      items.push({ title: `　${name}（${count} 点 · ${len}${away}）`, value: String(r.line.pointId) })
+      items.push({ title: `　${shown}（${count} 点 · ${len}${away}）`, value: String(r.line.pointId) })
     }
   }
   return items

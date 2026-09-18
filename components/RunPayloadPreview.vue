@@ -30,7 +30,7 @@ const props = defineProps<{
   run: DemoRunState
 }>()
 
-const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
+const showSnackbar = useNotice()
 
 const pretty = (value: unknown) => JSON.stringify(value, null, 2)
 const detailPreview = computed(() => {

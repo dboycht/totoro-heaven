@@ -8,7 +8,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { groupRoutesByCampus, warnForSelection, ROUTE_CLUSTER_THRESHOLD_M } from '../../utils/mp/routeGroups.ts'
+import { groupRoutesByCampus, warnForSelection, toSelectItems, ROUTE_CLUSTER_THRESHOLD_M } from '../../utils/mp/routeGroups.ts'
 import type { MpRunLine } from '../../src/mp/types.ts'
 
 /** 与探针数据逐字一致的 8 条线路（仅坐标，无 PII） */
@@ -84,4 +84,29 @@ test('选其他校区线路 → 给出跨校区警告；选本校区 → 无警�
 
 test('阈值常量：3000m 能在"几百米级同簇 / 数公里级异簇"之间切开', () => {
   assert.equal(ROUTE_CLUSTER_THRESHOLD_M, 3000)
+})
+
+test('toSelectItems：默认不加自定义名（行为逐字不变），传解析器时用用户起的名字', () => {
+  const g = groupRoutesByCampus(REAL_LINES, '天目湖')
+  // ① 不传解析器 ⇒ 标题里是厂商线路名，且不含自定义名
+  const plain = toSelectItems(g)
+  const plainTitles = plain.filter((i) => i.value).map((i) => i.title)
+  assert.ok(plainTitles.some((t) => t.includes('天目湖-西操场')), plainTitles.join(' | '))
+  assert.ok(!plainTitles.some((t) => t.includes('我的外道')), '不传解析器时不应冒出自定义名')
+
+  // ② 传解析器 ⇒ 命中改过名的那条用自定义名，其余保持厂商名
+  const withCustom = toSelectItems(g, (id) => (id === 'sunrunLine-20210918000001' ? '我的外道' : undefined))
+  const titles = withCustom.filter((i) => i.value).map((i) => i.title)
+  assert.ok(titles.some((t) => t.includes('我的外道')), titles.join(' | '))
+  assert.ok(!titles.some((t) => t.includes('天目湖-西操场')), '改过名的那条不该再显示厂商名')
+  assert.ok(titles.some((t) => t.includes('天目湖-东操场')), '没改名的仍显示厂商名')
+
+  // ③ 解析器返回空白 ⇒ 视同"没改名"，回落厂商名（不能让选项标题变成空白）
+  const blank = toSelectItems(g, () => '   ')
+  assert.ok(
+    blank.filter((i) => i.value).some((t) => t.title.includes('天目湖-西操场')),
+    blank.filter((i) => i.value).map((i) => i.title).join(' | '),
+  )
+  // ④ value（提交用的 lineId）不受改名影响 —— 报文口径零变化
+  assert.deepEqual(withCustom.filter((i) => i.value).map((i) => i.value), plain.filter((i) => i.value).map((i) => i.value))
 })

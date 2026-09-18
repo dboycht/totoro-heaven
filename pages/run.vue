@@ -320,7 +320,7 @@ const {
   cameraFlagError,
   retryCameraFlag,
 } = useMpReal()
-const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
+const showSnackbar = useNotice()
 
 const confirmOpen = ref(false)
 
@@ -352,8 +352,9 @@ const doEnableDemo = () => {
 
 /** 恢复"上次读取的任务"（刷新后默认不自动恢复） */
 const doRestoreCached = () => {
-  if (restoreCachedTask()) showSnackbar('已恢复上次读取的任务（含当时选中的线路）', 'success')
-  else showSnackbar('没有可恢复的任务', 'warning')
+  // 这也是"读取数据"（从本机缓存里恢复任务）⇒ 用云式顶部提示（1.1.9 需求①）
+  if (restoreCachedTask()) showSnackbar('已恢复上次读取的任务（含当时选中的线路）', 'success', { cloud: true })
+  else showSnackbar('没有可恢复的任务', 'warning', { cloud: true })
 }
 
 const statusText = computed(() => ({ idle: '待开始', running: '跑步中', paused: '已暂停', finished: '已结算' })[run.value.status])
@@ -370,10 +371,20 @@ const fitClass = computed(() => {
 
 /** 线路下拉（真实/演示都由当前生效任务提供；按坐标校区分组，本校区优先） */
 const routeGroups = computed(() => groupRoutesByCampus(activeLines.value, realProfile.value?.campusName))
-const lineItems = computed(() => toSelectItems(routeGroups.value))
+/**
+ * 用户在「跑道编辑 → 本地路线库」里改过名 ⇒ 下拉里也显示他起的名字（1.1.9 需求②）。
+ * 没改过名时返回 undefined，`toSelectItems` 的行为**逐字不变**。
+ */
+const customNameOf = (id: string) => libEntries.value.find((e) => String(e.lineId) === String(id))?.customName
+const lineItems = computed(() => toSelectItems(routeGroups.value, customNameOf))
 /** 选了其他校区线路时的提示（未跨校区为空串） */
 const crossCampusWarning = computed(() => warnForSelection(routeGroups.value, run.value.lineId))
-const selectedLineName = computed(() => activeLines.value.find((l) => l.pointId === run.value.lineId)?.pointName ?? '—')
+const selectedLineName = computed(() => {
+  const line = activeLines.value.find((l) => l.pointId === run.value.lineId)
+  if (!line) return '—'
+  // 改过名就显示改名（用户看的是自己起的名字）；否则保持原来的厂商名口径
+  return customNameOf(String(line.pointId))?.trim() || line.pointName || '—'
+})
 /** 当前选中的线路（含官方路线点列）—— 给「轨迹预览」当参考线用 */
 const selectedLine = computed(() => activeLines.value.find((l) => l.pointId === run.value.lineId))
 

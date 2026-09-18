@@ -10,7 +10,7 @@
  * 存储：本机 localStorage，按 lineId 保存（`mp_track_rings_v1`）——运行时数据不入库。
  */
 import { laneLoop, laneRatioFor, ringLengthM, ringWidthM, smoothClosedRing, validateRings, insetClosedRing, distanceToRingM, type TrackRings } from '~/utils/mp/trackEditor'
-import { entrySummaryText } from '~/utils/mp/trackLibrary'
+import { entrySummaryText, resolveEntryName } from '~/utils/mp/trackLibrary'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
 
@@ -25,7 +25,7 @@ const { profile: realProfile, status: realStatus, task: realTask } = useMpReal()
 const { task: demoTask } = useMpDemo()
 const activeTask = computed(() => realTask.value ?? demoTask.value)
 const activeLines = computed(() => activeTask.value?.runPointList ?? [])
-const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
+const showSnackbar = useNotice()
 
 // ---------- 地图（Web Mercator 滑溜地图：瓦片 + SVG 叠加）----------
 const Z_MIN = 13
@@ -360,6 +360,53 @@ const removeEntry = (id: string) => {
   if (String(id) === String(lineId.value)) reset()
   showSnackbar('已从本机路线库删除')
 }
+
+// ---------- 重命名（1.1.9 需求②：给已保存的跑道改名）----------
+// 只改**本机显示名**（`customName`），不动厂商线路名、不动几何、不动创建日期；
+// 提交用的仍是厂商 `lineId`（报文口径零变化）。
+const renameOpen = ref(false)
+const renameId = ref('')
+const renameText = ref('')
+/** 正在改名的那一条（弹窗里显示官方原名用；找不到就是 undefined） */
+const renameEntry = computed(() => lib.get(renameId.value))
+/** 输入框实时长度（给用户看得见的计数） */
+const renameLen = computed(() => Array.from(renameText.value ?? '').length)
+const openRename = (id: string) => {
+  const e = lib.get(String(id))
+  renameId.value = String(id)
+  renameText.value = e?.customName ?? ''
+  renameOpen.value = true
+}
+const confirmRename = () => {
+  const updated = lib.rename(String(renameId.value), renameText.value)
+  renameOpen.value = false
+  if (!updated) {
+    showSnackbar('这条路线已经不在本机路线库里了', 'warning')
+    return
+  }
+  showSnackbar(
+    updated.customName ? `已改名为「${resolveEntryName(updated)}」` : '已恢复显示官方线路名',
+    'success',
+  )
+}
+/** 一键恢复官方名（清空自定义名） */
+const clearCustomName = () => {
+  renameText.value = ''
+  showSnackbar('已清空输入框，点「保存名字」即恢复官方名', 'info')
+}
+/** 列表/标题统一用"自定义名优先"的显示名（纯函数，唯一入口） */
+const nameOf = (e: { lineId: string; lineName: string; customName?: string }) => resolveEntryName(e)
+/** 线路下拉的选项标题：库里有记录就用"你起的名字"，否则用厂商线路名（缺名时明确写"未命名"） */
+const lineOptions = computed(() =>
+  lines.value.map((l) => {
+    const e = lib.get(String(l.pointId))
+    const vendor = String(l.pointName ?? '').trim()
+    return {
+      title: e ? nameOf(e) : vendor || `未命名线路（${l.pointId}）`,
+      value: String(l.pointId),
+    }
+  }),
+)
 </script>
 
 <template>
@@ -441,7 +488,7 @@ const removeEntry = (id: string) => {
           <v-card-text>
             <v-select
               v-model="lineId"
-              :items="lines.map((l) => ({ title: String(l.pointName ?? '').trim() || `未命名线路（${l.pointId}）`, value: String(l.pointId) }))"
+              :items="lineOptions"
               label="要编辑哪条线路"
               density="compact"
               hide-details
@@ -547,20 +594,54 @@ const removeEntry = (id: string) => {
             <v-list v-else density="compact" class="pa-0">
               <v-list-item v-for="e in libEntries" :key="e.lineId" class="px-0">
                 <v-list-item-title class="text-body-2">
-                  {{ e.lineName }}
+                  {{ nameOf(e) }}
                   <v-chip v-if="String(e.lineId) === String(lineId)" size="x-small" color="primary" variant="tonal" class="ml-1">
                     正在编辑
                   </v-chip>
+                  <v-chip v-if="e.customName" size="x-small" color="info" variant="tonal" class="ml-1">已改名</v-chip>
                 </v-list-item-title>
                 <v-list-item-subtitle class="text-caption">{{ entrySummaryText(e) }}</v-list-item-subtitle>
                 <template #append>
                   <v-btn size="x-small" variant="text" @click="loadEntry(e.lineId)">载入</v-btn>
+                  <v-btn size="x-small" variant="text" color="primary" @click="openRename(e.lineId)">重命名</v-btn>
                   <v-btn size="x-small" variant="text" color="error" @click="removeEntry(e.lineId)">删除</v-btn>
                 </template>
               </v-list-item>
             </v-list>
           </v-card-text>
         </v-card>
+
+        <!-- 重命名弹窗（1.1.9 需求②）：只改本机显示名，不动厂商线路名 -->
+        <v-dialog v-model="renameOpen" max-width="460">
+          <v-card>
+            <v-card-title class="text-subtitle-1">给这条路线改个名字</v-card-title>
+            <v-card-text>
+              <v-text-field
+                v-model="renameText"
+                label="新名字（留空＝恢复官方名）"
+                density="compact"
+                autofocus
+                clearable
+                :counter="24"
+                maxlength="24"
+                hide-details="auto"
+                class="mb-2"
+                @keyup.enter="confirmRename"
+              />
+              <div class="text-caption text-medium-emphasis">
+                当前输入 {{ renameLen }} / 24 字。改的是<b>本机显示名</b>，只影响这台电脑上的列表；
+                厂商线路名与提交用的线路 id 都不变。
+                <template v-if="renameEntry">官方名：<b>{{ renameEntry.lineName }}</b></template>
+              </div>
+            </v-card-text>
+            <v-card-actions>
+              <v-btn variant="text" size="small" @click="clearCustomName">清空输入</v-btn>
+              <v-spacer />
+              <v-btn variant="text" size="small" @click="renameOpen = false">取消</v-btn>
+              <v-btn color="primary" size="small" variant="flat" @click="confirmRename">保存名字</v-btn>
+            </v-card-actions>
+          </v-card>
+        </v-dialog>
       </v-col>
     </v-row>
   </v-container>

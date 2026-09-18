@@ -135,7 +135,7 @@ import { useEventLog } from '~/composables/useEventLog'
 import type { LogEntry, LogLevel } from '~/utils/mp/logFormat'
 
 const logs = useEventLog()
-const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
+const showSnackbar = useNotice()
 
 const levelFilter = ref<'all' | LogLevel>('all')
 const catFilter = ref('all')

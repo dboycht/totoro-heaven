@@ -46,6 +46,10 @@ const NEEDED = [
   // ⚠️ 2026-09-17 D 轮（分层规则）：检查器现在还要读代理与契约层常量 ——
   //    L7 断言"前缀单一来源"（代理不得自己声明 KNOWN_PREFIXES、constants 必须有 MP_PATH_PREFIXES）。
   'server/api/mp/[...slug].ts',
+  // ⚠️ 2026-09-18（1.1.9）：R10 断言"全局提示必须走 useNotice() 单一契约"——
+  //    检查器要读 app.vue（必须 provide NOTICE_KEY）与 composables/useNotice.ts（键的唯一来源）。
+  'app.vue',
+  'composables/useNotice.ts',
 ]
 
 /**
@@ -227,6 +231,22 @@ try {
     if (code === 0) failures.push('夜间限制被套回「开始跑步」但检查器仍然通过（适用面守卫失效）')
     else if (!out.includes('只停真实提交')) failures.push(`报错信息不是预期的：\n${out}`)
   }
+
+  // ---------- 注入 11：提示函数退回"各自内联声明"的字符串注入键（1.1.9 的 useNotice 契约）----------
+  {
+    const dir = copyBase()
+    const file = join(dir, 'pages/records.vue')
+    const text = readFileSync(file, 'utf8')
+    const injected = text.replace(
+      'const showSnackbar = useNotice()',
+      "const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})",
+    )
+    if (injected === text) failures.push('注入 11：pages/records.vue 里找不到 `const showSnackbar = useNotice()`（自测需同步更新）')
+    writeFileSync(file, injected, 'utf8')
+    const { code, out } = run(dir)
+    if (code === 0) failures.push("页面退回 `inject('showSnackbar')` 但检查器仍然通过（单一契约守卫失效）")
+    else if (!out.includes('useNotice')) failures.push(`报错信息不是预期的：\n${out}`)
+  }
 } finally {
   rmSync(sandbox, { recursive: true, force: true })
 }
@@ -238,7 +258,7 @@ if (failures.length) {
   process.exit(1)
 }
 console.log(
-  '✅ 自测通过：基线通过、10 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
-    '代理重复声明前缀 / 模板裸取可空状态 / 空 catch / 夜间限制套回「开始跑步」）都被抓到且退出码非 0，' +
+  '✅ 自测通过：基线通过、11 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
+    '代理重复声明前缀 / 模板裸取可空状态 / 空 catch / 夜间限制套回「开始跑步」/ 提示退回字符串注入键）都被抓到且退出码非 0，' +
     '且"写了 v-if 守卫"的反向用例不会被误报。',
 )

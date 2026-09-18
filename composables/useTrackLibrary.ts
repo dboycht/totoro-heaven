@@ -5,6 +5,7 @@
  *   const lib = useTrackLibrary()
  *   lib.load()                       // 读本机（含旧格式迁移）
  *   lib.upsert({lineId, lineName, outer, inner})   // 新建/覆盖（保留原创建日期）
+ *   lib.rename(lineId, '西操场外道')  // 改本机显示名（空串 = 恢复厂商原名）
  *   lib.get(lineId)                  // 取一条
  *   lib.entries.value                // 列表（最新在前）
  */
@@ -13,6 +14,7 @@ import {
   TRACK_LIBRARY_KEY,
   TRACK_LIBRARY_KEY_LEGACY,
   normalizeLibrary,
+  sanitizeLineName,
   type TrackRouteEntry,
 } from '~/utils/mp/trackLibrary'
 
@@ -65,6 +67,8 @@ export function useTrackLibrary() {
     const entry: TrackRouteEntry = {
       lineId: input.lineId,
       lineName: input.lineName,
+      // ⚠️ 重新保存几何时**不能把用户起的名字冲掉**（用户重命名后回去微调一圈，名字得留着）
+      customName: old?.customName,
       outer: input.outer,
       inner: input.inner,
       createdAt: old?.createdAt || new Date().toISOString(),
@@ -83,8 +87,24 @@ export function useTrackLibrary() {
     persist()
   }
 
+  /**
+   * **重命名**（2026-09-18，1.1.9 需求②）：只改本机显示名，不动几何、不动厂商线路名、不动创建日期。
+   * · 名字归一化走纯函数 `sanitizeLineName`（折空白/去控制字符/限长），**与界面输入无关地保证干净**；
+   * · 传空串/空白 ⇒ 清掉自定义名，显示回厂商原名快照；
+   * · 找不到这条 ⇒ 返回 `undefined`，**不静默新建**（否则会凭空多出一条空路线）。
+   */
+  const rename = (lineId: string, nextName: string) => {
+    const target = entries.value.find((e) => String(e.lineId) === String(lineId))
+    if (!target) return undefined
+    const clean = sanitizeLineName(nextName)
+    const updated: TrackRouteEntry = { ...target, customName: clean ? clean : undefined }
+    entries.value = entries.value.map((e) => (String(e.lineId) === String(lineId) ? updated : e))
+    persist()
+    return updated
+  }
+
   const get = (lineId: string | undefined | null) =>
     lineId ? entries.value.find((e) => String(e.lineId) === String(lineId)) : undefined
 
-  return { entries, load, persist, upsert, remove, get, appVersion }
+  return { entries, load, persist, upsert, remove, rename, get, appVersion }
 }

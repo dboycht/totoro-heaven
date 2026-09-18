@@ -107,7 +107,7 @@
 
 <script setup lang="ts">
 const { records, stats, term, resetRecords } = useMpDemo()
-const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})
+const showSnackbar = useNotice()
 
 const statusText = (value: number | string) =>
   ({ 0: '无效', 1: '有效', 2: '申诉有效', 3: '补录有效' })[Number(value)] ?? '- -'

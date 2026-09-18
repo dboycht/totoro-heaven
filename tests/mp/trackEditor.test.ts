@@ -18,7 +18,7 @@ import {
   distanceToRingM,
   type TrackRings,
 } from '../../utils/mp/trackEditor.ts'
-import { normalizeLibrary, entrySummaryText } from '../../utils/mp/trackLibrary.ts'
+import { normalizeLibrary, entrySummaryText, sanitizeLineName, resolveEntryName, TRACK_NAME_MAX } from '../../utils/mp/trackLibrary.ts'
 
 const CENTER = { latitude: 31.37, longitude: 119.48 }
 const mLat = 111320
@@ -206,4 +206,70 @@ test('entrySummaryText：列表摘要必须带点位数、所选道次、创建�
 
   const bare = entrySummaryText({ lineId: 'x', lineName: 'x', outer: [], inner: [], createdAt: '', appVersion: '' })
   assert.ok(bare.includes('创建日期未知') && bare.includes('版本未知') && bare.includes('道次未记录'), bare)
+})
+
+test('sanitizeLineName：折空白 / 去控制字符 / 按码点限长，空结果含义是"恢复原名"', () => {
+  assert.equal(sanitizeLineName('  西 操场 '), '西 操场')
+  // 连续空格折成一个（判据：`西  操场` → `西 操场`）
+  assert.equal(sanitizeLineName('西  操场'), '西 操场')
+  // ⚠️ 制表/换行属于控制字符 ⇒ 被**删除**（不是换成空格）：`西\t操\n场` → `西操场`
+  assert.equal(sanitizeLineName('西\t操\n场'), '西操场')
+  // 控制字符与零宽字符被删掉（粘贴来的名字常带这些，肉眼看不出）
+  assert.equal(sanitizeLineName('西\u200b操场\u0007'), '西操场')
+  assert.equal(sanitizeLineName('西\ufeff操场'), '西操场')
+  // 空/非字符串 → ''（调用方据此"恢复厂商原名"，不能把它当成合法名字）
+  assert.equal(sanitizeLineName('   '), '')
+  assert.equal(sanitizeLineName(''), '')
+  assert.equal(sanitizeLineName(undefined), '')
+  assert.equal(sanitizeLineName(123), '')
+  // 限长：中文按码点截断
+  assert.equal(Array.from(sanitizeLineName('跑'.repeat(80))).length, TRACK_NAME_MAX)
+  // emoji 是代理对，不能被截成半个（否则界面出现乱码方块）
+  const emoji = sanitizeLineName('🏃'.repeat(40))
+  assert.equal(Array.from(emoji).length, TRACK_NAME_MAX)
+  assert.ok(!emoji.includes('\ufffd'), emoji)
+  assert.equal(emoji, '🏃'.repeat(TRACK_NAME_MAX))
+})
+
+test('resolveEntryName：自定义名优先 → 厂商名 → lineId，**绝不返回空串**', () => {
+  assert.equal(resolveEntryName({ lineId: 'L1', lineName: '西操场', customName: '我的外道' }), '我的外道')
+  assert.equal(resolveEntryName({ lineId: 'L1', lineName: '西操场' }), '西操场')
+  // 自定义名是空白 ⇒ 不算"改过名"，回落厂商名
+  assert.equal(resolveEntryName({ lineId: 'L1', lineName: '西操场', customName: '   ' }), '西操场')
+  // 厂商名也空 ⇒ 回落 lineId（列表里不能出现空行）
+  assert.equal(resolveEntryName({ lineId: 'sunrunLine-2021', lineName: '  ', customName: '' }), 'sunrunLine-2021')
+  assert.equal(resolveEntryName({ lineId: 'L9', lineName: '' }), 'L9')
+})
+
+test('normalizeLibrary：customName 被归一化保存；空白自定义名归一成 undefined', () => {
+  const base = { outer: circle(100, 8), inner: circle(90, 8), createdAt: '', appVersion: '1.1.9' }
+  const [renamed] = normalizeLibrary([{ ...base, lineId: 'L1', lineName: '官方名', customName: ' 我 的跑道 ' }])
+  assert.equal(renamed!.customName, '我 的跑道')
+  assert.equal(resolveEntryName(renamed!), '我 的跑道')
+
+  const [blank] = normalizeLibrary([{ ...base, lineId: 'L2', lineName: '官方名', customName: '   ' }])
+  assert.equal(blank!.customName, undefined)
+  assert.equal(resolveEntryName(blank!), '官方名')
+
+  // 旧数据完全没有这个字段 ⇒ 不凭空造出来（保持 undefined）
+  const [legacyShape] = normalizeLibrary([{ ...base, lineId: 'L3', lineName: '官方名' }])
+  assert.equal('customName' in legacyShape!, false)
+})
+
+test('entrySummaryText：改过名时摘要要标出**官方原名**（避免"改完就不知道对应哪条线路"）', () => {
+  const entry = {
+    lineId: 'L1',
+    lineName: '西操场',
+    customName: '我的外道',
+    outer: circle(100, 12),
+    inner: circle(90, 10),
+    createdAt: '2026-09-17T21:00:00.000Z',
+    appVersion: '1.1.9',
+    laneNo: 3,
+    laneCount: 6,
+  }
+  const text = entrySummaryText(entry)
+  assert.ok(text.includes('官方名：西操场'), text)
+  // 没改过名就不该出现这个标注（否则每条都挂一句废话）
+  assert.ok(!entrySummaryText({ ...entry, customName: undefined }).includes('官方名'), '未改名不应标注官方名')
 })
