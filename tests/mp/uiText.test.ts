@@ -27,10 +27,20 @@ import { fileURLToPath } from 'node:url'
  * 测试跑在 Node 的**原生 TS 剥离**下（`node --test tests/mp/*.test.ts`），而 `import.meta.dirname`
  * 在该模式下不被支持（实测报 `SyntaxError: Expected ';', '}' or <eof>`）。项目其它测试同此写法。
  *
- * 📌 路径说明：本文件在测试运行器里会被拷到 `<项目>/.mp-test-build/tests/mp/`，所以
- *    "上三级" = 项目根（**开发副本**）。因此这里必须用**开发副本**的 .vue 源码（canonical 里没有 docs 也不算源码差异）。
+ * 📌 **项目根要"向上找"**：本文件在测试运行器里会被拷到 `<项目>/.mp-test-build/tests/mp/`，
+ *    此时"上三级"是 `.mp-test-build/`（不是项目根）⇒ 必须靠**特征目录**（`pages/`）
+ *    逐级向上定位真正的项目根。直接写死层级会在两种运行方式下各错一次（实测踩到）。
  */
-const ROOT = join(fileURLToPath(import.meta.url), '..', '..', '..')
+const findProjectRoot = (): string => {
+  let dir = join(fileURLToPath(import.meta.url), '..')
+  for (let i = 0; i < 6; i++) {
+    const parent = join(dir, '..')
+    if (existsSync(join(parent, 'pages')) && existsSync(join(parent, 'package.json'))) return parent
+    dir = parent
+  }
+  throw new Error('找不到项目根（pages/package.json 特征目录）—— 测试路径假设失效，请更新本测试')
+}
+const ROOT = findProjectRoot()
 
 /** 收集要检查的 .vue（页面 + 组件 + 布局） */
 const vueFiles = (): { rel: string; abs: string }[] => {
@@ -91,4 +101,54 @@ test('守卫本身的自测（反向用例）：乘方 `2 ** z` 与注释里的 
   // ③ 真违规：模板插值里的成对星号**必须**命中
   const realBad = '<div>—— ⚠️ 这个数是**到官方路线**的距离</div>'
   assert.equal([...realBad.matchAll(MARKDOWN_BOLD_CN)].length, 1)
+})
+
+/**
+ * 重复按钮守卫（2026-09-18 新增）
+ *
+ * 起因：`pages/track-editor.vue` 里出现了**两个「保存（本机）」按钮**（用户截图发现）——
+ * 我插"重命名弹窗"时多留了一个，而且多出来的那个**没有"内外圈不合法就禁用"的保护** ⇒
+ * 用户可能把不合法的圈存进路线库。这类"复制粘贴多留一份"的错，文本断言与类型检查都抓不到。
+ *
+ * 判据（可执行）：模板里**同一个按钮文案**不得出现两次（`v-btn`/`v-list-item` 的文本节点），
+ * 例外用 `ALLOW_DUPLICATE_LABELS` 显式登记并写明原因（**不允许**默默放过）。
+ */
+const ALLOW_DUPLICATE_LABELS = new Map<string, string>([
+  [
+    'components/UpdateNotice.vue：立即检测',
+    '该组件在"有新版本 / 连不上 GitHub / 正常"三个**互斥分支**里各有一个「立即检测」按钮，' +
+      '同一时刻只渲染一个（`v-if` / `v-else-if` / `v-else`），不是视觉重复 —— 2026-09-18 核实过源码',
+  ],
+])
+
+test('模板守卫：同一个按钮文案不得出现两次（防"复制粘贴多留一份"）', () => {
+  const bad: string[] = []
+  for (const { rel, abs } of vueFiles()) {
+    const tpl = stripHtmlComments(templateOf(readFileSync(abs, 'utf8')))
+    // 抓 v-btn / v-list-item 的**直接文本子节点**（形如 `>保存（本机）</v-btn>`）
+    const labels = new Map<string, number>()
+    for (const m of tpl.matchAll(/>\s*([^<>{}\n]{2,24}?)\s*<\/v-(?:btn|list-item)>/g)) {
+      const label = m[1]!.trim()
+      if (!label) continue
+      labels.set(label, (labels.get(label) ?? 0) + 1)
+    }
+    for (const [label, n] of labels) {
+      if (n <= 1) continue
+      if (ALLOW_DUPLICATE_LABELS.has(`${rel}：${label}`)) continue
+      bad.push(`${rel}：「${label}」出现 ${n} 次`)
+    }
+  }
+  assert.deepEqual(bad, [], `发现重复按钮（多半是复制粘贴多留了一份）：\n  - ${bad.join('\n  - ')}`)
+})
+
+test('跑道编辑页：「保存（本机）」必须带"内外圈不合法则禁用"的保护', () => {
+  const tpl = stripHtmlComments(templateOf(readFileSync(join(ROOT, 'pages', 'track-editor.vue'), 'utf8')))
+  // 取"文案含保存（本机）的那个 v-btn 开标签"，要求它的属性里带 ringCheck 的 disabled 保护
+  const btnTags = [...tpl.matchAll(/<v-btn\b[^>]*>/g)].map((m) => m[0])
+  const saveTags = btnTags.filter((t) => /保存（本机）/.test(t) || /保存\(本机\)/.test(t))
+  // 文案在 v-btn 的子节点里时，开标签本身不含文案 ⇒ 用"开标签 + 紧随其后的文案"整体判断
+  const withLabel = [...tpl.matchAll(/<v-btn\b([^>]*)>\s*保存（本机）\s*<\/v-btn>/g)].map((m) => m[1] ?? '')
+  assert.ok(withLabel.length >= 1, `找不到带文案的「保存（本机）」按钮（候选 ${saveTags.length} 个）`)
+  assert.equal(withLabel.length, 1, `「保存（本机）」应只有 1 个，实际 ${withLabel.length} 个`)
+  assert.match(withLabel[0]!, /:disabled="[^"]*ringCheck/, '「保存（本机）」必须按 ringCheck 禁用（否则能存进不合法的内外圈）')
 })

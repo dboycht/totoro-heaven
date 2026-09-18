@@ -559,7 +559,6 @@ const lineOptions = computed(() =>
             </v-btn>
             <v-btn block size="small" variant="tonal" color="error" class="mb-2" prepend-icon="mdi-delete-outline" @click="clearRing">清空这一圈</v-btn>
             <v-btn block size="small" variant="text" color="error" class="mb-2" prepend-icon="mdi-restore" @click="reset">把这条线路的内外圈都清空</v-btn>
-            <v-btn block size="small" color="primary" prepend-icon="mdi-content-save-outline" @click="save">保存（本机）</v-btn>
           </v-card-text>
         </v-card>
 
