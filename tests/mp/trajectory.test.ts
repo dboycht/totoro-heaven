@@ -410,3 +410,65 @@ test('★ generateCorridorRoute：lapDrift=false 时回到"多圈重合"的旧�
   assert.equal(g.lapDriftM[0], 0)
 })
 
+test('★ generateCorridorRoute：**未闭合路线（折返跑）**折返点两侧不许有横向阶跃（审计 F1 回归）', () => {
+  /**
+   * 一条 300 m 的**直线**（首末点相距 300 m ≫ 30 m ⇒ `closed=false`）：
+   * `locate()` 会用折返（ping-pong）走 0→L→0→L…
+   * 真实跑的一个"来回"才算一圈 ⇒ 漂移的圈号必须是 `floor(p / (2L))`。
+   * 修之前用的是 `floor(p / L)`，于是折返点两侧漂移编号不同、符号相反 ⇒ 单步横向阶跃 ≈ 2×车道偏移。
+   */
+  const lat0 = 32.0
+  const lng0 = 118.0
+  const dLat = 300 / 111320
+  const straight = [
+    { latitude: lat0, longitude: lng0 },
+    { latitude: lat0 + dLat, longitude: lng0 },
+  ]
+  const g = generateCorridorRoute(straight, { targetKm: 3.2, stepM: 3, seed: 20260914, drift: true, smoothRoute: 0 })
+  const pts = g.points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
+
+  // 逐点步长（米）：正常应 ≈ stepM(3) + 抖动；出现折返/阶跃时会明显更大
+  const steps: number[] = []
+  for (let i = 1; i < pts.length; i++) {
+    steps.push(distanceMeters(pts[i - 1]!.latitude, pts[i - 1]!.longitude, pts[i]!.latitude, pts[i]!.longitude))
+  }
+  const maxStep = Math.max(...steps)
+  // 判据：最大单步 ≤ 3× 步长（9 m）。修之前折返点单步达 6+ m **且方向左右翻转**；
+  // 这里同时卡住"阶跃"与"点间距异常"两类问题（飞点守卫本身就是 ≤12 m/s 量级）。
+  assert.ok(maxStep <= 9, `折返点出现阶跃：最大单步 ${maxStep.toFixed(2)} m（步长 3 m）`)
+
+  // 更强的判据：折返点附近**横向（经度）方向**不应出现符号翻转的横向偏移跳变
+  const lateral = pts.map((p) => (p.longitude - lng0) * 111320 * Math.cos((lat0 * Math.PI) / 180))
+  const wrapIndex = steps.indexOf(Math.max(...steps)) // 折返发生处（步长最大点）
+  const near = lateral.slice(Math.max(0, wrapIndex - 2), Math.min(lateral.length, wrapIndex + 3))
+  const nearSpread = Math.max(...near) - Math.min(...near)
+  assert.ok(nearSpread <= 3.5, `折返点附近横向偏移跨度 ${nearSpread.toFixed(2)} m 过大（漂移把折返当成两圈了）`)
+
+  // lapLengthM 必须是"往返全长"（2×300 m），否则预览切圈也会错
+  assert.ok(Math.abs(g.lapLengthM - 600) < 5, `未闭合路线的 lapLengthM 应为往返全长 600 m，实际 ${g.lapLengthM}`)
+})
+
+test('★ generateCorridorRoute：路线太短且 loop=false 时必须**显式报错**，不许静默给短轨迹（审计 F3）', () => {
+  const lat0 = 32.0
+  const lng0 = 118.0
+  /**
+   * `loop: false` 的语义 = **只走一遍**。若一遍走完还不够目标里程，就没有合法轨迹可给：
+   *   · 修之前的行为：`locate()` 把位置**夹在终点**，轨迹于是"在原地抖动"直到凑够里程
+   *     （物理上不可能，且调用方会把 `generated.km` 当真实里程 ⇒ 可能给出"没跑够却判通过"的错结果）；
+   *   · 现在的行为：**显式抛错**，让调用方知道路线不够长。
+   * 真实调用方（`composables/demo/runner.ts`）都用默认 `loop: true`，所以这只影响显式传参的用法。
+   */
+  const openShort = [
+    { latitude: lat0, longitude: lng0 },
+    { latitude: lat0 + 50 / 111320, longitude: lng0 },
+  ]
+  assert.throws(
+    () => generateCorridorRoute(openShort, { targetKm: 3.2, stepM: 3, seed: 1, loop: false }),
+    /路线太短/,
+    'loop=false 且一遍走完不足目标里程时应显式报错',
+  )
+  // 同一路线用默认 loop=true 时正常（折返跑），不报错
+  const folded = generateCorridorRoute(openShort, { targetKm: 0.3, stepM: 3, seed: 1 })
+  assert.ok(Number(folded.km) > 0.2, `折返跑应正常出轨迹，实际 km=${folded.km}`)
+})
+

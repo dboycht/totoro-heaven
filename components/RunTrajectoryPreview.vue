@@ -37,6 +37,8 @@ const props = defineProps<{
   lineId?: string
   /** 本次轨迹的"一圈多长"（米）：据此按圈拆段着色；0/缺省 = 整条一色 */
   lapLengthM?: number
+  /** 逐圈漂移量（米，来自生成器 `lapDriftM`）：图例里显示"第 N 圈偏了多少" */
+  lapDriftM?: number[]
 }>()
 
 const W = 560
@@ -86,6 +88,16 @@ const track = computed(() => {
   const lanePts = finite(laneLoop(rings, laneRatioFor(laneNo, laneCount), 240).map(toP))
   return { outer, inner, lane: lanePts.length >= 3 ? lanePts : [], laneNo, laneCount }
 })
+
+/** 单点相对路线的最大允许偏离（米）—— 仅供文案提示，不上报 */
+
+/** 第 n 圈（0 基）的漂移量（米）：来自生成器的 `lapDriftM`；缺失时返回 null（文案不显示） */
+const lapDriftOf = (lap0: number): number | null => {
+  const arr = props.lapDriftM
+  if (!Array.isArray(arr) || lap0 < 0 || lap0 >= arr.length) return null
+  const v = Number(arr[lap0])
+  return Number.isFinite(v) ? v : null
+}
 
 /** 轨迹按"圈"拆段（多圈同色会糊成一条粗带；拆开后每圈一色，重叠也能看出分层） */
 const lapSegments = computed<{ lap: number; pts: P[] }[]>(() => {
@@ -165,6 +177,18 @@ const view = computed(() => {
   }
   const devs = rt.length >= 2 ? pts.map(distToRoute).sort((a, b) => a - b) : []
 
+  /**
+   * ⚠️ **绘图比例失衡**（2026-09-18 加；判据与提示文案必须同源 —— 审计 F4）：
+   * 若"描的圈"或"官方路线"与本次轨迹相距极远，整图会被撑到几十公里尺度 ⇒ 图上看什么都只有一个小点。
+   * 这是**用户可修的数据问题**（描错了圈），所以要明确提示，而不是给一张看不懂的图。
+   * 阈值取 3000 m：远超 25 m 的拟合度容差，也与"校区聚类阈值"同量级。
+   * 只算一次、两处共用（避免出现"相距约 0.0 km"这种自相矛盾提示）。
+   */
+  const gapM = Math.max(
+    tr?.outer?.[0] ? distBetween(pts[0]!, tr.outer[0]) : 0,
+    rt[0] ? distBetween(pts[0]!, rt[0]) : 0,
+  )
+
   return {
     w: W,
     h: H,
@@ -183,15 +207,8 @@ const view = computed(() => {
     lapCount: segs.length,
     maxDev: devs.length ? devs[devs.length - 1]! : null,
     p95: devs.length ? devs[Math.floor(devs.length * 0.95)]! : null,
-    /**
-     * ⚠️ **绘图比例失衡**（2026-09-18 加）：若"描的圈"与"本次轨迹/官方路线"相距极远
-     * （例如描的是另一个校区的圈），整图会被撑到几十公里尺度 ⇒ 图上看什么都只有一个小点。
-     * 这是**用户可修的数据问题**（描错了圈），所以要明确提示，而不是给一张看不懂的图。
-     * 阈值取 3000 m：远超 25 m 的拟合度容差，也与"校区聚类阈值"同量级。
-     */
-    scaleBroken: distBetween(pts[0]!, tr?.outer?.[0] ?? pts[0]!) > 3000 || distBetween(pts[0]!, rt[0] ?? pts[0]!) > 3000,
-    /** 轨迹起点到"描的圈"的距离（米），用于提示文案 */
-    gapM: tr?.outer?.[0] ? distBetween(pts[0]!, tr.outer[0]) : 0,
+    gapM,
+    scaleBroken: gapM > 3000,
   }
 })
 
@@ -241,10 +258,15 @@ const focus = computed(() => {
   const inWindow = (p: P) => p.latitude >= minLat && p.latitude <= minLat + spanLat && p.longitude >= minLng && p.longitude <= minLng + spanLng
   const x = (p: P) => (p.longitude - minLng) * scale
   const y = (p: P) => h - (p.latitude - minLat) * scale
-  const d = (list: P[], close = false) => {
+  /**
+   * ⚠️ 放大面板里**不要用 `close=true`**（审计 F2，2026-09-18）：
+   * `win()` 只留下窗口内的点，若再 `Z` 强闭合，就会把"窗口内首末两点"直接连起来 ——
+   * 每层都会多出一条横贯画布的假连线（实测约 410 px），正好盖住这张图唯一要看的东西
+   * （各圈 1~3 m 的分离）。窗口内的本来就是**弧段**，不闭合才对。
+   */
+  const d = (list: P[], _close = false) => {
     if (!list.length) return ''
-    const path = list.map((p, i) => `${i ? 'L' : 'M'}${x(p).toFixed(1)},${y(p).toFixed(1)}`).join(' ')
-    return close && list.length > 2 ? `${path} Z` : path
+    return list.map((p, i) => `${i ? 'L' : 'M'}${x(p).toFixed(1)},${y(p).toFixed(1)}`).join(' ')
   }
   const win = (list: P[]) => list.filter(inWindow)
 
@@ -255,9 +277,10 @@ const focus = computed(() => {
     pxPerM: scale / mLng,
     spreadM,
     lapCount: segs.length,
-    outerPath: tr ? d(win(tr.outer), true) : '',
-    innerPath: tr ? d(win(tr.inner), true) : '',
-    lanePath: tr && tr.lane.length >= 3 ? d(win(tr.lane), true) : '',
+    lapDrifts: segs.map((s) => lapDriftOf(s.lap)),
+    outerPath: tr ? d(win(tr.outer)) : '',
+    innerPath: tr ? d(win(tr.inner)) : '',
+    lanePath: tr && tr.lane.length >= 3 ? d(win(tr.lane)) : '',
     routePath: (props.route ?? []).length > 1 ? d(win(finite((props.route ?? []).map(toP)))) : '',
     lapPaths: segs.map((s) => ({
       lap: s.lap + 1,
@@ -353,14 +376,16 @@ const focus = computed(() => {
             —— 越小越"在跑道上"
           </template>
         </div>
-        <!-- 按圈图例：直接回答"是不是真的一圈" -->
+        <!-- 按圈图例：直接回答"是不是真的一圈"；有逐圈漂移量时一并显示（例：第 3 圈 +0.7 m） -->
         <div class="d-flex flex-wrap align-center ga-2 mt-2">
           <span class="text-caption text-medium-emphasis">
             共 <b>{{ view.lapCount }}</b> 圈，每圈一色（{{ view.n }} 点）：
           </span>
           <span v-for="p in lapPaths" :key="`lg-${p.lap}`" class="d-inline-flex align-center text-caption">
             <span :style="{ display: 'inline-block', width: '14px', height: '3px', background: p.color, marginRight: '4px' }" />
-            {{ p.label }}
+            {{ p.label }}<template v-if="lapDriftOf(p.lap - 1) !== null">
+              （相对模板 {{ lapDriftOf(p.lap - 1)! >= 0 ? '+' : '' }}{{ lapDriftOf(p.lap - 1)!.toFixed(1) }} m）</template
+            >
           </span>
         </div>
         <v-alert

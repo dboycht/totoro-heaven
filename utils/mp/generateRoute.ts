@@ -66,7 +66,7 @@ export interface CorridorOptions {
    *   · 幅度受 `lapDriftRatio` × `maxOffRouteM` 与 `lapDriftMaxM` 双重限制 ⇒ 始终在跑道宽度内。
    */
   lapDrift?: boolean
-  /** 每圈漂移的标准差 = `lapDriftRatio`（米，默认 1.5——按"1 m ≈ 预览图 1.67 px"标定，见上） */
+  /** 每圈漂移的标准差（米，默认 1.5——按"1 m ≈ 预览图 1.67 px"标定，见下） */
   lapDriftRatio?: number
   /** 每圈漂移的**硬上限**（米，默认 2.2）—— 防极端取样把某圈顶到跑道边 */
   lapDriftMaxM?: number
@@ -261,6 +261,33 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
   if (!(pathTotal > 0)) throw new Error('官方路线长度为 0（点列退化）')
 
   /**
+   * **"一圈"的弧长**（= 预览切圈与漂移编号共用的基准）：
+   *   · 闭合路线：一圈 = 走完整条路径 = `pathTotal`；
+   *   · **未闭合路线**：`locate()` 是**折返（ping-pong）**——一趟去+一趟回才等于真人跑的一个来回 = **2×pathTotal**。
+   * ⚠️ 2026-09-18 修（审计 F1）：此前漂移圈号用 `Math.floor(p / pathTotal)`，
+   *    未闭合路线下**一次往返会被当成两圈**，折返点两侧漂移符号相反 ⇒ 单步横向阶跃 ≈ 2×车道偏移
+   *    （实测 300 m 直线：p=297 → +3.08 m，p=300 → 0，p=303 → −3.08 m，即 6.16 m 的飞线）。
+   */
+  const lapLengthM = closed ? pathTotal : pathTotal * 2
+
+  /**
+   * **`loop: false` 的前置语义检查**（审计 F3，2026-09-18）：
+   * `loop: false` = 只走一遍。若**一遍的全长 < 目标里程**，就不存在合法轨迹：
+   *   · 修之前的行为：`locate()` 把位置**夹在终点**，轨迹"在原地抖动"直到里程凑够
+   *     （`acc` 是**真实折线长度**，端点原地抖动也会累加 ⇒ 事后检查拦不住，实测 50 m 路线能"跑出" 3.2 km）；
+   *   · 现在的行为：**显式抛错**，让调用方知道路线不够长。
+   * 真实调用方（`composables/demo/runner.ts`）都用默认 `loop: true`，所以只影响显式传参的用法。
+   */
+  if (!loop && lapLengthM < targetM * 0.999) {
+    throw new Error(
+      `路线太短：loop=false 时最多只能走 ${(lapLengthM / 1000).toFixed(2)} km，达不到目标 ${targetKm} km`,
+    )
+  }
+
+  /** 由累积推进量 `p` 得到"第几圈"（0 基）：闭合取商；未闭合每两趟（一去一回）算一圈 */
+  const lapIndexAt = (p: number): number => Math.floor(p / lapLengthM)
+
+  /**
    * 按弧长取路径上的基准点，并**同时返回"该处对应的路线弧长位置"**。
    *
    * ⚠️ 接圈规则（2026-09-14 修）：**闭合路线**直接取模绕圈；
@@ -301,7 +328,12 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
       arc: p,
     }
   }
-  const maxPosition = loop ? targetM * 3 : Math.min(targetM, pathTotal)
+  /**
+   * ⚠️ 循环**只由 `acc < targetM` 收尾**（曾经还有个 `p < maxPosition` 的提前截断，但 `acc` 按真实距离累积、
+   * 真实距离 ≥ 弧长增量 ⇒ 正常几何下 `acc` 必先到目标，那个上界从未生效 —— 已删除，避免"看起来有保护其实没有"）。
+   * 兜底改成**显式失败**：万一真的没走满，宁可抛错，也不要**静默返回一条没跑够里程的轨迹**
+   * （调用方会拿 `generated.km` 当实际里程，进而给出"没跑够却判通过"的错结果 —— 审计 F3）。
+   */
 
   // 时间相关抖动（OU/AR(1) 过程）：
   //   白噪声（ρ=0）会让 2m 步长配 σ=2.2m 的轨迹变成锯齿，实际长度翻倍（踩坑）；
@@ -515,19 +547,19 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     const first = locate(0)
     const j0 = jitterFor(first.arc)
     const off0 = clampOffset(
-      driftOn ? offsetAt(first.arc, zoneCount, ampScale, lenScale, lapDriftAt(Math.floor(first.arc / pathTotal))) : { lat: 0, lng: 0 },
+      driftOn ? offsetAt(first.arc, zoneCount, ampScale, lenScale, lapDriftAt(lapIndexAt(0))) : { lat: 0, lng: 0 },
     )
     pts.push({
       latitude: first.lat + (j0.lat + off0.lat) / M_PER_DEG_LAT,
       longitude: first.lng + (j0.lng + off0.lng) * degLngPerMeter(first.lat),
     })
-    while (p < maxPosition && acc < targetM) {
+    while (acc < targetM) {
       p += stepM
       const here = locate(p)
       const j = jitterFor(here.arc)
-      // 第几圈由**累积弧长**决定（locate 对闭合路线取模、对未闭合路线折返，故用 p 而非 here.arc）
+      // 第几圈由**累积推进量**决定（闭合=取商；未闭合=每两趟算一圈，见 lapIndexAt）
       const off = clampOffset(
-        driftOn ? offsetAt(here.arc, zoneCount, ampScale, lenScale, lapDriftAt(Math.floor(p / pathTotal))) : { lat: 0, lng: 0 },
+        driftOn ? offsetAt(here.arc, zoneCount, ampScale, lenScale, lapDriftAt(lapIndexAt(p))) : { lat: 0, lng: 0 },
       )
       const lat = here.lat + (j.lat + off.lat) / M_PER_DEG_LAT
       const lng = here.lng + (j.lng + off.lng) * degLngPerMeter(here.lat)
@@ -542,8 +574,8 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
   const built = buildTrajectory(1, 1)
   const fit = calculateRouteSimilarity(route, built.pts)
 
-  // 实际用到的圈数（诊断/测试用）：按总弧长推
-  const lapsUsed = Math.max(1, Math.ceil(built.accumulated / pathTotal))
+  // 实际用到的圈数（诊断/测试用）：按**真实走过的里程**除以"一圈长度"推
+  const lapsUsed = Math.max(1, Math.ceil(built.accumulated / lapLengthM))
 
   return {
     points: built.pts.map((p) => ({
@@ -554,7 +586,7 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     fitDegree: Number(fit).toFixed(2),
     driftEpisodes: driftOn ? bursts.length : 0,
     lapDriftM: Array.from({ length: lapsUsed }, (_, i) => Number(lapDriftAt(i).toFixed(2))),
-    lapLengthM: Number(pathTotal.toFixed(1)),
+    lapLengthM: Number(lapLengthM.toFixed(1)),
   }
 }
 

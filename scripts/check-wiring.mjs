@@ -419,10 +419,12 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
 
 // ---------- R11：模板里的 kebab-case 绑定必须能被组件真的收到（2026-09-18 真踩到）----------
 // 起因：`RunTrajectoryPreview` 声明了 prop `lapLengthM`，父组件写成 `:lap-length="..."`。
-// **Vue 在 dev 模式下**会用 `hyphenate(propName)` 与属性名做**严格**比对，而
-// `hyphenate('lapLengthM')` == `lap-length-m`（末尾大写 M 也各成一段）⇒ 该 prop 被**静默丢弃**
-// （值恒为 undefined），生产构建才不丢弃 ⇒ "dev 看着没效果、生产却正常"这种最难查的形态。
-// 判据：模板里给某组件传的 kebab-case 属性名，必须**没有**任何声明 prop 能与之匹配。
+// Vue 解析 prop 名时会走 `camelize(属性名)`：`camelize('lap-length')` = `lapLength` ≠ `lapLengthM`
+// （**末尾那个大写 M 丢失**）⇒ 该 prop 被**静默丢弃**（值恒为 undefined）。
+// ⚠️ **dev 与生产都会丢**（2026-09-18 用真实 Vue 3.5.42 实测更正：dev 只是额外给一条 warning，
+//    `setFullProps` 两种模式都走 camelize）。本检查用 `hyphenate(propName)` 做等价判定：
+//    `hyphenate('lapLengthM')` = `lap-length-m`，与页面里写的 `lap-length` 不相等 ⇒ 命中即违规。
+// 判据：模板里给某组件传的 kebab-case 属性名，必须能被它的某个声明 prop 匹配（或明确近似）。
 {
   const VUE_COMPONENTS = [...listDir('components')].filter((f) => f.endsWith('.vue'))
   /** 组件 path → 声明的 props 名集合 */
