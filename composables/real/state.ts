@@ -63,7 +63,6 @@ export function useRealState() {
   // 「上次读取的会话」缓存的界面状态（**刷新后不再自动回填**；只作为可选的显式恢复入口）
   const cacheAt = useState('mpRealCacheAt', () => 0)
   const cachePaperName = useState('mpRealCachePaper', () => '')
-  const cacheLineId = useState('mpRealCacheLine', () => '')
   /**
    * 缓存里**是否存了 token**（「恢复」能否真正重建会话的依据；2026-09-18 加）。
    * 只存布尔与掩码，界面据此决定文案；**绝不把完整 token 放进界面状态**。
@@ -95,7 +94,6 @@ export function useRealState() {
     cameraFlagError,
     cacheAt,
     cachePaperName,
-    cacheLineId,
     cacheHasToken,
     cacheTokenMask,
     phase,

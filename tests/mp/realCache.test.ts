@@ -80,6 +80,12 @@ test('realCache：maskToken 只露头尾，绝不在界面上暴露完整 token'
   assert.ok(!masked.includes(full), '掩码里不得含完整 token')
   assert.equal(masked, 'gho_ab…opqrst', `实际：${masked}`)
   assert.equal(maskToken(''), '')
-  // 短 token：仍要遮住中间
-  assert.equal(maskToken('abcdefgh'), 'abc…fgh')
+  // ⚠️ 短串一律固定掩码（审计 L1）：此前会原样显示（'abc' → 'abc…abc'）
+  for (const short of ['a', 'abc', 'abcdef', 'abcdefg', 'abcdefghijklmn']) {
+    const m = maskToken(short)
+    assert.ok(!m.includes(short), `短串 ${short} 不得原样上屏（得到 ${m}）`)
+    assert.match(m, /^\*+$/, `短串应给固定掩码，实际 ${m}`)
+  }
+  // 15 位起才走"头 6 + 尾 6"
+  assert.equal(maskToken('a'.repeat(15)), 'aaaaaa…aaaaaa')
 })

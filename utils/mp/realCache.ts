@@ -56,11 +56,14 @@ export function serializeCachePayload(p: { at: number; task: MpSunrunTask; lineI
 }
 
 /**
- * token 的**展示用掩码**（界面绝不显示完整 token）：只留头尾各 6 位。
- * 例：`abcdefghijklmnop` → `abcdef…klmnop`。
+ * token 的**展示用掩码**（界面绝不显示完整 token）。
+ *   · 长 token（> 14 位，真实 token 远长于此）⇒ 头 6 + 尾 6，例 `abcdefghijklmnop` → `abcdef…klmnop`；
+ *   · **短串一律给固定掩码**（2026-09-18 审计 L1）：此前对 ≤6 位的串会原样显示两遍
+ *     （`'abc'` → `'abc…abc'`、`'abcdef'` → `'abcdef…'` 之类），直接违反本函数的契约。
  */
 export function maskToken(token: string): string {
   const t = String(token || '')
-  if (t.length <= 14) return t ? `${t.slice(0, 3)}…${t.slice(-3)}` : ''
+  if (!t) return ''
+  if (t.length <= 14) return '*'.repeat(Math.min(8, t.length))
   return `${t.slice(0, 6)}…${t.slice(-6)}`
 }

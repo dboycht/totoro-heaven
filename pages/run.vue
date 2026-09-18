@@ -89,7 +89,7 @@
                 color="primary"
                 block
                 prepend-icon="mdi-play"
-                :disabled="!activeTask || !libEntries.length || !activeLines.length"
+                :disabled="!activeTask || !configuredForTask"
                 @click="start"
               >
                 开始跑步
@@ -112,8 +112,20 @@
             <v-alert v-if="run.error" type="error" variant="tonal" density="compact" class="mt-3">{{ run.error }}</v-alert>
       <!-- 路线来源（2026-09-18 收紧）：**只列你描好的路线**，并以它的几何为基准生成轨迹 -->
       <v-alert v-if="hasConfigured" type="success" variant="tonal" density="compact" class="mt-3">
-        只列出你在「跑道编辑」里配置好的 <b>{{ libEntries.length }}</b> 条路线 —— 轨迹以<b>你描的真跑道</b>为基准生成；
+        只列出你在「跑道编辑」里配置好的 <b>{{ configuredForTask }}</b> 条路线 —— 轨迹以<b>你描的真跑道</b>为基准生成；
         官方模板只作对照（提交时服务端的拟合度仍按官方模板算）。
+      </v-alert>
+      <v-alert v-else-if="libEntriesNotForTask" type="warning" variant="tonal" density="compact" class="mt-3">
+        <div class="font-weight-bold">本机有 {{ libTotal }} 条跑道，但都不属于当前任务的线路。</div>
+        <div class="text-body-2 mt-1">
+          本版<b>只会用你自己描的跑道</b>生成轨迹，而路线库是<b>按线路</b>存的 —— 当前任务的线路你还没描过。
+          去「<b>跑道编辑</b>」把线路切到这条任务的线路 → 「快速定位」→ 沿卫星图描外圈 → 「按外圈自动生成内圈」→ 保存（本机）。
+        </div>
+        <div class="mt-2">
+          <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-vector-polyline" to="/track-editor">
+            去「跑道编辑」描一条
+          </v-btn>
+        </div>
       </v-alert>
       <v-alert v-else-if="activeLinesRaw.length" type="warning" variant="tonal" density="compact" class="mt-3">
         <div class="font-weight-bold">还没有可用的跑道：请先描一条。</div>
@@ -260,7 +272,6 @@
     <RunTrajectoryPreview
       :points="run.points"
       :route="selectedLine?.pointList ?? []"
-      :fit-degree="run.fitDegree"
       :track-entries="libEntries"
       :line-id="run.lineId"
       :lapLengthM="run.lapLengthM"
@@ -337,7 +348,6 @@ const {
   fetchVerdict,
   restoreCachedTask,
   hasCachedTask,
-  cachedTaskLabel,
   cacheHasToken,
   cacheTokenMask,
   persistSelectedLine,
@@ -363,13 +373,26 @@ const activeLinesRaw = computed(() => activeTask.value?.runPointList ?? [])
  * 用户的原话是"我们就是要弄新的版本，在下拉框里面选择我们已经编辑好的路径，再以这个路径为基础来进行生成"。
  * 那条兜底会让人**在没配过跑道时直接跑官方模板**（形状偏十几米），而且提示不醒目 ⇒ 容易被当成 bug。
  * 现在：没配置过 ⇒ 下拉框为空、**开跑按钮禁用**，并给出"先去描一条"的明确指引。
+ *
+ * ⚠️ 2026-09-18 发布前审计 M1：**"有没有配置"必须与下拉框同口径**。
+ *    库里按 `lineId` 存，本机可能留着**别的任务/演示数据**的条目（例如先用演示数据描了一圈，
+ *    再读真实任务）—— 那时旧写法 `libEntries.length > 0` 会显示绿条"只列出你配置好的 N 条路线"，
+ *    而下拉框其实是空的、开跑永久灰，且本该出现的"去描一条"警示被 `v-else-if` 吃掉 ⇒ 用户卡死无出路。
+ *    判据改为"**当前任务里的线路确有配置**"（`activeLines.length > 0`），并为"库里有条目但都不属于当前任务"
+ *    单独给一条带入口的提示。
  */
 const { entries: libEntries, load: loadTrackLibrary } = useTrackLibrary()
 onMounted(() => loadTrackLibrary())
 const configuredIds = computed(() => new Set(libEntries.value.map((e) => String(e.lineId))))
-const hasConfigured = computed(() => libEntries.value.length > 0)
 /** 只列"本机路线库里配置过"的线路（**没有兜底**：没配置就是空列表） */
 const activeLines = computed(() => activeLinesRaw.value.filter((l) => configuredIds.value.has(String(l.pointId))))
+/** 当前任务里**确有配置**的线路数（与下拉框同口径；=0 时不能开跑） */
+const configuredForTask = computed(() => activeLines.value.length)
+/** 本机路线库总条数（可能全是别的任务/演示数据留下的） */
+const libTotal = computed(() => libEntries.value.length)
+const hasConfigured = computed(() => configuredForTask.value > 0)
+/** 库里有条目、但都不属于当前任务的线路（要给"去为这条线路描一圈"的指引） */
+const libEntriesNotForTask = computed(() => libTotal.value > 0 && configuredForTask.value === 0)
 const isBusy = computed(() => run.value.status === 'running' || run.value.status === 'paused')
 
 /** 载入演示数据（按需功能，不发任何请求） */

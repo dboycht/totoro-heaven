@@ -532,7 +532,7 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
    * 本版的生成基准是**用户自己描的跑道**，没描过就不该能开跑（否则会静默用官方模板生成，形状偏十几米）。
    * 判据：`disabled` 表达式里出现"路线库/已配置线路"的约束（`libEntries` 或 `activeLines`）。
    */
-  if (startBtn && !/libEntries|activeLines/.test(startBtn[1])) {
+  if (startBtn && !/configuredForTask|libEntries|activeLines/.test(startBtn[1])) {
     failures.push(
       'pages/run.vue：「开始跑步」的 disabled 必须包含"已配置跑道"的约束（`!libEntries.length` / `!activeLines.length`）' +
         ' —— 本版只允许用用户自己描的跑道生成轨迹（用户 2026-09-18 要求）',

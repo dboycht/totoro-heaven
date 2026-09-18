@@ -61,6 +61,7 @@ export function useMpReal() {
     cacheHasToken,
     cacheTokenMask,
     clearCachedTask,
+    logoutAndClearSession,
     clearAllLocalData,
     applyToRunner,
     persistSelectedLine,
@@ -104,6 +105,7 @@ export function useMpReal() {
     cacheHasToken,
     cacheTokenMask,
     clearCachedTask,
+    logoutAndClearSession,
     /** 一键清空本机数据（会话 + 任务 + 记录 + 缓存） */
     clearAllLocalData,
     applyToRunner,

@@ -470,5 +470,21 @@ test('★ generateCorridorRoute：路线太短且 loop=false 时必须**显式�
   // 同一路线用默认 loop=true 时正常（折返跑），不报错
   const folded = generateCorridorRoute(openShort, { targetKm: 0.3, stepM: 3, seed: 1 })
   assert.ok(Number(folded.km) > 0.2, `折返跑应正常出轨迹，实际 km=${folded.km}`)
+
+  /**
+   * ⚠️ 2026-09-18 发布前审计 L3 的回归：**判据要用"一遍的长度"，不能用到"往返全长"**。
+   * 300 m 未闭合直线（smoothRoute:0 ⇒ 一遍 = 300 m）配 **0.5 km** 目标：
+   * 落在 `[pathTotal, 2×pathTotal)` 这个窗口里 —— 旧写法拿 `lapLengthM`(=2×pathTotal≈600 m) 当门槛，
+   * 于是**不抛错**，返回 km=0.50 而后面几百个点都是"终点原地抖动凑里程"。
+   */
+  const straight300 = [
+    { latitude: lat0, longitude: lng0 },
+    { latitude: lat0 + 300 / 111320, longitude: lng0 },
+  ]
+  assert.throws(
+    () => generateCorridorRoute(straight300, { targetKm: 0.5, stepM: 3, seed: 1, loop: false, smoothRoute: 0 }),
+    /路线太短/,
+    '一遍只有 300 m 却要 0.5 km：必须抛错，不能靠终点原地抖动凑里程',
+  )
 })
 

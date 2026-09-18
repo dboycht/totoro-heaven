@@ -205,7 +205,7 @@ import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
 import { logError, logInfo, logWarn } from '~/composables/useEventLog'
 import { DEMO_SESSION } from '~/src/mp/demo'
 
-const { isLoggedIn, task, session, logout, demoMode, enableDemo } = useMpDemo()
+const { isLoggedIn, task, session, demoMode, enableDemo } = useMpDemo()
 const {
   profileMasked: realProfileMasked,
   task: realTask,
@@ -221,6 +221,7 @@ const {
   cacheHasToken,
   cacheTokenMask,
   clearCachedTask,
+  logoutAndClearSession,
   clearAllLocalData,
   gateStatus,
   schoolNotice: realSchoolNotice,
@@ -307,9 +308,10 @@ const doLoadReal = async () => {
 }
 
 const doLogout = () => {
-  logout()
-  logInfo('real', '清除会话（token 已移除）')
-  showSnackbar('会话已清除', 'info')
+  // ⚠️ 2026-09-18 审计 S1：改用 `logoutAndClearSession()` —— 之前只 `logout()`（清会话），
+  //    缓存里那份完整 token 还留在本机，点「恢复」就能一键登回去。
+  logoutAndClearSession()
+  showSnackbar('已退出登录（本机 token 与缓存已一并清除）', 'info', { cloud: true })
 }
 
 /** 恢复"上次读取的任务"（刷新后默认不自动恢复，这是显式入口） */

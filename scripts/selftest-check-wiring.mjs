@@ -244,7 +244,7 @@ try {
     const file = join(dir, 'pages/run.vue')
     const text = readFileSync(file, 'utf8')
     const injected = text.replace(
-      ':disabled="!activeTask || !libEntries.length || !activeLines.length"',
+      ':disabled="!activeTask || !configuredForTask"',
       ':disabled="!activeTask"',
     )
     if (injected === text) failures.push('注入 13：pages/run.vue 里找不到「开始跑步」的完整 disabled 绑定（自测需同步更新）')

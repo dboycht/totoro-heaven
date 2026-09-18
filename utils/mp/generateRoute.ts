@@ -277,10 +277,15 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
    *     （`acc` 是**真实折线长度**，端点原地抖动也会累加 ⇒ 事后检查拦不住，实测 50 m 路线能"跑出" 3.2 km）；
    *   · 现在的行为：**显式抛错**，让调用方知道路线不够长。
    * 真实调用方（`composables/demo/runner.ts`）都用默认 `loop: true`，所以只影响显式传参的用法。
+   *
+   * ⚠️ 2026-09-18 发布前审计 L3：判据必须用**一遍的长度** `pathTotal`，
+   *    **不能**用 `lapLengthM` —— 后者对未闭合路线是"往返全长"（2×pathTotal），
+   *    拿它当"一遍能走多长"会把守卫放宽一倍（实测 300 m 未闭合直线 + 0.5 km 目标：
+   *    修复前不抛错、返回 km=0.50，后 746 个点是终点原地抖动）。
    */
-  if (!loop && lapLengthM < targetM * 0.999) {
+  if (!loop && pathTotal < targetM * 0.999) {
     throw new Error(
-      `路线太短：loop=false 时最多只能走 ${(lapLengthM / 1000).toFixed(2)} km，达不到目标 ${targetKm} km`,
+      `路线太短：loop=false 时一遍只能走 ${(pathTotal / 1000).toFixed(2)} km，达不到目标 ${targetKm} km`,
     )
   }
 

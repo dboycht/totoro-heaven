@@ -30,7 +30,8 @@ type TrackEntryLike = {
 const props = defineProps<{
   points: { latitude: string | number; longitude: string | number }[]
   route?: { latitude: string | number; longitude: string | number }[]
-  fitDegree?: number | string | null
+  // ⚠️ 2026-09-18 审计：删掉早已不再使用的 `fitDegree` prop（页面曾一直传，
+  //    但组件内从未读取；预览里显示的是"离官方路线最远 X m"，口径不同）
   /** 本机路线库（跑道编辑页描好的内外圈）；用来画跑道两圈与所选车道线 */
   trackEntries?: TrackEntryLike[]
   /** 当前线路 id：决定用路线库里哪一条几何 */
@@ -203,7 +204,12 @@ const view = computed(() => {
     lanePath: tr && tr.lane.length >= 3 ? d(tr.lane, true) : '',
     laneNo: tr?.laneNo ?? 0,
     start: { x: x(pts[0]!), y: y(pts[0]!) },
-    n: pts.length,
+    /**
+     * ⚠️ 上屏的点数必须是**真实点数**（审计 L2）：`pts` 是 `segs.flatMap(...)`，而切圈时交界点
+     * 会被放进相邻两圈（`lapSegments` 里 `cur.push(pts[i])` 后又 `cur = [pts[i]]`）⇒ 用它当点数
+     * 会多出 (圈数 − 1)。这个数是给用户对账用的，不能虚高，所以这里单独取原始点数。
+     */
+    n: finite((props.points ?? []).map(toP)).length,
     lapCount: segs.length,
     maxDev: devs.length ? devs[devs.length - 1]! : null,
     p95: devs.length ? devs[Math.floor(devs.length * 0.95)]! : null,

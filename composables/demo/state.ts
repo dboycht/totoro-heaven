@@ -168,6 +168,8 @@ export function useDemoState(hooks: DemoStateHooks) {
    */
   const clearLocalData = () => {
     demoMode.value = false
+    // ⚠️ 先停计时器再重置 run：否则计时器会继续对着**新的** idle run 状态推进（旧实现漏了这一步）
+    hooks.stopRunTimer()
     task.value = null
     lines.value = []
     switches.value = null

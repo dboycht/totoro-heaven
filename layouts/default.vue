@@ -23,7 +23,7 @@
         <v-icon start size="16">mdi-cellphone-check</v-icon>
         真实会话已就绪
       </v-chip>
-      <v-btn v-if="isLoggedIn && isRealSession" icon="mdi-logout" title="清除小程序会话" @click="clearSession" />
+      <v-btn v-if="isLoggedIn && isRealSession" icon="mdi-logout" title="退出登录（并清除本机 token）" @click="doLogout" />
 
       <v-btn icon="mdi-information-outline" title="关于" @click="aboutOpen = true" />
       <AboutDialog v-model="aboutOpen" />
@@ -41,10 +41,23 @@
 import { useMpSession } from '~/composables/useMpSession'
 
 // 1.1.x 起唯一后端为微信小程序（wxxcx.xtotoro.com），会话由 mp_session 承载
-const { isLoggedIn, clearSession, session } = useMpSession()
+const { isLoggedIn, session } = useMpSession()
+const { logoutAndClearSession } = useMpReal()
+const showSnackbar = useNotice()
 
 /** 真实会话 = 存了非 demo 前缀的 token（演示会话 token 以 `demo-` 开头） */
 const isRealSession = computed(() => Boolean(session.value?.token) && !session.value?.token?.startsWith('demo-'))
+
+/**
+ * 顶栏「退出登录」——⚠️ 必须走**彻底**清除（2026-09-18 发布前审计 S1）：
+ * 此前这里直接绑 `clearSession`，只删 `localStorage['mp_session']`，
+ * 而缓存里那份**完整 token 还在** ⇒ 点「恢复」就能一键登回去（"退出登录"形同虚设）。
+ * 现在与工作台的「清除会话」统一走 `logoutAndClearSession()`（会话 + 缓存 token 一起清 + 复位界面）。
+ */
+const doLogout = () => {
+  logoutAndClearSession()
+  showSnackbar('已退出登录（本机 token 与缓存已一并清除）', 'info', { cloud: true })
+}
 
 const aboutOpen = ref(false)
 </script>

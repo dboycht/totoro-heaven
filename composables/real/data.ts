@@ -41,7 +41,6 @@ export function useMpRealData() {
     cameraFlagError,
     cacheAt,
     cachePaperName,
-    cacheLineId,
     cacheHasToken,
     cacheTokenMask,
     // 下面这几个是**提交期**状态；只读侧只在「一键清空本机数据」时负责复位
@@ -221,7 +220,6 @@ export function useMpRealData() {
     const p = readCachePayload()
     cacheAt.value = p ? (p.at || 1) : 0
     cachePaperName.value = p?.task?.paperName ?? ''
-    cacheLineId.value = p?.lineId ?? ''
     // 「恢复」能否真正重建会话，取决于缓存里有没有 token（界面据此改文案；只放布尔与掩码，不放完整 token）
     cacheHasToken.value = Boolean(p?.token)
     cacheTokenMask.value = p?.token ? maskToken(p.token) : ''
@@ -305,6 +303,37 @@ export function useMpRealData() {
       }
     }
     syncCacheState()
+  }
+
+  /**
+   * **退出登录（清除会话）** —— 必须是"彻底的"，所以**连缓存里的 token 一起清**。
+   *
+   * ⚠️ 2026-09-18 修（发布前审计 S1）：此前顶栏与工作台的"清除会话"只 `clearSession()`
+   * （删掉 `localStorage['mp_session']`），而**缓存里那份完整 token 还在** ⇒ 点「恢复」就能一键登回去。
+   * 用户点"退出登录"却仍留着凭据，是**安全语义上的真 bug**，也与 `utils/mp/realCache.ts` 自己写的
+   * 不变量（"退出登录 / 清空本机数据时两份一起清"）矛盾。
+   *
+   * 与"浏览器自己清了 `mp_session`"的区别（两点都成立，互不冲突）：
+   *   · **用户显式退出** ⇒ 走本函数 ⇒ 凭据从本机**彻底消失**；
+   *   · 浏览器/系统清理导致 `mp_session` 消失（用户没点退出）⇒ 缓存里的 token 仍可救回来，
+   *     这正是「恢复（重建会话并读取）」存在的意义。
+   */
+  function logoutAndClearSession(): void {
+    clearSession()
+    clearCachedTask()
+    // 让界面回到"干净"状态：退出后不该继续显示"真实任务已就绪"（审计 S1 顺带指出的不一致）
+    task.value = null
+    profile.value = null
+    switches.value = null
+    cameraFlag.value = null
+    cameraFlagLineId.value = ''
+    cameraFlagError.value = ''
+    loadedAt.value = 0
+    status.value = 'idle'
+    error.value = ''
+    // ⚠️ 任务/线路也要从跑步机侧清掉，否则阳光跑页还留着上一次的线路
+    clearLocalData()
+    logInfo('real', '已退出登录并清除本机缓存（含缓存中的 token）')
   }
 
   /**
@@ -491,6 +520,8 @@ export function useMpRealData() {
     cacheHasToken,
     cacheTokenMask,
     clearCachedTask,
+    /** 退出登录（彻底）：清会话 + **连缓存里的 token 一起清** + 复位界面状态（审计 S1） */
+    logoutAndClearSession,
     /** 一键清空本机数据（会话 + 任务 + 记录 + 缓存） */
     clearAllLocalData,
     applyToRunner,
