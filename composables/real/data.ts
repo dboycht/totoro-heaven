@@ -256,7 +256,8 @@ export function useMpRealData() {
     const token = String(session.value?.token ?? '')
     if (!token || token.startsWith('demo-')) {
       status.value = 'error'
-      error.value = '本机没有可用的 token（或只剩演示会话）—— 请先点「一键获取 token」，或粘贴 token 后点「读取真实账号与任务」。'
+      error.value =
+        '本机没有可用的 token，无法重新读取 —— 请先点「一键获取 token」（或在上方粘贴 token），之后再点「恢复」即可。'
       logWarn('real', '恢复失败：本机无可用 token')
       return false
     }

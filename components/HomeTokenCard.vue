@@ -89,23 +89,24 @@
       </v-alert>
 
       <!-- 上次读取的会话：<b>刷新后不自动恢复</b>（默认干净），这里给显式入口。
-           📌 2026-09-18：行为简化为"**用本机 token 重新读取一遍**"（用户要求）——
-           不再用旧缓存糊过去（旧缓存里没有账号与开关，恢复出来反而让人以为读到了）。 -->
+           📌 2026-09-18：行为 = "**拿本机 token 重新读取一遍（并沿用上次选中的线路）**"。
+           ⚠️ 即使本机暂时没有 token 也**保持可点** —— 点了会给出"先去取 token"的明确下一步，
+              比灰着不给点更好：灰按钮用户只会觉得"坏了/没法恢复"（用户实测反馈）。 -->
       <v-alert v-if="hasCachedTask && !realTask" type="info" variant="tonal" density="compact" class="mt-3">
         <div class="text-body-2">本机存有<b>上次读取的会话</b>：{{ cachedTaskLabel }}</div>
         <div class="text-caption mt-1">
           点下面会<b>用本机 token 重新读取一遍</b>（账号 / 任务 / 线路 / 开关全部刷新，并沿用上次选中的线路）。
-          <template v-if="!isRealSession">⚠️ 本机当前没有可用 token —— 请先点「一键获取 token」。</template>
+        </div>
+        <div v-if="!isRealSession" class="text-caption mt-1 text-warning">
+          ⚠️ 本机当前没有可用 token（可能清过浏览器数据或退出过登录）—— 请先点上面的「一键获取 token」，
+          之后再点「恢复」就能一键读回来。
         </div>
         <div class="d-flex flex-wrap ga-2 mt-2">
-          <v-btn
-            size="small"
-            variant="tonal"
-            prepend-icon="mdi-history"
-            :disabled="!isRealSession"
-            @click="emit('restore-cached')"
-          >
+          <v-btn size="small" variant="tonal" prepend-icon="mdi-history" @click="emit('restore-cached')">
             恢复（用 token 重新读取）
+          </v-btn>
+          <v-btn v-if="!isRealSession" size="small" color="primary" variant="flat" prepend-icon="mdi-radar" @click="emit('token-scan')">
+            一键获取 token
           </v-btn>
           <v-btn size="small" variant="text" prepend-icon="mdi-delete-outline" @click="emit('clear-cached')">
             忽略并清除
