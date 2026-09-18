@@ -67,6 +67,8 @@
           :token-scan-state="tokenScanState"
           :has-cached-task="hasCachedTask"
           :cached-task-label="cachedTaskLabel"
+          :cache-has-token="cacheHasToken"
+          :cache-token-mask="cacheTokenMask"
           :real-task="realTask"
           @load-real="doLoadReal"
           @token-scan="doTokenScan"
@@ -216,6 +218,8 @@ const {
   restoreCachedTask,
   hasCachedTask,
   cachedTaskLabel,
+  cacheHasToken,
+  cacheTokenMask,
   clearCachedTask,
   clearAllLocalData,
   gateStatus,

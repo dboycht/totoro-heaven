@@ -132,11 +132,14 @@
       <v-alert v-if="!realReady && !demoMode" type="warning" variant="tonal" density="compact" class="mt-3">
               还没读到任务：回<NuxtLink to="/">工作台</NuxtLink>粘贴 token → 点「读取真实账号与任务」；
               或点上方「载入演示数据」只试界面与报文（不发请求）。
-              <!-- 刷新后默认不自动恢复缓存，这里给显式入口 -->
+              <!-- 刷新后默认不自动恢复缓存，这里给显式入口（2026-09-18：恢复 = 重建会话 + 自动读取） -->
               <div v-if="hasCachedTask" class="d-flex flex-wrap ga-2 mt-2">
                 <v-btn size="small" variant="tonal" prepend-icon="mdi-history" @click="doRestoreCached">
-                  恢复上次任务{{ cachedTaskLabel ? `（${cachedTaskLabel}）` : '' }}
+                  {{ cacheHasToken ? '恢复上次会话（重建会话并读取）' : '恢复上次会话（用 token 读取）' }}
                 </v-btn>
+                <span v-if="cacheTokenMask" class="text-caption align-self-center">
+                  已保存 token <code>{{ cacheTokenMask }}</code>
+                </span>
               </div>
             </v-alert>
             <v-alert type="info" variant="tonal" density="compact" class="mt-3">
@@ -335,6 +338,8 @@ const {
   restoreCachedTask,
   hasCachedTask,
   cachedTaskLabel,
+  cacheHasToken,
+  cacheTokenMask,
   persistSelectedLine,
   gateStatus,
   cameraFlagError,

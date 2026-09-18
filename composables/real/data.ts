@@ -11,7 +11,7 @@
 import { MpApiWrapper, MP_DEFAULT_BASE_URL } from '~/src/wrappers/MpApiWrapper'
 import type { MpRunLine, MpSunrunTask } from '~/src/mp/types'
 import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
-import { normalizeCachePayload, serializeCachePayload, type RealCachePayload } from '~/utils/mp/realCache'
+import { maskToken, normalizeCachePayload, serializeCachePayload, type RealCachePayload } from '~/utils/mp/realCache'
 import { TOKEN_EXPIRED_HINT } from '~/utils/mp/tokenScan'
 import { looksLikeTokenExpired } from '~/src/mp/envelope'
 import {
@@ -25,7 +25,8 @@ import { logError, logInfo, logWarn } from '../useEventLog'
 import { TASK_CACHE_KEY, useRealState } from './state'
 
 export function useMpRealData() {
-  const { session, clearSession } = useMpSession()
+  // `setToken` 用于「恢复上次会话」时把缓存里的 token 写回会话（重建会话并落盘）
+  const { session, clearSession, setToken } = useMpSession()
   const { setTask, setLines, task: currentTask, run, disableDemo, clearLocalData } = useMpDemo()
 
   const {
@@ -41,6 +42,8 @@ export function useMpRealData() {
     cacheAt,
     cachePaperName,
     cacheLineId,
+    cacheHasToken,
+    cacheTokenMask,
     // 下面这几个是**提交期**状态；只读侧只在「一键清空本机数据」时负责复位
     phase,
     phaseMessage,
@@ -182,11 +185,12 @@ export function useMpRealData() {
     applyToRunner(preferredLineId)
 
     if (import.meta.client) {
-      // 只存"任务 + 当时选中的线路"（账号/开关不入缓存：恢复语义是"用 token 重新读取"，存了也不会用）
+      // 存"任务 + 选线 + **token**"：token 进缓存是「恢复」能真正重建会话的前提（用户 2026-09-18 确认）
       writeCachePayload({
         at: loadedAt.value,
         task: task.value,
         lineId: String(run.value.lineId || ''),
+        token,
       })
     }
 
@@ -218,6 +222,9 @@ export function useMpRealData() {
     cacheAt.value = p ? (p.at || 1) : 0
     cachePaperName.value = p?.task?.paperName ?? ''
     cacheLineId.value = p?.lineId ?? ''
+    // 「恢复」能否真正重建会话，取决于缓存里有没有 token（界面据此改文案；只放布尔与掩码，不放完整 token）
+    cacheHasToken.value = Boolean(p?.token)
+    cacheTokenMask.value = p?.token ? maskToken(p.token) : ''
   }
 
   /** 把当前选中的线路写回缓存（用户换线路时调用；"恢复上次任务"时保持选线） */
@@ -228,8 +235,8 @@ export function useMpRealData() {
     writeCachePayload({ ...p, lineId: String(run.value.lineId || '') })
   }
 
-  /** 统一写缓存（**只写任务 + 选线**，见 `utils/mp/realCache.ts` 的说明） */
-  function writeCachePayload(p: { at: number; task: MpSunrunTask | null; lineId: string }): void {
+  /** 统一写缓存（**任务 + 选线 + token**，见 `utils/mp/realCache.ts` 的说明） */
+  function writeCachePayload(p: { at: number; task: MpSunrunTask | null; lineId: string; token: string }): void {
     if (!import.meta.client || !p.task) return
     try {
       localStorage.setItem(TASK_CACHE_KEY, serializeCachePayload({ ...p, task: p.task }))
@@ -239,31 +246,51 @@ export function useMpRealData() {
     }
   }
   /**
-   * 「恢复上次会话」= **用本机 token 重新读取一遍**（2026-09-18 晚，用户要求简化）
+   * 「恢复上次会话」= **用缓存里的 token 重建会话 → 自动重新读取**（2026-09-18 用户确认的最终语义）
    *
-   * 用户原话："把那个恢复任务搞成恢复成 token 然后自动吧，感觉现在这种有点奇怪" ——
-   * 于是**去掉两段式**（不再"先恢复旧缓存、再重新读取"），行为变成一句话：
-   *   **有 token 就自动重新读取（账号 / 任务 / 线路 / 开关 / 摄像头杆全部刷新）；**
-   *   **没有 token 就明确提示去取 token**（不再拿旧缓存糊过去 —— 旧数据里没有账号与开关，
-   *   恢复出来反而让人以为"读到了"）。
+   * 用户原话："把那个恢复任务搞成恢复成 token 然后自动吧"。三轮迭代后的结论：
+   * 只要 token **不在缓存里**，这个按钮就永远只是个"检查有没有 token"的触发器 ——
+   * `localStorage['mp_session']` 一旦被清（退出登录 / 清浏览器数据 / 换浏览器）就**救不回来**，
+   * 用户实测正是被这一点卡住（"为什么无法恢复？"）。
    *
-   * 保留的语义：**沿用缓存里记住的那条线路**（重新读取后由 `loadRealData` 内部按
-   * "缓存已选 → 校区同名 → 分组默认"三级优先级重新选中，用户不会觉得选线被重置）。
+   * 现在的三段：
+   *   ① 取"可用 token"：**会话里的优先，没有就用缓存里存的兜底**，
+   *      并把兜底来的 token **写回会话**（这一步才是真正的"恢复会话"）；
+   *   ② 有 token ⇒ `loadRealData()` 全链路重新读取（账号 / 任务 / 线路 / 开关 / 摄像头杆），
+   *      并**沿用缓存里记住的那条选线**；
+   *   ③ 连缓存里也没有 token（老缓存 / 首次使用）⇒ 写一条**可操作**的提示，返回 false。
    *
-   * 返回 `true` = 已发起重新读取（异步）；`false` = 缺少可用 token（`error` 里已写好可操作提示）。
+   * 返回 `true` = 已发起重新读取（异步）；`false` = 缺 token（`error` 里已写好提示）。
    */
   function restoreCachedTask(): boolean {
-    const token = String(session.value?.token ?? '')
-    if (!token || token.startsWith('demo-')) {
+    const payload = readCachePayload()
+    const cachedLineId = payload?.lineId ?? ''
+    const inSession = String(session.value?.token ?? '')
+    const fromCache = String(payload?.token ?? '')
+    const usable = (t: string) => Boolean(t) && !t.startsWith('demo-')
+
+    let token = ''
+    let source = ''
+    if (usable(inSession)) {
+      token = inSession
+      source = 'session'
+    } else if (usable(fromCache)) {
+      token = fromCache
+      source = 'cache'
+      // ① 真正的"恢复"：把缓存里的 token 写回会话（`setToken` 内部会 persist 落盘）
+      setToken(token)
+      logInfo('real', '已从本机缓存恢复 token（重建会话）', { tokenLen: token.length })
+    }
+
+    if (!token) {
       status.value = 'error'
       error.value =
-        '本机没有可用的 token，无法重新读取 —— 请先点「一键获取 token」（或在上方粘贴 token），之后再点「恢复」即可。'
-      logWarn('real', '恢复失败：本机无可用 token')
+        '本机没有可用的 token（缓存里也没有），无法重新读取 —— 请先点「一键获取 token」（或在上方粘贴 token），之后再点「恢复」即可。'
+      logWarn('real', '恢复失败：会话与缓存里都没有可用 token')
       return false
     }
-    // 沿用缓存里记住的选线（若有），再整链路重新读取
-    const cachedLineId = readCachePayload()?.lineId ?? ''
-    logInfo('real', '恢复上次会话：用本机 token 重新读取', { tokenLen: token.length, cachedLineId })
+
+    logInfo('real', '恢复上次会话：重新读取真实数据', { tokenLen: token.length, source, cachedLineId })
     void loadRealData(cachedLineId || undefined)
     return true
   }
@@ -460,6 +487,9 @@ export function useMpRealData() {
     /** 是否存在可恢复的上次任务 */
     hasCachedTask,
     cachedTaskLabel,
+    /** 缓存里是否存了 token（决定「恢复」能否重建会话）+ 其掩码（仅供显示，不含完整 token） */
+    cacheHasToken,
+    cacheTokenMask,
     clearCachedTask,
     /** 一键清空本机数据（会话 + 任务 + 记录 + 缓存） */
     clearAllLocalData,

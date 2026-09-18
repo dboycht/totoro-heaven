@@ -58,6 +58,8 @@ export function useMpReal() {
     restoreCachedTask,
     hasCachedTask,
     cachedTaskLabel,
+    cacheHasToken,
+    cacheTokenMask,
     clearCachedTask,
     clearAllLocalData,
     applyToRunner,
@@ -98,6 +100,9 @@ export function useMpReal() {
     /** 是否存在可恢复的上次任务 */
     hasCachedTask,
     cachedTaskLabel,
+    /** 缓存里是否存了 token（决定「恢复」能否重建会话）+ 其掩码（仅供显示） */
+    cacheHasToken,
+    cacheTokenMask,
     clearCachedTask,
     /** 一键清空本机数据（会话 + 任务 + 记录 + 缓存） */
     clearAllLocalData,

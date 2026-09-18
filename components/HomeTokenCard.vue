@@ -89,23 +89,36 @@
       </v-alert>
 
       <!-- 上次读取的会话：<b>刷新后不自动恢复</b>（默认干净），这里给显式入口。
-           📌 2026-09-18：行为 = "**拿本机 token 重新读取一遍（并沿用上次选中的线路）**"。
-           ⚠️ 即使本机暂时没有 token 也**保持可点** —— 点了会给出"先去取 token"的明确下一步，
-              比灰着不给点更好：灰按钮用户只会觉得"坏了/没法恢复"（用户实测反馈）。 -->
+           📌 2026-09-18 最终语义（用户确认）：**用缓存里的 token 重建会话 → 自动重新读取**
+           （账号/任务/线路/开关全部刷新，并沿用上次选中的线路）。token 存在这份缓存里，
+           所以即使 `mp_session` 被清（退出登录/清浏览器数据）也能救回来。 -->
       <v-alert v-if="hasCachedTask && !realTask" type="info" variant="tonal" density="compact" class="mt-3">
         <div class="text-body-2">本机存有<b>上次读取的会话</b>：{{ cachedTaskLabel }}</div>
         <div class="text-caption mt-1">
-          点下面会<b>用本机 token 重新读取一遍</b>（账号 / 任务 / 线路 / 开关全部刷新，并沿用上次选中的线路）。
+          <template v-if="cacheHasToken">
+            已保存 token（<code>{{ cacheTokenMask }}</code>）—— 点下面会用它<b>重建会话并自动重新读取</b>
+            （账号 / 任务 / 线路 / 开关全部刷新，并沿用上次选中的线路）。
+          </template>
+          <template v-else>
+            点下面会<b>用本机 token 重新读取一遍</b>（账号 / 任务 / 线路 / 开关全部刷新）。
+          </template>
         </div>
-        <div v-if="!isRealSession" class="text-caption mt-1 text-warning">
-          ⚠️ 本机当前没有可用 token（可能清过浏览器数据或退出过登录）—— 请先点上面的「一键获取 token」，
-          之后再点「恢复」就能一键读回来。
+        <div v-if="!isRealSession && !cacheHasToken" class="text-caption mt-1 text-warning">
+          ⚠️ 本机当前没有可用 token（这份缓存也是旧版本存的、不含 token）—— 请先点「一键获取 token」，
+          之后再点「恢复」；<b>新版本此后会把 token 一起存下来</b>，以后就能一键恢复。
         </div>
         <div class="d-flex flex-wrap ga-2 mt-2">
           <v-btn size="small" variant="tonal" prepend-icon="mdi-history" @click="emit('restore-cached')">
-            恢复（用 token 重新读取）
+            {{ cacheHasToken ? '恢复（重建会话并读取）' : '恢复（用 token 重新读取）' }}
           </v-btn>
-          <v-btn v-if="!isRealSession" size="small" color="primary" variant="flat" prepend-icon="mdi-radar" @click="emit('token-scan')">
+          <v-btn
+            v-if="!isRealSession && !cacheHasToken"
+            size="small"
+            color="primary"
+            variant="flat"
+            prepend-icon="mdi-radar"
+            @click="emit('token-scan')"
+          >
             一键获取 token
           </v-btn>
           <v-btn size="small" variant="text" prepend-icon="mdi-delete-outline" @click="emit('clear-cached')">
@@ -130,6 +143,9 @@ defineProps<{
   tokenScanState: { running: boolean; phase: 'idle' | 'scanning' | 'validating' | 'ready' | 'error'; message: string; masked: string }
   hasCachedTask: boolean
   cachedTaskLabel: string
+  /** 缓存里是否存了 token（决定"恢复"能否真正重建会话）+ 它的掩码（仅供显示） */
+  cacheHasToken: boolean
+  cacheTokenMask: string
   realTask: MpSunrunTask | null
 }>()
 
