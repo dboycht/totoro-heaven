@@ -1,24 +1,34 @@
-﻿# 构建 totoro-heaven 单文件 EXE（Node SEA）
-# 用法：.\pack\sea\build-sea.ps1
-# 说明：自动校验 .output 是否为生产构建；dev 产物/缺失时自动重新 build，
-#       避免 dev 产物（或空目录）打进 EXE 导致页面空白（见 DEVELOPMENT.md 0-1）。
+# Build the totoro-heaven single-file EXE (Node SEA)
+# Usage: .\pack\sea\build-sea.ps1
+# It verifies that .output is a clean production build and rebuilds automatically when the output
+# is missing or polluted by dev artifacts (a dev/empty output packed into the EXE => blank page).
+#
+# NOTE: keep this file **pure ASCII** (project rule / ERROR.md E3, E14). PowerShell 5.1 reads a
+# UTF-8 file WITHOUT BOM as ANSI, so non-ASCII comments get mangled and can swallow the code line
+# that follows them (2026-09-18: adding Chinese comments here nulled $outputDir and broke the build).
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
+
+# Read version early: needed by both the esbuild step and the SPA-content assertion below.
+# (Read via node to avoid PowerShell regex/encoding pitfalls.)
+$ver = (& node -e "console.log(require(process.argv[1]).version)" (Join-Path $root 'package.json')) 2>$null
+if (-not $ver) { throw 'cannot read version from package.json' }
+Write-Host "[ver] root=$root ver=$ver"
 
 $distSea = Join-Path $root 'dist\sea'
 $exeOut = Join-Path $root 'dist\totoro-heaven.exe'
 if (-not (Test-Path $distSea)) { New-Item -ItemType Directory -Path $distSea | Out-Null }
 
-# ---- [0/8-pre] 预检：清理历史遗留（rcedit 挂起导致 EXE 被锁 / 旧 EXE 已含 NODE_SEA_BLOB）----
+# ---- [0/8-pre] pre-flight: clean up leftovers (a hung rcedit locks the EXE / old EXE already has a blob) ----
 Get-Process -Name rcedit -ErrorAction SilentlyContinue | ForEach-Object {
     try { if ($_.Path -like "$root*") { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue } } catch {}
 }
 if (Test-Path $exeOut) { Remove-Item $exeOut -Force -ErrorAction SilentlyContinue }
 
-# ---- [0/7] 确保 .output 为生产构建 ----
-# 注：ssr:false 的 SPA 构建没有静态 public/index.html（HTML 由 nitro 运行时
-#     经 client.manifest.mjs 渲染），故以 client.manifest.mjs 是否为 dev 污染为准。
+# ---- [0/7] make sure .output is a production build ----
+# Note: an ssr:false SPA build has no static public/index.html (HTML is rendered at runtime by nitro
+#       through client.manifest.mjs), so the pollution check keys off client.manifest.mjs instead.
 $outputDir = Join-Path $root '.output'
 $manifestPath = Join-Path $outputDir 'server\chunks\build\client.manifest.mjs'
 $needBuild = $true
@@ -45,13 +55,64 @@ if ($needBuild) {
     }
 }
 
+# ---- [0.5] SPA content assertion: the .output MUST have been built from the CURRENT sources ----
+# 2026-09-18 incident: the [0/7] check above only detects a DIRECTORY-STRUCTURE problem
+# (@vite/client or absolute paths). A .output left over from an OLDER release passes that check, so
+# the packer reused it and shipped the OLD UI: releases 1.1.7 and 1.1.8 both went out with 1.1.6-era
+# front-end code (no track editor / no local route library / no trajectory preview) while only the
+# version number inside the EXE was swapped. Measured on the published zips: those two EXEs contain
+# release entries 1.1.3..1.1.6 and no 1.1.7/1.1.8 at all.
+#
+# Judgment (executable). Historical entries are EXPECTED in a bundle (releaseArt.ts keeps them so the
+# version page can fall back), and so are PLANNED future entries (e.g. 1.2.0 with planned: true), so
+# the test cannot be "no other versions present". The reliable signal is:
+#   **the bundle must contain the entry for the CURRENT version** - a stale output cannot contain it,
+#   because the release-art list is compiled from src/mp/releaseArt.ts by the same `npm run build`.
+# A *newer-than-current* entry is only reported as a warning (it may be a legitimate planned entry).
+$chunkFiles = @(Get-ChildItem $outputDir -Recurse -File -Include *.js, *.mjs -ErrorAction SilentlyContinue)
+if ($chunkFiles.Count -eq 0) { throw "[0.5] no js chunks found under .output - build output looks broken" }
+
+function To-Comparable([string]$v) {
+    $p = $v.Split('.')
+    return ([int]$p[0] * 10000) + ([int]$p[1] * 100) + ([int]$p[2])
+}
+$curNum = To-Comparable $ver
+$allEntries = @()
+foreach ($f in $chunkFiles) {
+    foreach ($m in (Select-String -Path $f.FullName -Pattern 'version:"(1\.[0-9]+\.[0-9]+)"' -AllMatches -ErrorAction SilentlyContinue).Matches) { $allEntries += $m.Groups[1].Value }
+}
+$uniqEntries = @($allEntries | Sort-Object -Unique)
+if (-not ($uniqEntries -contains $ver)) {
+    throw "[0.5] .output has no release entry for version $ver => it is a STALE build (entries: [$($uniqEntries -join ', ')]). Delete .output and rebuild."
+}
+$newer = @($uniqEntries | Where-Object { (To-Comparable $_) -gt $curNum })
+if ($newer.Count -gt 0) {
+    Write-Warning "[0.5] .output also contains entries newer than $ver : [$($newer -join ', ')] - fine if those are PLANNED entries, otherwise the output is suspicious."
+}
+Write-Host "[0.5] SPA content OK: entry for $ver present. (versions in bundle: $($uniqEntries -join ', '))"
+
+# ---- [0.6] version-art: keep ONLY the current version's image ----
+# User-facing rule: the version page only ever shows the CURRENT version's artwork, so older (and
+# future) artwork must never be shipped. Historically the source folder accumulates artwork for
+# several versions, and .output copies all of it verbatim (outputDir/public is a verbatim copy),
+# which both ships wrong images and bloats the EXE. Here we sync it down to exactly "<ver>.png".
+$srcArt = Join-Path $root 'public\version-art'
+$outArt = Join-Path $outputDir 'public\version-art'
+if (-not (Test-Path -LiteralPath (Join-Path $srcArt "$ver.png"))) {
+    throw "[0.6] public\version-art\$ver.png is missing - the version page would show a placeholder. Add the artwork before packaging."
+}
+if (Test-Path $outArt) { Remove-Item $outArt -Recurse -Force }
+New-Item -ItemType Directory -Path $outArt | Out-Null
+Copy-Item -LiteralPath (Join-Path $srcArt "$ver.png") -Destination $outArt
+$packedArt = @(Get-ChildItem $outArt -File -Filter '*.png' | ForEach-Object { $_.Name })
+if ($packedArt.Count -ne 1 -or $packedArt[0] -ne "$ver.png") {
+    throw "[0.6] version-art assertion failed: expected exactly [$ver.png], got [$($packedArt -join ', ')]"
+}
+Write-Host "[0.6] version-art OK: shipping only $ver.png (stale/future artwork excluded)."
+
 Write-Host '[1/7] bundle launcher (esbuild)...'
 $esbuild = Join-Path $root 'node_modules\.bin\esbuild.cmd'
 if (-not (Test-Path $esbuild)) { throw "esbuild not found at $esbuild" }
-# 从 package.json 读取当前版本（用 node 读取，避免 PowerShell 正则/编码坑）
-$ver = (& node -e "console.log(require(process.argv[1]).version)" (Join-Path $root 'package.json')) 2>$null
-if (-not $ver) { $ver = '0.0.0' }
-Write-Host "[ver] root=$root ver=$ver"
 $srcLauncher = Join-Path $PSScriptRoot 'launcher.mjs'
 $tmpLauncher = Join-Path $distSea 'launcher.tmp.mjs'
 $content = (Get-Content $srcLauncher -Raw -Encoding UTF8) -replace "__APP_VERSION__", $ver
@@ -83,15 +144,16 @@ $nodeExe = (Get-Command node).Source
 Copy-Item $nodeExe $exeOut -Force
 
 Write-Host '[5/7] set EXE icon from logo.ico (rcedit, BEFORE postject)...'
-# 关键顺序（2026-09-09 踩坑）：rcedit 在已 postject（含 NODE_SEA_BLOB / 签名损坏）的 SEA exe 上会
-# 挂起且图标写不进去；必须先对未注入的 node.exe 设置图标，再 postject。这样图标能正确嵌入。
+# Order matters (2026-09-09 incident): rcedit hangs and fails to write the icon on a SEA exe that
+# already contains NODE_SEA_BLOB (its signature is corrupted by postject). So set the icon on the
+# plain node.exe copy FIRST, then inject the blob; postject does not touch the resource section.
 $rcedit = Join-Path $root 'node_modules\rcedit\bin\rcedit.exe'
 $logoIco = Join-Path $root 'logo.ico'
 $hasRcedit = Test-Path $rcedit
 $hasIcon = Test-Path $logoIco
 if ($hasRcedit -and $hasIcon) {
     $rceditProc = Start-Process -FilePath $rcedit -ArgumentList @($exeOut, '--set-icon', $logoIco) -PassThru -NoNewWindow
-    # 保险：限时 120s（正常情况下对未 postject 的 exe 会正常退出）
+    # Safety net: cap at 120s (on a non-postjected exe it exits normally right away)
     if (-not $rceditProc.WaitForExit(120000)) {
         Write-Warning 'rcedit timed out after 120s - killing it'
         Stop-Process -Id $rceditProc.Id -Force -ErrorAction SilentlyContinue

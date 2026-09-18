@@ -110,6 +110,9 @@ const distToPolylineM = (p: { latitude: number; longitude: number }, poly: { lat
   return best
 }
 
+/** 语义别名：到"闭合路线"的最短距离（实现同 `distToPolylineM`，只是读起来更贴合闭环绕圈场景） */
+const distToLoopM = distToPolylineM
+
 test('★ generateCorridorRoute：**直道必须是直的**（段内横向偏移近似恒定）—— 2026-09-17 用户要求', () => {
   // 夹具是 100 m 的正方形环：四条边都是**纯直道**，最适合验证"直道不抖"。
   const route = loopRoute()
@@ -299,3 +302,91 @@ test('端到端：生成轨迹 → 构造成绩 → 速度无异常', () => {
   assert.deepEqual(findSpeedOutliers(pts, timeline), [])
   assert.ok(Number(g.fitDegree) >= 0.95)
 })
+
+test('★ generateCorridorRoute：**多圈不许完全重合**（用户 2026-09-18：8 圈落在同一个圈上）', () => {
+  // 夹具周长 400 m，目标 3.2 km ⇒ 恰好 8 圈（与用户实跑同量级）
+  const route = loopRoute()
+  const stepM = 3
+  const laps = 8
+  for (const seed of [20260914, 7, 2026]) {
+    const g = generateCorridorRoute(route, { targetKm: 3.2, stepM, seed, drift: true })
+    const pts = g.points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
+
+    // 按"走出来的弧长"切圈（不除以 400：轨迹略长于名义周长，除固定值会串圈）
+    const perLap: { sum: number; n: number }[] = []
+    let acc = 0
+    let lap = 0
+    for (let i = 0; i < pts.length; i++) {
+      if (i > 0) acc += distanceMeters(pts[i - 1]!.latitude, pts[i - 1]!.longitude, pts[i]!.latitude, pts[i]!.longitude)
+      lap = Math.floor(acc / 400)
+      if (!perLap[lap]) perLap[lap] = { sum: 0, n: 0 }
+      perLap[lap]!.sum += distToLoopM(pts[i]!, route)
+      perLap[lap]!.n++
+    }
+    const means = perLap.slice(0, laps).map((x) => (x && x.n ? x.sum / x.n : 0))
+
+    // ① 不许"都落在同一个圈"：各圈到模板的平均距离必须**互不相同**
+    const uniq = new Set(means.map((m) => m.toFixed(2)))
+    assert.ok(uniq.size >= 6, `seed=${seed} 各圈平均偏离太雷同（${uniq.size} 种）：${means.map((m) => m.toFixed(2)).join(', ')}`)
+
+    // ② **圈间平滑**：相邻两圈的位移差 ≤ 1.5 m（旧版"左右剧烈晃动"是几十米级，这条会爆掉）
+    for (let i = 1; i < means.length; i++) {
+      const d = Math.abs(means[i]! - means[i - 1]!)
+      assert.ok(d <= 1.5, `seed=${seed} 第 ${i}→${i + 1} 圈跳了 ${d.toFixed(2)} m：${means.map((m) => m.toFixed(2)).join(', ')}`)
+    }
+
+    // ③ 幅度受控：每圈平均偏离 ≤ maxOffRouteM（5 m）⇒ 始终在跑道宽度内
+    for (const m of means) assert.ok(m <= 5.01, `seed=${seed} 某圈平均偏离 ${m.toFixed(2)} m 超上限：${means.map((x) => x.toFixed(2)).join(', ')}`)
+
+    // ④ 逐圈漂移量本身要有波动且不越界
+    const drifts = g.lapDriftM
+    assert.equal(drifts.length >= laps, true, `lapDriftM 长度不足：${drifts.length}`)
+    assert.ok(new Set(drifts.slice(0, laps).map((v) => v.toFixed(2))).size >= 5, `逐圈漂移量太雷同：${drifts.join(', ')}`)
+    for (const v of drifts) assert.ok(Math.abs(v) <= 1.01, `逐圈漂移 ${v} 超出 ±1 m 上限`)
+  }
+})
+
+test('★ generateCorridorRoute：**圈内仍然"直道笔直"**（逐圈漂移不能变成波浪）', () => {
+  const route = loopRoute()
+  const stepM = 3
+  const g = generateCorridorRoute(route, { targetKm: 3.2, stepM, seed: 20260914, drift: true })
+  const pts = g.points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
+
+  // 只看**第 1 圈内**：沿第一条边（纯直道）的横向偏移应当近似恒定（极差 ≤ 0.5 m）
+  let acc = 0
+  const offsets: number[] = []
+  for (let i = 0; i < pts.length; i++) {
+    if (i > 0) acc += distanceMeters(pts[i - 1]!.latitude, pts[i - 1]!.longitude, pts[i]!.latitude, pts[i]!.longitude)
+    if (acc > 400) break // 只取第 1 圈
+    const p = pts[i]!
+    const A = { latitude: 32.0, longitude: 118.0 }
+    const B = route[1]!
+    const mLat = 111320
+    const mLng = 111320 * Math.cos((32.0 * Math.PI) / 180)
+    const ax = A.longitude * mLng, ay = A.latitude * mLat
+    const bx = B.longitude * mLng, by = B.latitude * mLat
+    const dx = bx - ax, dy = by - ay
+    const len2 = dx * dx + dy * dy
+    const px = p.longitude * mLng, py = p.latitude * mLat
+    const t = ((px - ax) * dx + (py - ay) * dy) / len2
+    if (t < 0.2 || t > 0.8) continue
+    const qx = ax + t * dx, qy = ay + t * dy
+    const d = Math.hypot(px - qx, py - qy)
+    // ⚠️ 必须同时限制"离这条边的距离"：正方形环的**对边**投影参数与这条边相同（平行），
+    //    不过滤距离就会把对边的点（约 100 m 外）算进来 ⇒ 极差算出 99 m 的假失败。
+    if (d > 12) continue
+    offsets.push(d)
+  }
+  assert.ok(offsets.length >= 8, `直道采样点太少：${offsets.length}`)
+  const spread = Math.max(...offsets) - Math.min(...offsets)
+  assert.ok(spread <= 1.0, `同一圈直道内的横向偏移极差 ${spread.toFixed(2)} m 过大（说明又变成波浪了）：${offsets.map((o) => o.toFixed(2)).join(', ')}`)
+})
+
+test('★ generateCorridorRoute：lapDrift=false 时回到"多圈重合"的旧行为（可回退）', () => {
+  const route = loopRoute()
+  const g = generateCorridorRoute(route, { targetKm: 3.2, stepM: 3, seed: 20260914, drift: true, lapDrift: false })
+  const uniq = new Set(g.lapDriftM.map((v) => v.toFixed(2)))
+  assert.equal(uniq.size, 1, `lapDrift=false 时逐圈漂移应恒为 0：${g.lapDriftM.join(', ')}`)
+  assert.equal(g.lapDriftM[0], 0)
+})
+
