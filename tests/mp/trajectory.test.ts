@@ -139,10 +139,24 @@ test('★ generateCorridorRoute：**直道必须是直的**（段内横向偏移
     }
     assert.ok(lat.length > 10, `seed=${seed} 落在第一条边上的点太少（${lat.length}）`)
     const spread = Math.max(...lat) - Math.min(...lat)
-    // 判据：直道段内横向偏移基本恒定 ⇒ 轨迹与官方直道**平行** ⇒ 看起来"跑得直"。
-    // 1.5 m ≈ 一条跑道宽的 1/8（地图上不到 1 像素）；旧算法在这里是 2~3 m 的"波浪"，
-    // 正是用户说的"左右抖动太假、直道不直"。
-    assert.ok(spread <= 1.5, `seed=${seed} 直道段内横向偏移波动 ${spread.toFixed(2)} m（>1.5 m 看起来就不直）`)
+    /**
+     * 判据拆成两条（2026-09-18 校准；起因：加入"逐圈漂移"后本测试从 1.4 m 变 1.7 m 判失败）：
+     *
+     * ① **圈内抖动**（旧算法"左右抖动太假"的真问题）：相邻采样点的横向偏移变化必须很小。
+     *    真跑实测逐点横向变化约 0.175 m/点；旧算法的"波浪"是 2~3 m 级摆动 ⇒ 这条会爆。
+     * ② **整体散布**上限：允许"逐圈漂移"造成的圈间平行错开（上限 2.2 m ⇒ 散布 ≤ ~2.2 m），
+     *    但超过 3.5 m 就说明不是"平行错开"而是"歪了"。
+     * ⚠️ 只靠 ① 不够（缓慢摆动也能骗过），只靠 ② 会误杀逐圈漂移 ⇒ 两条都要。
+     */
+    let jitterSum = 0
+    let jitterN = 0
+    for (let i = 1; i < lat.length; i++) {
+      jitterSum += Math.abs(lat[i]! - lat[i - 1]!)
+      jitterN++
+    }
+    const jitterPerStep = jitterN ? jitterSum / jitterN : 0
+    assert.ok(jitterPerStep <= 0.4, `seed=${seed} 圈内逐点横向抖动 ${jitterPerStep.toFixed(2)} m/点（>0.4 就是"波浪"，直道看着不直）`)
+    assert.ok(spread <= 3.5, `seed=${seed} 直道段内横向偏移散布 ${spread.toFixed(2)} m（>3.5 说明不是平行错开而是歪了）`)
   }
 })
 
@@ -329,20 +343,26 @@ test('★ generateCorridorRoute：**多圈不许完全重合**（用户 2026-09-
     const uniq = new Set(means.map((m) => m.toFixed(2)))
     assert.ok(uniq.size >= 6, `seed=${seed} 各圈平均偏离太雷同（${uniq.size} 种）：${means.map((m) => m.toFixed(2)).join(', ')}`)
 
-    // ② **圈间平滑**：相邻两圈的位移差 ≤ 1.5 m（旧版"左右剧烈晃动"是几十米级，这条会爆掉）
+    // ② **圈间平滑**：相邻两圈的位移差不得明显超过"逐圈漂移的封顶值"。
+    //    ⚠️ 阈值**跟着幅度走**（不是写死）：把 `lapDriftMaxM` 调大时这里自动放宽，调小时自动收紧。
+    //    真正的"左右剧烈晃动"是**几十米级**（旧算法每圈错开 30~86 m）⇒ 这条一定会爆。
+    const driftCap = Math.max(...g.lapDriftM.map((v) => Math.abs(v)), 0.5)
     for (let i = 1; i < means.length; i++) {
       const d = Math.abs(means[i]! - means[i - 1]!)
-      assert.ok(d <= 1.5, `seed=${seed} 第 ${i}→${i + 1} 圈跳了 ${d.toFixed(2)} m：${means.map((m) => m.toFixed(2)).join(', ')}`)
+      assert.ok(
+        d <= driftCap + 0.35,
+        `seed=${seed} 第 ${i}→${i + 1} 圈跳了 ${d.toFixed(2)} m（圈间漂移封顶 ${driftCap.toFixed(2)} m）：${means.map((m) => m.toFixed(2)).join(', ')}`,
+      )
     }
 
     // ③ 幅度受控：每圈平均偏离 ≤ maxOffRouteM（5 m）⇒ 始终在跑道宽度内
     for (const m of means) assert.ok(m <= 5.01, `seed=${seed} 某圈平均偏离 ${m.toFixed(2)} m 超上限：${means.map((x) => x.toFixed(2)).join(', ')}`)
 
-    // ④ 逐圈漂移量本身要有波动且不越界
+    // ④ 逐圈漂移量本身要有波动且不越界（上限 = `lapDriftMaxM`，默认 2.2 m）
     const drifts = g.lapDriftM
     assert.equal(drifts.length >= laps, true, `lapDriftM 长度不足：${drifts.length}`)
     assert.ok(new Set(drifts.slice(0, laps).map((v) => v.toFixed(2))).size >= 5, `逐圈漂移量太雷同：${drifts.join(', ')}`)
-    for (const v of drifts) assert.ok(Math.abs(v) <= 1.01, `逐圈漂移 ${v} 超出 ±1 m 上限`)
+    for (const v of drifts) assert.ok(Math.abs(v) <= 2.21, `逐圈漂移 ${v} 超出 ±2.2 m 上限`)
   }
 })
 

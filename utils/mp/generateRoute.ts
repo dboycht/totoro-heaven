@@ -66,9 +66,9 @@ export interface CorridorOptions {
    *   · 幅度受 `lapDriftRatio` × `maxOffRouteM` 与 `lapDriftMaxM` 双重限制 ⇒ 始终在跑道宽度内。
    */
   lapDrift?: boolean
-  /** 每圈漂移的标准差 = `lapDriftRatio` × `maxOffRouteM`（默认 0.5 ⇒ 约 ±1 m） */
+  /** 每圈漂移的标准差 = `lapDriftRatio`（米，默认 1.5——按"1 m ≈ 预览图 1.67 px"标定，见上） */
   lapDriftRatio?: number
-  /** 每圈漂移的**硬上限**（米，默认 1.0）—— 防极端取样把某圈顶到跑道边 */
+  /** 每圈漂移的**硬上限**（米，默认 2.2）—— 防极端取样把某圈顶到跑道边 */
   lapDriftMaxM?: number
 }
 
@@ -404,8 +404,15 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
    * 用 `seed ^ 0x9e3779b9` 派生一个独立序列 ⇒ 漂移是**叠加**在既有轨迹上的正交维度。
    */
   const lapRng = createRng((seed ^ 0x9e3779b9) >>> 0)
-  const lapDriftSigma = Math.max(0, options.lapDriftRatio ?? 0.5) // 稳态标准差（米）
-  const lapDriftCap = Math.max(0, options.lapDriftMaxM ?? 1.5)
+  /**
+   * 幅度按**"看得见"**标定（2026-09-18 实测，`_mp-analyze/scratch/diag_lap_spread.mjs`）：
+   * 轨迹预览把整条轨迹（含 300 m 级跑道圈）缩到约 500 px ⇒ **1 m ≈ 1.67 px**。
+   *   · σ=0.5 m ⇒ 圈间散布仅 1.1 m ⇒ 图上 1.8 px ⇒ **看起来仍是一圈**（用户反馈的就是这个）；
+   *   · σ=1.5 m / 上限 2.2 m ⇒ 圈间散布 2.6 m ⇒ 图上约 4.3 px ⇒ 能看出"几条并排的线"。
+   * 物理上也说得通：一个人跑 3 km 本来就会在 2~3 条道之间缓慢挪动（跑道整宽约 8~10 m）。
+   */
+  const lapDriftSigma = Math.max(0, options.lapDriftRatio ?? 1.5) // 稳态标准差（米）
+  const lapDriftCap = Math.max(0, options.lapDriftMaxM ?? 2.2)
   const lapDriftValues: number[] = (() => {
     if (!lapDriftOn || lapDriftSigma <= 0) return []
     // 先按时长估计圈数（够用即可；真实圈数由下面按累计里程推算，超出时续算）
