@@ -11,10 +11,20 @@
 import type { MpSunrunTask } from '~/src/mp/types'
 
 /**
- * 学生档案类型**已移到契约层** `src/mp/models.ts`（2026-09-18）：`utils/mp/realCache.ts` 也要用它，
- * 而算法层不能反向依赖 composables（分层规则）。这里再导出一次，保持既有 import 路径可用。
+ * 学生档案（`GetStudentInfoByToken` 读到的本人信息）。
+ * 📌 2026-09-18：曾为"缓存补存账号"短暂移到契约层 `src/mp/models.ts`；
+ * 缓存精简为"任务 + 选线"后**已搬回这里**（只有真实链路用它，契约层不再需要）。
  */
-export type { MpRealProfile } from '~/src/mp/models'
+export interface MpRealProfile {
+  snCode: string
+  studentName: string
+  schoolCode: string
+  schoolName: string
+  /** 校区（实测是中文名，如「天目湖」；同时作为 getSunrunPaper 的 campusId） */
+  campusId: string
+  campusName: string
+  className: string
+}
 
 export type RealPhase = 'idle' | 'begin' | 'waiting' | 'submitting' | 'done' | 'error'
 

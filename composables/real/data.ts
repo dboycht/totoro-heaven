@@ -22,7 +22,7 @@ import {
   unverifiedSchoolNotice,
 } from '~/utils/mp/schoolGate'
 import { logError, logInfo, logWarn } from '../useEventLog'
-import { TASK_CACHE_KEY, useRealState, type MpRealProfile } from './state'
+import { TASK_CACHE_KEY, useRealState } from './state'
 
 export function useMpRealData() {
   const { session, clearSession } = useMpSession()
@@ -182,15 +182,11 @@ export function useMpRealData() {
     applyToRunner(preferredLineId)
 
     if (import.meta.client) {
-      // ⚠️ 除任务外**连账号与开关一起存**（2026-09-18）：只存任务的话，
-      //    "恢复上次任务"后账号面板/一票否决项永远是"未读取"（用户实测反馈）。
+      // 只存"任务 + 当时选中的线路"（账号/开关不入缓存：恢复语义是"用 token 重新读取"，存了也不会用）
       writeCachePayload({
         at: loadedAt.value,
         task: task.value,
         lineId: String(run.value.lineId || ''),
-        profile: profile.value,
-        switches: switches.value,
-        cameraFlag: cameraFlag.value,
       })
     }
 
@@ -232,15 +228,8 @@ export function useMpRealData() {
     writeCachePayload({ ...p, lineId: String(run.value.lineId || '') })
   }
 
-  /** 统一写缓存（**补上账号/开关**，见 `utils/mp/realCache.ts` 的沿革说明） */
-  function writeCachePayload(p: {
-    at: number
-    task: MpSunrunTask | null
-    lineId: string
-    profile?: MpRealProfile | null
-    switches?: Record<string, string> | null
-    cameraFlag?: boolean | null
-  }): void {
+  /** 统一写缓存（**只写任务 + 选线**，见 `utils/mp/realCache.ts` 的说明） */
+  function writeCachePayload(p: { at: number; task: MpSunrunTask | null; lineId: string }): void {
     if (!import.meta.client || !p.task) return
     try {
       localStorage.setItem(TASK_CACHE_KEY, serializeCachePayload({ ...p, task: p.task }))

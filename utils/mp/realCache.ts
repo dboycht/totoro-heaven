@@ -1,85 +1,47 @@
 /**
- * 「上次读取的会话」本地缓存的**纯数据层**（2026-09-18 新增）
+ * 「上次读取的会话」本地缓存的**纯数据层**（2026-09-18）
  *
- * 为什么单独抽出来：缓存里现在要存**账号 + 任务 + 开关**（而不再只有任务），
- * 解析/归一化必须能离线单测（历史缓存、字段缺失、类型不对都要安全降级）。
+ * 缓存里**只放两样东西**：任务（用来显示"本机存有上次读取的会话：<任务名>"）+ 当时选中的线路。
  *
- * 历史沿革：
- *   · 1.1.4~1.1.9：缓存只有 `{ at, task, lineId }` ⇒ 点「恢复上次任务」后
- *     **账号面板与一票否决项永远是"未读取"**（用户 2026-09-18 实测反馈）。
- *   · 现在：补存 `profile` / `switches` / `cameraFlag`，并在恢复时**优先用 token 重新读取**。
+ * ⚠️ 为什么**不存账号 / 开关 / 摄像头杆**（2026-09-18 用户确认）：
+ *   「恢复上次会话」现在的语义是 **用本机 token 重新读取一遍**，压根不 apply 缓存里的旧值，
+ *   存了也不会被读 ⇒ 那几个字段会变成"只写不读"的死数据（比不存更容易让人误解）。
+ *   历史：1.1.4~1.1.9 只存 `{at, task, lineId}`；本轮曾短暂补存过 profile/switches/cameraFlag，
+ *   简化后**已裁掉**，回到最小集合。
+ *
+ * 解析/归一化放在这里的意义：**纯函数、可离线单测**（老缓存、缺字段、类型不对都要安全降级），
+ * 不依赖 `localStorage` 与 Vue 状态。
  */
-import type { MpRealProfile, MpSunrunTask } from '~/src/mp/types'
+import type { MpSunrunTask } from '~/src/mp/types'
 
-/** 缓存负载（**向后兼容**：老缓存没有下面后三个字段） */
+/** 缓存负载（最小集合） */
 export interface RealCachePayload {
   /** 写入时间（毫秒时间戳） */
   at: number
   task: MpSunrunTask
-  /** 当时选中的线路 id */
+  /** 当时选中的线路 id（恢复时沿用，避免选线被重置） */
   lineId: string
-  /** 学生档案（老缓存没有 ⇒ undefined） */
-  profile?: MpRealProfile
-  /** 人脸 / 抽查开关（老缓存没有 ⇒ undefined） */
-  switches?: Record<string, string>
-  /** 摄像头杆 flag（按线路；老缓存没有 ⇒ undefined） */
-  cameraFlag?: boolean
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === 'object' && !Array.isArray(v)
 
 /**
- * 把任意历史数据归一化成 `RealCachePayload`（纯函数）：
- *   · 必须有 `task`（且看起来是个对象）——没有就返回 `null`（= 没有可用缓存）；
- *   · `profile` 只有"像档案"（有 snCode）时才收，避免把垃圾数据写进界面状态；
- *   · `switches` 只收"值是字符串/数字的普通对象"；`cameraFlag` 只收布尔。
+ * 把任意历史数据归一化成 `RealCachePayload`：
+ *   · 必须有 `task`（且是普通对象）——没有就返回 `null`（= 没有可用缓存）；
+ *   · `at` 非有限数字归 0；`lineId` 非字符串归空串；
+ *   · 老缓存里多余的字段（如曾经存过的 profile/switches）**直接忽略**，不报错。
  */
 export function normalizeCachePayload(raw: unknown): RealCachePayload | null {
   if (!isObj(raw)) return null
   const task = raw.task
   if (!isObj(task)) return null
-
   const at = typeof raw.at === 'number' && Number.isFinite(raw.at) ? raw.at : 0
   const lineId = typeof raw.lineId === 'string' ? raw.lineId : ''
-
-  const out: RealCachePayload = { at, task: task as unknown as MpSunrunTask, lineId }
-
-  const p = raw.profile
-  if (isObj(p) && typeof p.snCode === 'string' && p.snCode) {
-    out.profile = p as unknown as MpRealProfile
-  }
-
-  const sw = raw.switches
-  if (isObj(sw)) {
-    const clean: Record<string, string> = {}
-    for (const [k, v] of Object.entries(sw)) {
-      if (typeof v === 'string') clean[k] = v
-      else if (typeof v === 'number' && Number.isFinite(v)) clean[k] = String(v)
-    }
-    if (Object.keys(clean).length) out.switches = clean
-  }
-
-  if (typeof raw.cameraFlag === 'boolean') out.cameraFlag = raw.cameraFlag
-
-  return out
+  return { at, task: task as unknown as MpSunrunTask, lineId }
 }
 
-/** 序列化（写缓存用；只写需要的字段，避免把整个 state 摊进去） */
-export function serializeCachePayload(p: {
-  at: number
-  task: MpSunrunTask
-  lineId: string
-  profile?: MpRealProfile | null
-  switches?: Record<string, string> | null
-  cameraFlag?: boolean | null
-}): string {
-  const payload: RealCachePayload = {
-    at: p.at,
-    task: p.task,
-    lineId: p.lineId,
-    ...(p.profile ? { profile: p.profile } : {}),
-    ...(p.switches ? { switches: p.switches } : {}),
-    ...(typeof p.cameraFlag === 'boolean' ? { cameraFlag: p.cameraFlag } : {}),
-  }
+/** 序列化（写缓存用）——只写最小集合，绝不把整个 state 摊进去 */
+export function serializeCachePayload(p: { at: number; task: MpSunrunTask; lineId: string }): string {
+  const payload: RealCachePayload = { at: p.at, task: p.task, lineId: p.lineId }
   return JSON.stringify(payload)
 }
