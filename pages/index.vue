@@ -311,8 +311,9 @@ const doLogout = () => {
 /** 恢复"上次读取的任务"（刷新后默认不自动恢复，这是显式入口） */
 const doRestoreCached = () => {
   // 从本机缓存恢复任务也属于「读取数据」⇒ 云式提示（1.1.9 需求①）
-  if (restoreCachedTask()) showSnackbar('已恢复上次读取的任务（含当时选中的线路）', 'success', { cloud: true })
-  else showSnackbar('没有可恢复的任务', 'warning', { cloud: true })
+  // 2026-09-18 简化：恢复 = **用本机 token 重新读取一遍**（账号/任务/线路/开关全部刷新）
+  if (restoreCachedTask()) showSnackbar('正在用本机 token 重新读取…', 'info', { cloud: true })
+  else showSnackbar(realError.value || '本机没有可用 token：请先「一键获取 token」', 'warning', { cloud: true })
 }
 
 /** 一键清空本机数据（会话 + 任务缓存 + 记录） */

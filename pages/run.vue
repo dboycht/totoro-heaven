@@ -324,6 +324,7 @@ const {
   profile: realProfile,
   task: realTask,
   status: realStatus,
+  error: realError,
   phase,
   phaseMessage,
   remainingSeconds,
@@ -375,8 +376,9 @@ const doEnableDemo = () => {
 /** 恢复"上次读取的任务"（刷新后默认不自动恢复） */
 const doRestoreCached = () => {
   // 这也是"读取数据"（从本机缓存里恢复任务）⇒ 用云式顶部提示（1.1.9 需求①）
-  if (restoreCachedTask()) showSnackbar('已恢复上次读取的任务（含当时选中的线路）', 'success', { cloud: true })
-  else showSnackbar('没有可恢复的任务', 'warning', { cloud: true })
+  // 2026-09-18 简化：恢复 = **用本机 token 重新读取一遍**（与工作台同一套语义）
+  if (restoreCachedTask()) showSnackbar('正在用本机 token 重新读取…', 'info', { cloud: true })
+  else showSnackbar(realError.value || '本机没有可用 token：请回工作台「一键获取 token」', 'warning', { cloud: true })
 }
 
 const statusText = computed(() => ({ idle: '待开始', running: '跑步中', paused: '已暂停', finished: '已结算' })[run.value.status])

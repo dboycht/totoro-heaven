@@ -81,8 +81,10 @@ export function useMpRealData() {
   /**
    * 读取真实账号 + 任务 + 线路（**只读**）。
    * 依次：学校基址 → 学生档案（snCode/campusId）→ getSunrunPaper（约束 + 线路）。
+   * @param preferredLineId 优先沿用的选线（「恢复上次会话」时传入缓存里记住的那条）；
+   *        不传则按"本人校区同名 → 坐标分组默认"自动选。
    */
-  async function loadRealData(): Promise<boolean> {
+  async function loadRealData(preferredLineId?: string): Promise<boolean> {
     const token = session.value?.token
     if (!token || token.startsWith('demo-')) {
       status.value = 'error'
@@ -176,7 +178,8 @@ export function useMpRealData() {
     // 先定好"本次选中哪条线路"（校区名 → 坐标分组默认），再查**该线路**的摄像头杆开关。
     // ⚠️ 顺序很重要：摄像头杆是按线路下发的；早先这里查的是 runPointList[0]，
     //    而 applyToRunner 之后选中的可能是**另一条**（如与本人校区同名的），导致门禁拿不到当前线路的值。
-    applyToRunner()
+    //    若调用方指定了优先选线（"恢复上次会话"沿用缓存里的选线），则按它来。
+    applyToRunner(preferredLineId)
 
     if (import.meta.client) {
       // ⚠️ 除任务外**连账号与开关一起存**（2026-09-18）：只存任务的话，
@@ -247,49 +250,32 @@ export function useMpRealData() {
     }
   }
   /**
-   * 「恢复上次读取」——**先恢复，再用 token 重新读取一遍**（2026-09-18 按用户要求改）
+   * 「恢复上次会话」= **用本机 token 重新读取一遍**（2026-09-18 晚，用户要求简化）
    *
-   * 用户实测反馈：只点「恢复上次任务」时，右侧账号面板与一票否决项（人脸/抽查/摄像头杆）
-   * **永远是"未读取"** —— 因为老实现只恢复了 `task`，从来不动 `profile` / `switches`。
+   * 用户原话："把那个恢复任务搞成恢复成 token 然后自动吧，感觉现在这种有点奇怪" ——
+   * 于是**去掉两段式**（不再"先恢复旧缓存、再重新读取"），行为变成一句话：
+   *   **有 token 就自动重新读取（账号 / 任务 / 线路 / 开关 / 摄像头杆全部刷新）；**
+   *   **没有 token 就明确提示去取 token**（不再拿旧缓存糊过去 —— 旧数据里没有账号与开关，
+   *   恢复出来反而让人以为"读到了"）。
    *
-   * 现在的两段式：
-   *   ① **先即时恢复**缓存里的账号 / 任务 / 开关 / 摄像头杆（界面立刻可用，即便没网也能看）；
-   *   ② 若本机**存有真实 token** ⇒ 立刻用 token **重新读取一遍**（拿到最新的任务与开关；
-   *      token 过期时会走已有的"可操作提示"分支）；没有 token 就只能用缓存。
+   * 保留的语义：**沿用缓存里记住的那条线路**（重新读取后由 `loadRealData` 内部按
+   * "缓存已选 → 校区同名 → 分组默认"三级优先级重新选中，用户不会觉得选线被重置）。
    *
-   * 返回"是否恢复了缓存"（`false` = 没有可用缓存；此时若仍有 token，页面应改走「读取真实账号与任务」）。
+   * 返回 `true` = 已发起重新读取（异步）；`false` = 缺少可用 token（`error` 里已写好可操作提示）。
    */
   function restoreCachedTask(): boolean {
-    if (task.value) return false
-    const p = readCachePayload()
-    const cachedTask = p?.task
-    let restored = false
-    if (cachedTask?.runPointList?.length) {
-      task.value = cachedTask
-      loadedAt.value = p?.at || Date.now()
-      status.value = 'ready'
-      // 账号与开关一起恢复（老缓存没有这些字段 ⇒ 保持 undefined/原值，由第 ② 步重新读取补齐）
-      if (p?.profile) profile.value = p.profile
-      if (p?.switches) switches.value = p.switches
-      if (typeof p?.cameraFlag === 'boolean') {
-        cameraFlag.value = p.cameraFlag
-        cameraFlagLineId.value = String(p.lineId || '')
-      }
-      applyToRunner(p?.lineId)
-      restored = true
-      logInfo('real', '已从本机缓存恢复上次读取（账号/任务/开关）', {
-        paperName: cachedTask.paperName,
-        hasProfile: Boolean(p?.profile),
-        hasSwitches: Boolean(p?.switches),
-      })
+    const token = String(session.value?.token ?? '')
+    if (!token || token.startsWith('demo-')) {
+      status.value = 'error'
+      error.value = '本机没有可用的 token（或只剩演示会话）—— 请先点「一键获取 token」，或粘贴 token 后点「读取真实账号与任务」。'
+      logWarn('real', '恢复失败：本机无可用 token')
+      return false
     }
-    // ② 有真实 token 就再读一遍（异步；失败会走 status/error 的既有分支，不会吞掉缓存里已恢复的内容）
-    const token = session.value?.token
-    if (token && !token.startsWith('demo-')) {
-      logInfo('real', '恢复后自动重新读取真实数据', { tokenLen: token.length })
-      void loadRealData()
-    }
-    return restored
+    // 沿用缓存里记住的选线（若有），再整链路重新读取
+    const cachedLineId = readCachePayload()?.lineId ?? ''
+    logInfo('real', '恢复上次会话：用本机 token 重新读取', { tokenLen: token.length, cachedLineId })
+    void loadRealData(cachedLineId || undefined)
+    return true
   }
 
   /** 清掉"上次任务"缓存（界面"忽略并清除"用） */
