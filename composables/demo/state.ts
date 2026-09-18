@@ -60,6 +60,14 @@ export interface DemoRunState {
   /** 已推进到的点数（用于「实时」拟合度） */
   visibleCount: number
   officialRoute: LatLng[]
+  /**
+   * 🆕 **本次轨迹的"一圈多长"（米）**：轨迹预览据此把点按**圈**拆开、**每圈一种颜色**画
+   * （否则多圈同色会糊成一条粗带 —— 用户 2026-09-18 反馈"看着就是轨迹粗了一点"）。
+   * 0 = 未知（预览退化成"整条一色"）。
+   */
+  lapLengthM: number
+  /** 🆕 逐圈漂移量（米），与 `lapLengthM` 配套，图例里显示"第 N 圈偏了多少" */
+  lapDriftM: number[]
   fitDegree: number
   passPoints: { all: number; done: number; notPassed: number }
   /** 结束后的提交报文预览与判定 */
@@ -94,6 +102,8 @@ export const createRunState = (): DemoRunState => ({
   points: [],
   visibleCount: 0,
   officialRoute: [],
+  lapLengthM: 0,
+  lapDriftM: [],
   fitDegree: 0,
   passPoints: { all: 4, done: 0, notPassed: 4 },
   result: null,

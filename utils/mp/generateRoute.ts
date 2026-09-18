@@ -86,6 +86,11 @@ export interface GeneratedRoute {
    * 用途：① 单测/诊断可断言"各圈真的不同了"；② 排查时一眼看出"是不是某圈偏太多"。
    */
   lapDriftM: number[]
+  /**
+   * 🆕 **一圈的弧长（米，= 生成几何的周长）**：给"按圈着色"的可视化用 ——
+   * 调用方把累积弧长除以它，就能知道每个点属于第几圈（与内部切圈规则完全一致）。
+   */
+  lapLengthM: number
 }
 
 /**
@@ -549,6 +554,7 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     fitDegree: Number(fit).toFixed(2),
     driftEpisodes: driftOn ? bursts.length : 0,
     lapDriftM: Array.from({ length: lapsUsed }, (_, i) => Number(lapDriftAt(i).toFixed(2))),
+    lapLengthM: Number(pathTotal.toFixed(1)),
   }
 }
 

@@ -50,6 +50,10 @@ const NEEDED = [
   //    检查器要读 app.vue（必须 provide NOTICE_KEY）与 composables/useNotice.ts（键的唯一来源）。
   'app.vue',
   'composables/useNotice.ts',
+  // ⚠️ 2026-09-18（1.1.9）：R11 断言"kebab-case 绑定不得丢掉 prop"——
+  //    检查器要把页面里的组件标签与**组件文件里声明的 props** 对照，所以组件文件也必须在副本里，
+  //    否则 byName 找不到它、检查直接跳过（自测实测：漏拷组件 → 注入违规却"通过"）。
+  'components/RunTrajectoryPreview.vue',
 ]
 
 /**
@@ -247,6 +251,21 @@ try {
     if (code === 0) failures.push("页面退回 `inject('showSnackbar')` 但检查器仍然通过（单一契约守卫失效）")
     else if (!out.includes('useNotice')) failures.push(`报错信息不是预期的：\n${out}`)
   }
+
+  // ---------- 注入 12：kebab-case 绑定会丢掉 prop（R11；2026-09-18 真踩到）----------
+  // 把 `:lapLengthM="run.lapLengthM"` 改回 `:lap-length="..."` —— 组件声明的 prop 是 lapLengthM，
+  // Vue dev 模式用 hyphenate('lapLengthM')='lap-length-m' 严格比对 ⇒ 静默丢弃。检查器必须报出来。
+  {
+    const dir = copyBase()
+    const file = join(dir, 'pages/run.vue')
+    const text = readFileSync(file, 'utf8')
+    const injected = text.replace(':lapLengthM="run.lapLengthM"', ':lap-length="run.lapLengthM"')
+    if (injected === text) failures.push('注入 12：pages/run.vue 里找不到 `:lapLengthM="run.lapLengthM"`（自测需同步更新）')
+    writeFileSync(file, injected, 'utf8')
+    const { code, out } = run(dir)
+    if (code === 0) failures.push('kebab-case 绑定丢掉 prop，但检查器仍然通过（R11 守卫失效）')
+    else if (!out.includes('静默丢弃')) failures.push(`报错信息不是预期的：\n${out}`)
+  }
 } finally {
   rmSync(sandbox, { recursive: true, force: true })
 }
@@ -258,7 +277,7 @@ if (failures.length) {
   process.exit(1)
 }
 console.log(
-  '✅ 自测通过：基线通过、11 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
-    '代理重复声明前缀 / 模板裸取可空状态 / 空 catch / 夜间限制套回「开始跑步」/ 提示退回字符串注入键）都被抓到且退出码非 0，' +
-    '且"写了 v-if 守卫"的反向用例不会被误报。',
+  '✅ 自测通过：基线通过、12 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
+    '代理重复声明前缀 / 模板裸取可空状态 / 空 catch / 夜间限制套回「开始跑步」/ 提示退回字符串注入键 / ' +
+    'kebab 绑定丢 prop）都被抓到且退出码非 0，且"写了 v-if 守卫"的反向用例不会被误报。',
 )

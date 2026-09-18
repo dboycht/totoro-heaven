@@ -156,6 +156,9 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
         points: generated.points,
         visibleCount: 1,
         officialRoute: line.pointList,
+        // 供「轨迹预览」按圈着色（多圈同色会糊成一条粗带）
+        lapLengthM: generated.lapLengthM,
+        lapDriftM: generated.lapDriftM,
         passPoints: { all: DEMO_PASS_POINTS.length, done: 0, notPassed: DEMO_PASS_POINTS.length },
       }
       lastFitAt = 0

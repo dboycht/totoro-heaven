@@ -1,7 +1,6 @@
 <script setup lang="ts">
 /**
- * 轨迹预览（**矢量、离线**）：把「真跑道几何（内外圈 + 所选车道线）」「官方路线」「本次轨迹」画在一张图上，
- * 并报出"离路线最远多少米"。
+ * 轨迹预览（矢量、离线）：把「真跑道几何（内外圈 + 所选车道线）」「官方路线」「本次轨迹」画在同一张图上。
  *
  * 为什么是矢量而不是地图底图：
  *   ① 不依赖外网瓦片 —— 离线可用、瓦片挂了也不影响（桌面工具常有网络受限的场景）；
@@ -11,9 +10,11 @@
  * ⚠️ 判据提醒：官方拟合度的**容差是 25 m**（5 m 采样 / 25 m 命中）⇒
  *    离路线越近，"在跑道上"越可信；若最远偏离 > 25 m 就会明显像"没沿路线跑"。
  *
- * 🆕 2026-09-18（1.1.9）：补上**内外圈 + 车道线**（此前只画官方模板 + 轨迹）——
- *    用户要的是"一眼看出这条轨迹是不是跑在自己描的那条跑道里"，而这两圈就是跑道本身。
- *    几何来自**本机路线库**（`trackEntries` prop）；没配置过该线路时这一段不画（保持原样）。
+ * 2026-09-18 两次改进（都来自用户反馈）：
+ *   · 补画**内外圈 + 车道线**（此前只有官方模板 + 轨迹）；
+ *   · **按圈着色**：多圈若同色，重叠时会糊成"一条粗带"，用户反馈"看着就是轨迹粗了一点"。
+ *     现在按 `lapLengthM` 把轨迹拆成"第 1 圈、第 2 圈…"，每圈一色、只画 1.2px 细线，
+ *     并另给一张**局部放大图**（1 m 的圈间差在整图尺度下只有 ~1.7 px，放大才看得清）。
  */
 import { laneLoop, laneRatioFor, type TrackRings } from '~/utils/mp/trackEditor'
 
@@ -34,11 +35,14 @@ const props = defineProps<{
   trackEntries?: TrackEntryLike[]
   /** 当前线路 id：决定用路线库里哪一条几何 */
   lineId?: string
+  /** 本次轨迹的"一圈多长"（米）：据此按圈拆段着色；0/缺省 = 整条一色 */
+  lapLengthM?: number
 }>()
 
 const W = 560
-const H = 300
 const PAD = 16
+/** 局部放大面板的边长（米）：1 m 的圈间差在整图尺度只有 ~1.7 px，放大才看得清 */
+const FOCUS_SPAN_M = 90
 
 /**
  * 内部坐标：**用 `latitude/longitude` 命名**（而不是 lat/lng）——
@@ -50,6 +54,17 @@ const toP = (p: { latitude: string | number; longitude: string | number }): P =>
   longitude: Number(p.longitude),
 })
 const finite = (list: P[]) => list.filter((p) => Number.isFinite(p.latitude) && Number.isFinite(p.longitude))
+
+/** 两点距离（米，等距近似）——用于判断"描的圈"与"本次轨迹"是否相距过远 */
+const distBetween = (a: P, b: P): number => {
+  const mPerDegLat = 111320
+  const mLng = 111320 * Math.cos(((a.latitude + b.latitude) / 2) * (Math.PI / 180))
+  return Math.hypot((b.latitude - a.latitude) * mPerDegLat, (b.longitude - a.longitude) * mLng)
+}
+
+/** 每圈一个颜色（超出则循环），最后一档用于"其它圈" */
+const LAP_COLORS = ['#38bdf8', '#a78bfa', '#22c55e', '#f59e0b', '#f472b6', '#facc15', '#2dd4bf', '#fb7185', '#93c5fd', '#c4b5fd', '#fca5a5', '#86efac']
+const OTHER_COLOR = '#94a3b8'
 
 /** 当前选中线路在本机路线库里的几何（没配置过 → undefined，那两层就不画） */
 const entry = computed(() => {
@@ -72,12 +87,43 @@ const track = computed(() => {
   return { outer, inner, lane: lanePts.length >= 3 ? lanePts : [], laneNo, laneCount }
 })
 
-const geometry = computed(() => {
+/** 轨迹按"圈"拆段（多圈同色会糊成一条粗带；拆开后每圈一色，重叠也能看出分层） */
+const lapSegments = computed<{ lap: number; pts: P[] }[]>(() => {
   const pts = finite((props.points ?? []).map(toP))
-  const rt = finite((props.route ?? []).map(toP))
+  const lapM = Number(props.lapLengthM ?? 0)
+  if (!(lapM > 0) || pts.length < 2) return [{ lap: 0, pts }]
+  const out: { lap: number; pts: P[] }[] = []
+  let acc = 0
+  let cur: P[] = [pts[0]!]
+  let curLap = 0
+  const mPerDegLat = 111320
+  const mLngAt = (lat: number) => 111320 * Math.cos((lat * Math.PI) / 180)
+  const dist = (a: P, b: P) =>
+    Math.hypot((b.latitude - a.latitude) * mPerDegLat, (b.longitude - a.longitude) / (1 / mLngAt(a.latitude)))
+  for (let i = 1; i < pts.length; i++) {
+    acc += dist(pts[i - 1]!, pts[i]!)
+    const lap = Math.floor(acc / lapM)
+    if (lap !== curLap) {
+      // 本圈收尾：把新点也放进上一圈（线段跨圈时才不断裂）
+      cur.push(pts[i]!)
+      out.push({ lap: curLap, pts: cur })
+      cur = [pts[i]!]
+      curLap = lap
+    } else {
+      cur.push(pts[i]!)
+    }
+  }
+  if (cur.length > 1) out.push({ lap: curLap, pts: cur })
+  return out
+})
+
+/** 全图视图（装得下所有要画的东西） */
+const view = computed(() => {
   const tr = track.value
+  const segs = lapSegments.value
+  const pts = segs.flatMap((s) => s.pts)
+  const rt = finite((props.route ?? []).map(toP))
   if (pts.length < 2) return null
-  // 视图必须**装得下所有要画的东西**，否则跑道圈会被裁到画布外（看起来像"没画"）
   const all = [...pts, ...rt, ...(tr ? [...tr.outer, ...tr.inner, ...tr.lane] : [])]
   const minLat = Math.min(...all.map((p) => p.latitude))
   const maxLat = Math.max(...all.map((p) => p.latitude))
@@ -85,7 +131,8 @@ const geometry = computed(() => {
   const maxLng = Math.max(...all.map((p) => p.longitude))
   const spanLat = Math.max(1e-6, maxLat - minLat)
   const spanLng = Math.max(1e-6, maxLng - minLng)
-  const scale = Math.min((W - PAD * 2) / spanLng, (H - PAD * 2) / spanLat)
+  const scale = Math.min((W - PAD * 2) / spanLng, (W - PAD * 2) / spanLat)
+  const H = Math.round(spanLat * scale + PAD * 2)
   const x = (p: P) => PAD + (p.longitude - minLng) * scale
   const y = (p: P) => H - PAD - (p.latitude - minLat) * scale
   const d = (list: P[], close = false) => {
@@ -117,20 +164,106 @@ const geometry = computed(() => {
     return best
   }
   const devs = rt.length >= 2 ? pts.map(distToRoute).sort((a, b) => a - b) : []
+
   return {
     w: W,
     h: H,
+    x,
+    y,
+    scale,
+    center: { lat: (minLat + maxLat) / 2, lng: (minLng + maxLng) / 2 },
     routePath: rt.length >= 2 ? d(rt) : '',
     routePoints: rt.length,
     outerPath: tr ? d(tr.outer, true) : '',
     innerPath: tr ? d(tr.inner, true) : '',
     lanePath: tr && tr.lane.length >= 3 ? d(tr.lane, true) : '',
     laneNo: tr?.laneNo ?? 0,
-    trajPath: d(pts),
     start: { x: x(pts[0]!), y: y(pts[0]!) },
     n: pts.length,
+    lapCount: segs.length,
     maxDev: devs.length ? devs[devs.length - 1]! : null,
     p95: devs.length ? devs[Math.floor(devs.length * 0.95)]! : null,
+    /**
+     * ⚠️ **绘图比例失衡**（2026-09-18 加）：若"描的圈"与"本次轨迹/官方路线"相距极远
+     * （例如描的是另一个校区的圈），整图会被撑到几十公里尺度 ⇒ 图上看什么都只有一个小点。
+     * 这是**用户可修的数据问题**（描错了圈），所以要明确提示，而不是给一张看不懂的图。
+     * 阈值取 3000 m：远超 25 m 的拟合度容差，也与"校区聚类阈值"同量级。
+     */
+    scaleBroken: distBetween(pts[0]!, tr?.outer?.[0] ?? pts[0]!) > 3000 || distBetween(pts[0]!, rt[0] ?? pts[0]!) > 3000,
+    /** 轨迹起点到"描的圈"的距离（米），用于提示文案 */
+    gapM: tr?.outer?.[0] ? distBetween(pts[0]!, tr.outer[0]) : 0,
+  }
+})
+
+/** 各段的 SVG 路径（d 字符串）——整图 */
+const lapPaths = computed(() => {
+  const v = view.value
+  if (!v) return [] as { lap: number; d: string; color: string; label: string }[]
+  return lapSegments.value.map((s) => ({
+    lap: s.lap + 1,
+    d: s.pts.map((p, i) => `${i ? 'L' : 'M'}${v.x(p).toFixed(1)},${v.y(p).toFixed(1)}`).join(' '),
+    color: s.lap < LAP_COLORS.length ? LAP_COLORS[s.lap]! : OTHER_COLOR,
+    label: s.lap < LAP_COLORS.length ? `第 ${s.lap + 1} 圈` : '其它圈',
+  }))
+})
+
+/**
+ * 局部放大面板：以"圈漂移最明显的位置"为中心 ——
+ * 即**各圈到轨迹形心的距离差异最大**的那一段，保证放大图里一定看得到分层。
+ * 一次算完所需的一切（含每圈路径），避免第二处重复做 bbox 数学。
+ */
+const focus = computed(() => {
+  const tr = track.value
+  const segs = lapSegments.value
+  const pts = segs.flatMap((s) => s.pts)
+  if (pts.length < 4) return null
+
+  const mPerDegLat = 111320
+  const mLng = 111320 * Math.cos((pts[0]!.latitude * Math.PI) / 180)
+  const cx = pts.reduce((s, p) => s + p.longitude * mLng, 0) / pts.length
+  const cy = pts.reduce((s, p) => s + p.latitude * mPerDegLat, 0) / pts.length
+  const radiusOf = (p: P) => Math.hypot(p.longitude * mLng - cx, p.latitude * mPerDegLat - cy)
+  const lapRadii = segs.map((s) => s.pts.reduce((sum, p) => sum + radiusOf(p), 0) / Math.max(1, s.pts.length))
+  const spreadM = lapRadii.length > 1 ? Math.max(...lapRadii) - Math.min(...lapRadii) : 0
+  // 放大中心取"半径最大那一圈"的中间点（该处圈间分离最明显）
+  const idxOfMax = lapRadii.indexOf(Math.max(...lapRadii))
+  const seg = segs[idxOfMax]?.pts ?? pts
+  const center = seg[Math.floor(seg.length / 2)] ?? pts[0]!
+
+  const w = 420
+  const spanLat = FOCUS_SPAN_M / mPerDegLat
+  const spanLng = FOCUS_SPAN_M / mLng
+  const minLat = center.latitude - spanLat / 2
+  const minLng = center.longitude - spanLng / 2
+  const scale = w / spanLng
+  const h = Math.round(spanLat * scale)
+  /** 只保留落在放大窗口内的点，避免画到画布外（SVG 不裁剪但会白画） */
+  const inWindow = (p: P) => p.latitude >= minLat && p.latitude <= minLat + spanLat && p.longitude >= minLng && p.longitude <= minLng + spanLng
+  const x = (p: P) => (p.longitude - minLng) * scale
+  const y = (p: P) => h - (p.latitude - minLat) * scale
+  const d = (list: P[], close = false) => {
+    if (!list.length) return ''
+    const path = list.map((p, i) => `${i ? 'L' : 'M'}${x(p).toFixed(1)},${y(p).toFixed(1)}`).join(' ')
+    return close && list.length > 2 ? `${path} Z` : path
+  }
+  const win = (list: P[]) => list.filter(inWindow)
+
+  return {
+    w,
+    h,
+    spanM: FOCUS_SPAN_M,
+    pxPerM: scale / mLng,
+    spreadM,
+    lapCount: segs.length,
+    outerPath: tr ? d(win(tr.outer), true) : '',
+    innerPath: tr ? d(win(tr.inner), true) : '',
+    lanePath: tr && tr.lane.length >= 3 ? d(win(tr.lane), true) : '',
+    routePath: (props.route ?? []).length > 1 ? d(win(finite((props.route ?? []).map(toP)))) : '',
+    lapPaths: segs.map((s) => ({
+      lap: s.lap + 1,
+      d: d(win(s.pts)),
+      color: s.lap < LAP_COLORS.length ? LAP_COLORS[s.lap]! : OTHER_COLOR,
+    })),
   }
 })
 </script>
@@ -142,52 +275,96 @@ const geometry = computed(() => {
       <span class="text-caption text-medium-emphasis">（矢量图，离线绘制、不请求底图）</span>
     </v-card-title>
     <v-card-text>
-      <template v-if="geometry">
-        <svg :viewBox="`0 0 ${geometry.w} ${geometry.h}`" style="width: 100%; height: auto; background: #0b1220; border-radius: 6px">
-          <!-- 真跑道几何（本机路线库）：整圈闭合，所以用 Z 收尾 -->
-          <path
-            v-if="geometry.outerPath"
-            :d="geometry.outerPath"
-            fill="none"
-            stroke="#38bdf8"
-            stroke-width="1.6"
-            opacity="0.95"
-          />
-          <path
-            v-if="geometry.innerPath"
-            :d="geometry.innerPath"
-            fill="none"
-            stroke="#a78bfa"
-            stroke-width="1.6"
-            opacity="0.95"
-          />
-          <path v-if="geometry.lanePath" :d="geometry.lanePath" fill="none" stroke="#22c55e" stroke-width="1.2" opacity="0.75" />
-          <!-- 官方路线（灰虚线）在最上层，方便与上面三圈对照 -->
-          <path
-            v-if="geometry.routePath"
-            :d="geometry.routePath"
-            fill="none"
-            stroke="#94a3b8"
-            stroke-width="1.6"
-            stroke-dasharray="5 4"
-          />
-          <!-- 本次轨迹：加一圈白色描边（dark 底上细线太容易糊在一起） -->
-          <path :d="geometry.trajPath" fill="none" stroke="#ffffff" stroke-width="3.4" opacity="0.35" />
-          <path :d="geometry.trajPath" fill="none" stroke="#f59e0b" stroke-width="1.8" />
-          <circle :cx="geometry.start.x" :cy="geometry.start.y" r="4.5" fill="#f59e0b" stroke="#ffffff" stroke-width="1.5" />
-        </svg>
+      <template v-if="view">
+        <!-- ⚠️ 描的圈与本次轨迹相距极远（多半是描错了圈/选了别的校区）：
+             此时整图会被撑到几十公里尺度 ⇒ 图上看不清任何东西，必须明确告诉用户怎么修 -->
+        <v-alert v-if="view.scaleBroken" type="error" variant="tonal" density="compact" class="mb-3">
+          <div class="font-weight-bold">预览比例已失衡：你描的圈与本次轨迹不在同一处。</div>
+          <div class="text-caption mt-1">
+            两者相距约 <b>{{ (view.gapM / 1000).toFixed(1) }} km</b> —— 多半是<b>描错了线路</b>（选了别的校区）
+            或这条本地路线是用别的线路的几何存的。请回「跑道编辑」用「快速定位」对着卫星图重描，
+            或删掉这条本地路线（删掉后会用官方模板跑）。
+          </div>
+        </v-alert>
+        <v-row dense>
+          <!-- 左：全图（按圈着色） -->
+          <v-col cols="12" md="7">
+            <svg :viewBox="`0 0 ${view.w} ${view.h}`" style="width: 100%; height: auto; background: #0b1220; border-radius: 6px">
+              <path v-if="view.outerPath" :d="view.outerPath" fill="none" stroke="#38bdf8" stroke-width="1.4" opacity="0.9" />
+              <path v-if="view.innerPath" :d="view.innerPath" fill="none" stroke="#a78bfa" stroke-width="1.4" opacity="0.9" />
+              <path v-if="view.lanePath" :d="view.lanePath" fill="none" stroke="#22c55e" stroke-width="1" opacity="0.7" />
+              <path v-if="view.routePath" :d="view.routePath" fill="none" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="5 4" />
+              <!-- 每圈一色、**细线**（多圈同色 + 粗描边会糊成一条粗带） -->
+              <path
+                v-for="p in lapPaths"
+                :key="`lap-${p.lap}`"
+                :d="p.d"
+                :data-lap="p.lap"
+                fill="none"
+                :stroke="p.color"
+                stroke-width="1.2"
+                opacity="0.95"
+              />
+              <circle :cx="view.start.x" :cy="view.start.y" r="3.5" fill="#f59e0b" stroke="#fff" stroke-width="1.2" />
+            </svg>
+          </v-col>
+          <!-- 右：局部放大（圈间 1~3 m 的差别只有放大才看得清） -->
+          <v-col cols="12" md="5">
+            <svg
+              v-if="focus"
+              :viewBox="`0 0 ${focus.w} ${focus.h}`"
+              style="width: 100%; height: auto; background: #0b1220; border-radius: 6px"
+            >
+              <path v-if="focus.outerPath" :d="focus.outerPath" fill="none" stroke="#38bdf8" stroke-width="1.4" opacity="0.9" />
+              <path v-if="focus.innerPath" :d="focus.innerPath" fill="none" stroke="#a78bfa" stroke-width="1.4" opacity="0.9" />
+              <path v-if="focus.lanePath" :d="focus.lanePath" fill="none" stroke="#22c55e" stroke-width="1" opacity="0.7" />
+              <path
+                v-if="focus.routePath"
+                :d="focus.routePath"
+                fill="none"
+                stroke="#94a3b8"
+                stroke-width="1.4"
+                stroke-dasharray="5 4"
+              />
+              <path
+                v-for="p in focus.lapPaths"
+                :key="`f-${p.lap}`"
+                :d="p.d"
+                :data-lap="p.lap"
+                fill="none"
+                :stroke="p.color"
+                stroke-width="1.4"
+              />
+            </svg>
+            <div class="text-caption text-medium-emphasis mt-1">
+              局部放大（约 {{ focus?.spanM }} m × {{ focus?.spanM }} m，≈ {{ focus?.pxPerM.toFixed(1) }} 像素/米）：
+              各圈在这里分开约 <b>{{ focus?.spreadM.toFixed(1) }} m</b>
+            </div>
+          </v-col>
+        </v-row>
+
         <div class="text-caption text-medium-emphasis mt-2">
-          <template v-if="geometry.outerPath">
-            蓝实线 = 你描的跑道外圈　紫线 = 内圈　绿线 = 所选第 {{ geometry.laneNo }} 道<br />
+          <template v-if="view.outerPath">
+            蓝实线 = 你描的跑道外圈　紫线 = 内圈　绿线 = 所选第 {{ view.laneNo }} 道　
           </template>
-          灰虚线 = 官方路线（{{ geometry.routePoints }} 点）　橙线 = 本次轨迹（{{ geometry.n }} 点）
-          <template v-if="geometry.maxDev !== null">
-            　离路线最远 <b>{{ geometry.maxDev.toFixed(1) }} m</b>（P95 {{ geometry.p95 !== null ? geometry.p95.toFixed(1) : '—' }} m）
+          灰虚线 = 官方路线（{{ view.routePoints }} 点）
+          <template v-if="view.maxDev !== null">
+            　离路线最远 <b>{{ view.maxDev.toFixed(1) }} m</b>（P95 {{ view.p95 !== null ? view.p95.toFixed(1) : '—' }} m）
             —— 越小越"在跑道上"
           </template>
         </div>
+        <!-- 按圈图例：直接回答"是不是真的一圈" -->
+        <div class="d-flex flex-wrap align-center ga-2 mt-2">
+          <span class="text-caption text-medium-emphasis">
+            共 <b>{{ view.lapCount }}</b> 圈，每圈一色（{{ view.n }} 点）：
+          </span>
+          <span v-for="p in lapPaths" :key="`lg-${p.lap}`" class="d-inline-flex align-center text-caption">
+            <span :style="{ display: 'inline-block', width: '14px', height: '3px', background: p.color, marginRight: '4px' }" />
+            {{ p.label }}
+          </span>
+        </div>
         <v-alert
-          v-if="geometry.maxDev !== null && geometry.maxDev > 25"
+          v-if="view.maxDev !== null && view.maxDev > 25"
           type="warning"
           variant="tonal"
           density="compact"

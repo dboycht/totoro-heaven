@@ -417,6 +417,93 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
   }
 }
 
+// ---------- R11：模板里的 kebab-case 绑定必须能被组件真的收到（2026-09-18 真踩到）----------
+// 起因：`RunTrajectoryPreview` 声明了 prop `lapLengthM`，父组件写成 `:lap-length="..."`。
+// **Vue 在 dev 模式下**会用 `hyphenate(propName)` 与属性名做**严格**比对，而
+// `hyphenate('lapLengthM')` == `lap-length-m`（末尾大写 M 也各成一段）⇒ 该 prop 被**静默丢弃**
+// （值恒为 undefined），生产构建才不丢弃 ⇒ "dev 看着没效果、生产却正常"这种最难查的形态。
+// 判据：模板里给某组件传的 kebab-case 属性名，必须**没有**任何声明 prop 能与之匹配。
+{
+  const VUE_COMPONENTS = [...listDir('components')].filter((f) => f.endsWith('.vue'))
+  /** 组件 path → 声明的 props 名集合 */
+  const declaredProps = new Map()
+  for (const rel of VUE_COMPONENTS) {
+    const text = read(rel)
+    const typeIdx = text.indexOf('defineProps<')
+    if (typeIdx < 0) continue
+    // 取 defineProps<...> 的花括号体（容错：找第一个 `{` 到与之配对的 `}`）
+    const open = text.indexOf('{', typeIdx)
+    if (open < 0) continue
+    let depth = 0
+    let close = -1
+    for (let i = open; i < text.length; i++) {
+      if (text[i] === '{') depth++
+      else if (text[i] === '}') {
+        depth--
+        if (depth === 0) {
+          close = i
+          break
+        }
+      }
+    }
+    if (close < 0) continue
+    const body = text.slice(open + 1, close)
+    const names = new Set()
+    for (const m of body.matchAll(/^\s*([A-Za-z_$][\w$]*)\s*\??\s*:/gm)) names.add(m[1])
+    declaredProps.set(rel, names)
+  }
+  /** 与 Vue 的 hyphenate 等价（正则逐字相同） */
+  const hyphenate = (s) => s.replace(/\B([A-Z])/g, '-$1').toLowerCase()
+  /** 组件文件名（camelCase / PascalCase）→ 相对路径，便于在页面/组件里反查 */
+  const byName = new Map()
+  for (const rel of VUE_COMPONENTS) {
+    const base = rel.split('/').pop().replace(/\.vue$/, '')
+    byName.set(base, rel)
+  }
+
+  const tagRe = /<([A-Z][\w]*)\b([^>]*)>/g
+  for (const rel of [...listDir('pages'), ...listDir('components'), ...listDir('layouts')]) {
+    if (!rel.endsWith('.vue')) continue
+    const text = read(rel)
+    for (const m of text.matchAll(tagRe)) {
+      const [, tag, attrs] = m
+      const target = byName.get(tag)
+      if (!target) continue // 非本仓组件（v-* / Nuxt 内置等）跳过
+      const props = declaredProps.get(target)
+      if (!props || props.size === 0) continue
+      const hyphenated = new Set([...props].map(hyphenate))
+      for (const a of attrs.matchAll(/(^|\s):?([a-z][a-z0-9]*(?:-[a-z0-9]+)+)\s*=/g)) {
+        const attr = a[2]
+        if (!attr) continue
+        if (hyphenated.has(attr)) continue
+        // 该属性是否"本可以匹配某个 prop"？匹配 = 去掉连字符后与 prop 名小写相等
+        const squashed = attr.replace(/-/g, '').toLowerCase()
+        /**
+         * ⚠️ 这里**不能用等号**：`hyphenate` 只把大写字母变段，所以
+         * `lapLengthM` → `lap-length-m`（**含末尾 m**），而属性 `lap-length` 抹掉连字符是 `laplength`
+         * （**不含末尾 m**）⇒ 二者永远不相等（2026-09-18 实测：等号写法让守卫静默失效）。
+         * 改用**前缀匹配**：`laplength` 是 `laplengthm` 的前缀 ⇒ 命中。
+         */
+        const near = [...props].filter((p) => {
+          const lp = p.toLowerCase()
+          return lp === squashed || lp.startsWith(squashed) || squashed.startsWith(lp)
+        })
+        if (near.length) {
+          const line = lineOf(text, (m.index ?? 0) + (a.index ?? 0))
+          // 提示串里**不要再用反引号**：外层已经是模板字符串，嵌套反引号会把字符串截断
+          // （2026-09-18 现场踩到：整个检查器语法错误、CI 直接挂）
+          const want = near[0]
+          const msg =
+            rel + ':' + line + ' 给 <' + tag + '> 传了 :' + attr + '，但组件声明的 prop 是 ' + near.join('/') + ' —— ' +
+            'Vue dev 模式下 prop 名会先被 hyphenate 再与属性名严格比对（hyphenate(' + want + ') = ' + hyphenate(want) + '），' +
+            '对不上就**静默丢弃**。请改用 camelCase 绑定：:' + want + '="..."'
+          failures.push(msg)
+        }
+      }
+    }
+  }
+}
+
 // ---------- R9：夜间停用的**适用面**（2026-09-17 用户澄清口径）----------
 // 夜间 22:30~06:00 **只停「真实提交」**；本地模拟/预览必须照旧可用。
 // 曾经的错法：把 `gateStatus.blockedBy === 'night'` 也挂在「开始跑步」按钮的 disabled 上 ⇒ 夜里连模拟都点不了。

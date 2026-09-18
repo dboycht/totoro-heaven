@@ -239,13 +239,19 @@
     </RunSelfCheckCard>
 
     <!-- 轨迹预览（矢量、离线）：看"有没有贴着官方路线走 / 有没有跑在自己描的跑道两圈之间"
-         —— 1.1.9 起把**本机路线库的内外圈 + 所选车道线**一起画出来（几何与真实提交同源） -->
+         —— 1.1.9 起把**本机路线库的内外圈 + 所选车道线**一起画出来（几何与真实提交同源）
+         —— 并按"一圈多长"把轨迹**拆成每圈一色**（多圈同色会糊成一条粗带，用户反馈过）
+         ⚠️ `:lapLengthM` **必须用 camelCase 绑定**（不要写 :lap-length）：
+            Vue 在 **dev 模式**下拿 `hyphenate(propName)` 与属性名**严格**比对，而
+            `hyphenate('lapLengthM')` = `lap-length-m`（末尾那个大写 M 也各成一段）
+            ⇒ 写成 `:lap-length` 时该 prop 会被**静默丢弃**（=undefined），生产构建才不丢弃。 -->
     <RunTrajectoryPreview
       :points="run.points"
       :route="selectedLine?.pointList ?? []"
       :fit-degree="run.fitDegree"
       :track-entries="libEntries"
       :line-id="run.lineId"
+      :lapLengthM="run.lapLengthM"
     />
 
     <!-- 真实提交确认框 -->
