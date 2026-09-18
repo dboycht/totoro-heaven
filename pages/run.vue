@@ -238,11 +238,14 @@
       <RunPayloadPreview :run="run" />
     </RunSelfCheckCard>
 
-    <!-- 轨迹预览（矢量、离线）：看"有没有贴着官方路线走" —— 提交前就能判断像不像真跑 -->
+    <!-- 轨迹预览（矢量、离线）：看"有没有贴着官方路线走 / 有没有跑在自己描的跑道两圈之间"
+         —— 1.1.9 起把**本机路线库的内外圈 + 所选车道线**一起画出来（几何与真实提交同源） -->
     <RunTrajectoryPreview
       :points="run.points"
       :route="selectedLine?.pointList ?? []"
       :fit-degree="run.fitDegree"
+      :track-entries="libEntries"
+      :line-id="run.lineId"
     />
 
     <!-- 真实提交确认框 -->
