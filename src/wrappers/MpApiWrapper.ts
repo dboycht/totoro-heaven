@@ -233,6 +233,24 @@ export const MpApiWrapper = {
     return this.call<Record<string, unknown>[]>('sunrunPaperList', { ...params }, options)
   },
 
+  // ---------- 早操签到（**只读**；不实现提交，理由见 `MpMornSignTask` 的注释） ----------
+
+  /**
+   * 早操签到任务 + 点位表。
+   * ⚠️ body 需要 `stuNumber`（学号）**和** `token` 两个字段（实测口径，第三方源码同）。
+   * ⚠️ **"本学校无需签到"是正常返回**（`message` 有值 + `signPointList: null`）；
+   *    判定与归一化交给 `utils/mp/morningSign.ts` 的纯函数，这里只负责发请求。
+   */
+  async getMornSignPaper(params: { stuNumber: string; token?: string }, options: MpRequestOptions = {}) {
+    return this.call<Record<string, unknown>>('mornSignPaper', { ...params }, options)
+  },
+
+  /** 早操签到记录（只读：`scoreList` / `completedTimes`） */
+  async getMornSignArchDetail(params: { stuNumber: string; token?: string }, options: MpRequestOptions = {}) {
+    return this.call<Record<string, unknown>>('mornSignArchDetail', { ...params }, options)
+  },
+
+
   async getSchoolTerm(options: MpRequestOptions = {}) {
     return this.call<{ id?: string; name?: string }>('schoolTerm', {}, options)
   },

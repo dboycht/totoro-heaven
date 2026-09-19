@@ -9,6 +9,11 @@
 
       <v-btn to="/" variant="text" prepend-icon="mdi-home-outline" class="text-none">工作台</v-btn>
       <v-btn to="/run" variant="text" prepend-icon="mdi-run" class="text-none">阳光跑</v-btn>
+      <!-- 早操签到：**只在"本账号确实需要签到"时出现**（我校实测返回"本学校无需签到"，
+           所以多数人不会看到这一项；需要签到的大一同学首次读取后它才出现） -->
+      <v-btn v-if="mornSignRequired" to="/morning-sign" variant="text" prepend-icon="mdi-clock-check-outline" class="text-none">
+        早操签到
+      </v-btn>
       <v-btn to="/track-editor" variant="text" prepend-icon="mdi-vector-polyline" class="text-none">跑道编辑</v-btn>
       <v-btn to="/records" variant="text" prepend-icon="mdi-format-list-bulleted" class="text-none">记录</v-btn>
       <v-btn to="/logs" variant="text" prepend-icon="mdi-text-box-search-outline" class="text-none">日志</v-btn>
@@ -44,6 +49,16 @@ import { useMpSession } from '~/composables/useMpSession'
 const { isLoggedIn, session } = useMpSession()
 const { logoutAndClearSession } = useMpReal()
 const showSnackbar = useNotice()
+
+/**
+ * 早操签到导航项：只有"本账号确实需要签到"时才显示（`required` 由只读接口读过一次后置位）。
+ * ⚠️ 这里**只是触发一次只读探测**（`getMornSignPaper`），**没有任何写操作**；失败静默（导航项就不出现）。
+ */
+const { required: mornSignRequired, status: mornStatus, loadMornSignTask } = useMpMorningSign()
+onMounted(() => {
+  // 有真实会话且还没读过 → 探测一次，用于决定导航项是否出现
+  if (isLoggedIn.value && mornStatus.value === 'idle') void loadMornSignTask()
+})
 
 /** 真实会话 = 存了非 demo 前缀的 token（演示会话 token 以 `demo-` 开头） */
 const isRealSession = computed(() => Boolean(session.value?.token) && !session.value?.token?.startsWith('demo-'))

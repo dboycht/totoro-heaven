@@ -251,6 +251,57 @@ export interface MpRunRecord {
   [key: string]: unknown
 }
 
+/**
+ * 早操签到（`mornSign/*`）—— **与阳光跑并列的另一个产品子系统**（`SYSTEM_PRODUCT-20210615000003`）。
+ *
+ * ⚠️ 口径来源（2026-09-18 从第三方 9_17 源码 + 我们的真包深挖双向核对）：
+ *   - 端点：`getMornSignPaper`（读任务+点位）/ `morningExercises`（**写**，唯一用加密参的端点）/
+ *     `getMornSignArchDetail`（读签到记录）；
+ *   - 信封：`status === '00'` 为成功（与 `serverlist/*` 同族，不是 `sunrun/*` 那种）；
+ *   - **"本学校无需签到"是正常返回**（我校实测：`message='本学校无需签到！'` + `code:'1'` + `signPointList:null`），
+ *     界面必须把它当"该功能未开启"而不是报错；
+ *   - `qrCode` 是**服务端下发的期望值**，小程序拿"扫码结果"与它**本地比对**
+ *     （见 `_mp-analyze/第三方9_17-早签模块分析.md` §5.2）——
+ *     所以**没有它就无法证明"人到了现场"**，这也是本项目**不实现自动提交**的原因（HANDOVER §7 红线）。
+ */
+export interface MpMornSignPoint {
+  /** 点位所属任务 id（提交时用） */
+  taskId: string
+  /** 点位 id（提交时用） */
+  pointId: string
+  /** 点位名（如"东操场北门"） */
+  pointName: string
+  /** 点位坐标（字符串形式，服务端下发） */
+  latitude: string
+  longitude: string
+  /**
+   * 服务端下发的**期望二维码内容**（小程序用它和"你扫到的码"做本地字符串比对）。
+   * ⚠️ 本项目**不把它当作"扫码结果"提交**（那等于跳过"人到现场"的校验）。
+   */
+  qrCode: string
+}
+
+export interface MpMornSignTask {
+  /** 签到类型（服务端下发，语义待实测确认） */
+  signType: string
+  /** 任务有效期（YYYY-MM-DD） */
+  startDate: string
+  endDate: string
+  /** 签到时段（HH:mm:ss） */
+  startTime: string
+  endTime: string
+  /** 允许的圆形范围半径（米，字符串形式；实测样例为 300 量级） */
+  offsetRange: string
+  /** 当日需要签到次数 */
+  dayNeedSignCount: string
+  /** 当日已完成次数 */
+  dayCompSignCount: string
+  /** 两次签到的最小间隔（单位待实测确认） */
+  minTimeInterval: string
+  /** 签到点位表 */
+  signPointList: MpMornSignPoint[]
+}
+
 /** 成绩状态：0 无效 / 1 有效 / 2 申诉有效 / 3 补录有效（getSunrunArch.scorePassType） */
 export const MP_SCORE_STATUS = {
   0: '无效',
