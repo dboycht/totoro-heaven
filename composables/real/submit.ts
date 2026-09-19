@@ -41,21 +41,30 @@ export function useMpRealSubmit() {
   /**
    * 真实提交一次成绩。
    * @param input points/km/fitDegree 来自跑步页生成的真实轨迹；plannedSeconds = 报备时长（= 模拟跑完的时长）
+   * @param input.runType `0` 阳光跑 / `1` 自由跑（**提交口径**）。自由跑：**不需要线路**、不取任务号、不发路径点明细。
    *
    * ⚠️ **第一件事是过三合一否决门禁**（`utils/mp/schoolGate.ts`）：学校登记表 + 开场人脸 + 随机抽查 + 摄像头杆。
    *    任一不通过都**不会调用 `getRunBegin`**（即不创建场次、不留脏数据）。
+   *    自由跑按厂商口径只受夜间停用约束（厂商的自由跑不打卡、不取线路）。
    */
   async function submitRealRun(input: {
-    line: MpRunLine
+    /** 阳光跑必填；**自由跑传 null** */
+    line: MpRunLine | null
+    runType?: 0 | 1
     points: { latitude: string | number; longitude: string | number }[]
     km: number
     fitDegree: number
     plannedSeconds: number
   }): Promise<RealSubmitResult | null> {
     const token = session.value?.token
-    if (!token || !profile.value || !task.value) {
+    const runType: 0 | 1 = input.runType === 1 ? 1 : 0
+    const freeRun = runType === 1
+    // 阳光跑需要"档案 + 任务 + 线路"；自由跑只需要档案（不取任务、不取线路）
+    if (!token || !profile.value || (!freeRun && !task.value) || (!freeRun && !input.line)) {
       phase.value = 'error'
-      phaseMessage.value = '缺少真实会话/档案/任务，请先在工作台读取真实数据'
+      phaseMessage.value = freeRun
+        ? '缺少真实会话/档案，请先在工作台读取真实数据'
+        : '缺少真实会话/档案/任务，请先在工作台读取真实数据'
       return null
     }
 
@@ -66,6 +75,7 @@ export function useMpRealSubmit() {
       line: input.line,
       cameraFlag: cameraFlag.value,
       cameraFlagLineId: cameraFlagLineId.value,
+      runType,
       now: new Date(),
     })
     if (!gate.allow) {
@@ -76,13 +86,10 @@ export function useMpRealSubmit() {
 
     const options = { token, baseUrl: session.value?.baseUrl }
 
-    // ① 开跑：getRunBegin（写）
+    // ① 开跑：getRunBegin（写）。自由跑照厂商口径传 runType=1 且 paperId/lineId 为空串。
     phase.value = 'begin'
     phaseMessage.value = '正在创建跑步会话（getRunBegin）…'
-    const begin = await MpApiWrapper.getRunBegin(
-      buildRunBeginRequest({ line: input.line, runType: 0 }),
-      options,
-    )
+    const begin = await MpApiWrapper.getRunBegin(buildRunBeginRequest({ line: input.line, runType }), options)
     const scantronId = (begin.data as { scantronId?: string } | undefined)?.scantronId
     if (!begin.ok || !scantronId) {
       phase.value = 'error'
@@ -90,14 +97,15 @@ export function useMpRealSubmit() {
       phaseMessage.value = looksLikeTokenExpired(begin.raw)
         ? TOKEN_EXPIRED_HINT
         : `开跑失败：${begin.message}`
-      logError('submit', '开跑失败（getRunBegin）', { message: begin.message, lineId: input.line.pointId })
+      logError('submit', '开跑失败（getRunBegin）', { message: begin.message, lineId: input.line?.pointId ?? '(自由跑)' })
       return null
     }
     const startedAt = Date.now()
     logInfo('submit', '开跑会话已创建', {
       scantronId,
-      lineId: input.line.pointId,
-      lineName: input.line.pointName,
+      runType,
+      lineId: input.line?.pointId ?? '(自由跑)',
+      lineName: input.line?.pointName ?? '',
       km: Number(input.km.toFixed(2)),
       fitDegree: input.fitDegree,
       points: input.points.length,
@@ -139,14 +147,21 @@ export function useMpRealSubmit() {
     }
     phase.value = 'submitting'
     phaseMessage.value = '正在提交成绩（sunRunExercises）…'
-    const score = await MpApiWrapper.saveScores(buildScoreRequest(context), options)
+    // ⚠️ 自由跑必须把 runType 传进报文构造器：它决定 taskId=''、sunrunPathPointList=[]
+    //    （厂商源码：自由跑不带任务号、路径点列为空数组）
+    const score = await MpApiWrapper.saveScores(buildScoreRequest(context, { runType }), options)
     const out: RealSubmitResult = {
       scantronId,
       startedAt,
       submittedAt,
       scoreOk: score.ok,
       scoreMessage: score.message || (score.ok ? '提交成功' : '提交失败'),
-      scoreRequestMasked: { ...buildScoreRequest(context), token: '***', sunrunPathPointList: `（${input.line.pointList.length} 点）` },
+      // 自由跑没有线路 ⇒ 路径点列本来就是空的（厂商口径），这里如实显示 0 点
+      scoreRequestMasked: {
+        ...buildScoreRequest(context, { runType }),
+        token: '***',
+        sunrunPathPointList: `（${input.line?.pointList?.length ?? 0} 点）`,
+      },
     }
 
     // ④ 轨迹明细（仅当成绩成功；照源码顺序）

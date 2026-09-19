@@ -228,9 +228,12 @@ try {
     const dir = copyBase()
     const file = join(dir, 'pages/run.vue')
     const text = readFileSync(file, 'utf8')
-    // ⚠️ 2026-09-18：该按钮的 disabled 现在含多个条件（!activeTask / !libEntries.length / !activeLines.length），
-    //    所以注入要**就地追加**夜间条件，而不是替换成某个固定串。
-    const injected = text.replace(/(:disabled="!activeTask[^"]*)"/, '$1 || gateStatus.blockedBy === \'night\'"')
+    // ⚠️ 写法会变（现在按钮绑的是 `!canStart`）⇒ 注入按"**最近的那个 `:disabled=`**"就地追加夜间条件，
+    //    不再依赖某个固定表达式，避免每次重构按钮都要改自测（本轮已因此失败过一次）。
+    const injected = text.replace(
+      /(<v-btn\b[^>]*?:disabled=")([^"]*)("[^>]*?>\s*开始跑步)/,
+      (_m, pre, expr, post) => `${pre}${expr} || gateStatus.blockedBy === 'night'${post}`,
+    )
     if (injected === text) failures.push('注入 10：pages/run.vue 里找不到「开始跑步」的 disabled 绑定（自测需同步更新）')
     writeFileSync(file, injected, 'utf8')
     const { code, out } = run(dir)
@@ -243,11 +246,11 @@ try {
     const dir = copyBase()
     const file = join(dir, 'pages/run.vue')
     const text = readFileSync(file, 'utf8')
-    const injected = text.replace(
-      ':disabled="!activeTask || !configuredForTask"',
-      ':disabled="!activeTask"',
-    )
-    if (injected === text) failures.push('注入 13：pages/run.vue 里找不到「开始跑步」的完整 disabled 绑定（自测需同步更新）')
+    const injected = text
+      // 页面把口径收口在 `canStart` 里（自由跑落地后）⇒ 注入要同时拆掉"按钮用 canStart"与"canStart 里的约束"
+      .replace(':disabled="!canStart"', ':disabled="!activeTask"')
+      .replace(/const canStart = computed\(\(\) =>[\s\S]{0,240}?\n\)\n/, 'const canStart = computed(() => true)\n')
+    if (injected === text) failures.push('注入 13：pages/run.vue 里找不到「开始跑步」的 canStart 绑定（自测需同步更新）')
     writeFileSync(file, injected, 'utf8')
     const { code, out } = run(dir)
     if (code === 0) failures.push('「开始跑步」不再要求"已配置跑道"，但检查器仍然通过（R9 收紧失效）')

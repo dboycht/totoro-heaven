@@ -45,23 +45,32 @@
               <v-btn :value="1" prepend-icon="mdi-run">自由跑</v-btn>
             </v-btn-toggle>
 
-            <v-select
-              v-model="run.lineId"
-              :items="lineItems"
-              item-title="title"
-              item-value="value"
-              label="线路（按校区自动分组，本校区优先）"
-              density="comfortable"
-              :disabled="isBusy"
-              class="mb-2"
-            />
-            <!-- 跨校区提示：选了别的校区的线路（按坐标判定，不看名称） -->
-            <v-alert v-if="crossCampusWarning" type="warning" variant="tonal" density="compact" class="mb-2">
-              {{ crossCampusWarning }}
+            <!-- ⚠️ 自由跑**不对应任何线路**（2026-09-18 按厂商源码落地）：
+                 厂商在自由跑时 `0==runType && (取线路)` 根本不执行 ⇒ paperId/lineId 都是空串，
+                 也不需要打卡/自查那三项开关校验。所以这里**隐藏线路选择**，只给一句形状说明。 -->
+            <v-alert v-if="isFreeRun" type="info" variant="tonal" density="compact" class="mb-2">
+              自由跑<b>不选线路、不带任务号、不校验打卡开关</b>（与小程序一致）——本地只用学校线路的形状生成轨迹，
+              到里程上限或你点「结束并结算」即止；<b>它不计入阳光跑成绩</b>。
             </v-alert>
-            <div v-if="routeGroups.clusters.length > 1" class="text-caption text-medium-emphasis mb-2">
-              {{ routeGroups.note }}
-            </div>
+            <template v-else>
+              <v-select
+                v-model="run.lineId"
+                :items="lineItems"
+                item-title="title"
+                item-value="value"
+                label="线路（按校区自动分组，本校区优先）"
+                density="comfortable"
+                :disabled="isBusy"
+                class="mb-2"
+              />
+              <!-- 跨校区提示：选了别的校区的线路（按坐标判定，不看名称） -->
+              <v-alert v-if="crossCampusWarning" type="warning" variant="tonal" density="compact" class="mb-2">
+                {{ crossCampusWarning }}
+              </v-alert>
+              <div v-if="routeGroups.clusters.length > 1" class="text-caption text-medium-emphasis mb-2">
+                {{ routeGroups.note }}
+              </div>
+            </template>
             <v-select
               v-model="run.speed"
               :items="speedItems"
@@ -89,7 +98,7 @@
                 color="primary"
                 block
                 prepend-icon="mdi-play"
-                :disabled="!activeTask || !configuredForTask"
+                :disabled="!canStart"
                 @click="start"
               >
                 开始跑步
@@ -393,6 +402,16 @@ const libTotal = computed(() => libEntries.value.length)
 const hasConfigured = computed(() => configuredForTask.value > 0)
 /** 库里有条目、但都不属于当前任务的线路（要给"去为这条线路描一圈"的指引） */
 const libEntriesNotForTask = computed(() => libTotal.value > 0 && configuredForTask.value === 0)
+/** 本次是自由跑（提交口径：不选线路、不带任务号、不查打卡开关 —— 与小程序一致） */
+const isFreeRun = computed(() => run.value.runType !== 0)
+/**
+ * 能不能开跑：
+ *   · **自由跑** ⇒ 只要有任务线路当"形状参考"就行（不必在跑道编辑里描过）；
+ *   · **阳光跑** ⇒ 必须已为该任务的线路描过跑道（本版口径）。
+ */
+const canStart = computed(() =>
+  isFreeRun.value ? activeLinesRaw.value.length > 0 : configuredForTask.value > 0,
+)
 const isBusy = computed(() => run.value.status === 'running' || run.value.status === 'paused')
 
 /** 载入演示数据（按需功能，不发任何请求） */
@@ -522,21 +541,27 @@ const doRealSubmit = async () => {
     return
   }
   const r = run.value.result
-  const line = activeLines.value.find((l) => l.pointId === run.value.lineId)
-  if (!r || !line) {
-    showSnackbar('缺少线路或结算数据', 'error')
+  // ⚠️ 自由跑没有线路（厂商口径：自由跑 paperId/lineId 都为空串）⇒ line 允许为空
+  const line = isFreeRun.value ? null : (activeLines.value.find((l) => l.pointId === run.value.lineId) ?? null)
+  if (!r || (!isFreeRun.value && !line)) {
+    showSnackbar(isFreeRun.value ? '缺少结算数据' : '缺少线路或结算数据', 'error')
     return
   }
   logInfo('submit', '用户确认真实提交', {
-    lineId: line.pointId,
+    runType: r.submitRunType,
+    lineId: line?.pointId ?? '(自由跑)',
     km: Number(r.km.toFixed(2)),
     durationSeconds: r.durationSeconds,
     fitDegree: r.fitDegree,
     checkPass: r.check.pass,
+    points: r.points.length,
   })
   const out = await submitRealRun({
     line,
-    points: run.value.points,
+    // 提交口径与预览同源（结果里那份 submitRunType），避免两处各转一次导致口径漂移
+    runType: r.submitRunType,
+    // ⚠️ 用**实际跑出来的那一段**（自由跑提前结束时，整条 points 会与 km 矛盾）
+    points: r.points,
     km: r.km,
     fitDegree: r.fitDegree,
     plannedSeconds: r.durationSeconds,

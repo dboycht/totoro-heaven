@@ -117,12 +117,17 @@ export interface RunGateInput {
   schoolCode: string | null | undefined
   /** `selectSunRunStartConfiguration` 的 body（null/undefined = 未读取） */
   switches: Record<string, string> | null | undefined
-  /** 当前选中线路 */
+  /** 当前选中线路（**自由跑可为空**） */
   line: MpRunLine | null | undefined
   /** 当前线路的摄像头 flag（null = 未读取；undefined 同） */
   cameraFlag: boolean | null | undefined
   /** 上面那个 flag 对应的线路 id（防止"线路已切换但 flag 还是上一条的"） */
   cameraFlagLineId?: string | null | undefined
+  /**
+   * 本次跑步类型（提交口径：`0` 阳光跑 / `1` 自由跑）。
+   * 自由跑只受夜间停用约束 —— 厂商的自由跑**不打卡、不取线路**（见 `evaluateRunGate` 说明）。
+   */
+  runType?: 0 | 1
   /** 当前时刻（**可注入**，便于测试；缺省取系统时间） */
   now?: Date
 }
@@ -174,12 +179,24 @@ export function nightBlockReason(now: Date = new Date()): string {
  * 开跑前三合一否决门禁（**必须在 `getRunBegin` 之前调用**）。
  * 判定顺序：夜间停用 → 开关是否读到 → 开场人脸 → 随机抽查 → 摄像头杆（含"线路切了但没重查"）。
  * ℹ️ 学校**不再做白名单校验**（支持范围改条件式）；是否"已验证判分口径"只由界面软提示。
+ *
+ * ⚠️ **自由跑（`runType === 1`）走另一条口径**（2026-09-18 从厂商反编译源码读出）：
+ *   厂商在自由跑时**跳过打卡/人脸**直接开跑（`2==runType ? realStartRun() : 显示打卡相机`），
+ *   且 `getRunBegin` **不取线路**（`paperId`/`lineId` 都为空串）——
+ *   也就是说"开场人脸 / 随机抽查 / 摄像头杆"这三项**都是按学校的阳光跑线路下发的**，与自由跑无关。
+ *   所以自由跑：**只受夜间停用约束**，不查开关、不要求线路。
+ *   夜间仍然拦：那是"避免留下深夜记录"的自定纪律，与厂商判分无关（用户 2026-09-17 确认的口径）。
  */
 export function evaluateRunGate(input: RunGateInput): RunGateResult {
   // ⓪ 夜间停用（最先判：到点就谁也别跑，避免留下深夜记录）
   const now = input.now ?? new Date()
   if (isNightBlocked(now)) {
     return { allow: false, reason: nightBlockReason(now), blockedBy: 'night' }
+  }
+
+  // ⓪′ 自由跑：厂商不打卡、不取线路 ⇒ 跳过下面全部"阳光跑专属"校验
+  if (input.runType === 1) {
+    return { allow: true, reason: '' }
   }
 
   // ① 三个开关必须已读取（未知 ≠ 关闭）

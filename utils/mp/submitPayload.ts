@@ -23,10 +23,13 @@ export interface RealSubmitContext {
   /** 学生档案（snCode / schoolCode） */
   snCode: string
   schoolCode: string
-  /** 当前任务（约束） */
-  task: MpSunrunTask
-  /** 选中线路（其 pointId 即 lineId、taskId 即 paperId） */
-  line: MpRunLine
+  /** 当前任务（约束）；自由跑没有任务 ⇒ 可为空 */
+  task: MpSunrunTask | null
+  /**
+   * 选中线路（其 pointId 即 lineId、taskId 即 paperId）。
+   * ⚠️ **自由跑为 `null`**（厂商源码：只有阳光跑才取线路；自由跑 paperId/lineId 都是空串）。
+   */
+  line: MpRunLine | null
   /** 实际里程（公里） */
   km: number
   /** 实际时长（秒） */
@@ -45,18 +48,30 @@ export interface RealSubmitContext {
   endMs: number
 }
 
-/** getRunBegin 报文（注意：**不带 token**，照源码） */
+/**
+ * getRunBegin 报文（注意：**不带 token**，照源码）。
+ *
+ * ⚠️ **自由跑口径**（2026-09-18 从厂商反编译源码读出的权威依据，`_mp-analyze/extracted/app-service.js`）：
+ * ```js
+ * 2==a.data.runType && (i=1),                        // 2(自由跑) → 提交 runType=1
+ * 0==a.data.runType && (o=a.data.columnsLine[...]),  // 只有 0(阳光跑) 才取线路
+ * r={runType:i, ..., paperId:o.taskId||"", lineId:o.pointId||""}
+ * ```
+ * 即：**自由跑传 `runType:1`，且 `paperId`/`lineId` 都是空串**（不去取线路）。
+ * 传 `line` 时按阳光跑口径取该线路的 taskId/pointId；**`line` 可为空**（自由跑）。
+ */
 export function buildRunBeginRequest(context: {
-  line: MpRunLine
+  line?: MpRunLine | null
   /** 0 = 阳光跑 / 1 = 自由跑（源码：`2 == runType ? 1 : 0`，即 0/1 原样透传） */
   runType: 0 | 1
 }): { runType: number; version: string; phoneInfo: string; paperId: string; lineId: string; faceBase64: string } {
+  const freeRun = context.runType === 1
   return {
     runType: context.runType,
     version: MP_CLIENT_VERSION,
     phoneInfo: MP_PHONE_INFO_BEGIN,
-    paperId: context.line.taskId ?? '',
-    lineId: context.line.pointId ?? '',
+    paperId: freeRun ? '' : (context.line?.taskId ?? ''),
+    lineId: freeRun ? '' : (context.line?.pointId ?? ''),
     faceBase64: '', // ✅ 已建档 → 留空即可放行（9-11 对照实验 + 9-14 实测双重确认）
   }
 }
@@ -101,8 +116,8 @@ export function buildScoreRequest(context: RealSubmitContext, options: ScorePayl
     evaluateDate: time.evaluateDate,
     endTime: time.endTime,
     startTime: time.startTime,
-    taskId: freeRun ? '' : (context.line.taskId ?? ''),
-    sunrunPathPointList: freeRun ? [] : (context.line.pointList ?? []),
+    taskId: freeRun ? '' : (context.line?.taskId ?? ''),
+    sunrunPathPointList: freeRun ? [] : (context.line?.pointList ?? []),
     flag: '1',
   }
 }

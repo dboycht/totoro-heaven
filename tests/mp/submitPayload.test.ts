@@ -75,6 +75,30 @@ test('buildRunBeginRequest：自由跑 runType=1 原样透传', () => {
   assert.equal(buildRunBeginRequest({ line, runType: 1 }).runType, 1)
 })
 
+/**
+ * ⚠️ 2026-09-18 补（自由跑落地）：厂商源码在自由跑时**根本不取线路**
+ * （`0==runType && (o=columnsLine[...])`），`paperId`/`lineId` 都是空串。
+ * 所以 `line` 传 `null` 或干脆不传，都必须安全地给出空串 —— 这是自由跑能跑起来的前提。
+ */
+test('buildRunBeginRequest：自由跑不传线路 ⇒ paperId/lineId 都是空串（照厂商源码）', () => {
+  const req = buildRunBeginRequest({ runType: 1 })
+  assert.equal(req.runType, 1)
+  assert.equal(req.paperId, '')
+  assert.equal(req.lineId, '')
+  // 传了线路也一样要清空（自由跑口径优先）
+  const withLine = buildRunBeginRequest({ line, runType: 1 })
+  assert.equal(withLine.paperId, '')
+  assert.equal(withLine.lineId, '')
+})
+
+test('buildScoreRequest：自由跑 line=null ⇒ taskId 空串、路径点列为空数组（厂商口径）', () => {
+  const ctx = makeContext()
+  const req = buildScoreRequest({ ...ctx, line: null, task: null }, { runType: 1 })
+  assert.equal(req.runType, 1)
+  assert.equal(req.taskId, '')
+  assert.deepEqual(req.sunrunPathPointList, [])
+})
+
 test('buildScoreRequest：18 字段齐全且格式正确', () => {
   const req = buildScoreRequest(makeContext())
   assert.deepEqual(Object.keys(req).sort(), [

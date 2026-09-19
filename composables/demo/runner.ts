@@ -15,7 +15,7 @@ import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import { laneLoop, laneRatioFor } from '~/utils/mp/trackEditor'
 import { buildRunStats, buildTimeFields } from '~/utils/mp/runData'
 import { buildScoreDetailRequest, buildScoreRequest } from '~/utils/mp/submitPayload'
-import { evaluateRunAgainstTask } from '~/utils/mp/taskRules'
+import { evaluateRunAgainstTask, type TaskCheckResult } from '~/utils/mp/taskRules'
 import { newRunSeed, planRealisticRun, type RunPlan } from '~/utils/mp/realism'
 import { toSubmitRunType, type MpScoreDetailRequest, type MpScoreRequest } from '~/src/mp/types'
 import { DEMO_PASS_POINTS, demoScantronId } from '~/src/mp/demo'
@@ -86,32 +86,44 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
 
   /** 开始（生成整条轨迹，与真实提交用的是同一套算法） */
   const start = () => {
-    if (!task.value) {
+    // ⚠️ 自由跑（runType=1）**不需要任务**：厂商的自由跑不带任务号、也不校验任务约束
+    const isFreeRun = run.value.runType !== 0
+    if (!isFreeRun && !task.value) {
       run.value.error = '尚未载入任务（请先在工作台「读取真实账号与任务」，或「载入演示数据」试界面）'
-      return
-    }
-    const line = lines.value.find((item) => item.pointId === run.value.lineId) ?? lines.value[0]
-    if (!line) {
-      run.value.error = '线路缺失（真实模式请先在「工作台」读取真实任务与线路）'
       return
     }
     const isRealLine = !demoMode.value
     const isSunRun = run.value.runType === 0
 
+    /**
+     * ⚠️ **自由跑不取线路**（2026-09-18 按厂商源码）：厂商在自由跑时
+     * `0==runType && (o=columnsLine[...])` 根本不执行 ⇒ 自由跑**不需要在跑道编辑里描圈**，
+     * `paperId`/`lineId` 都是空串。这里用"官方模板/任务第一条线路"只当**形状参考**
+     * （轨迹总要有个几何；跑道编辑里描过就用你描的车道线，见下面的 trackEntry 分支）。
+     */
+    const line = lines.value.find((item) => item.pointId === run.value.lineId) ?? lines.value[0]
+    if (!line && isSunRun) {
+      run.value.error = '线路缺失（真实模式请先在「工作台」读取真实任务与线路）'
+      return
+    }
+
     // 真实感规划：里程**略超**任务要求（2%~9%）、配速**非整分钟**且夹紧在任务窗口内。
     // 这样提交的数值是 3.41km / 20:34 / 6'02" 这种，而不是 3.20 / 16:00 / 5'00"（一眼假）。
-    const plan: RunPlan = isSunRun
-      ? planRealisticRun({
-          requiredKm: Number(task.value.mileage) || 3,
-          minSpeedKmh: task.value.minSpeed,
-          maxSpeedKmh: task.value.maxSpeed,
-          minMinutes: task.value.minTime,
-          maxMinutes: task.value.maxTime,
-          basePaceSecPerKm: run.value.paceSecPerKm,
-          seed: newRunSeed(),
-        })
-      : {
-          targetKm: FREE_RUN_CAP_KM,
+    // ⚠️ 阳光跑分支一定已经有 task（上面刚校验过），这里显式收窄类型，避免 TS 认为可能为 null。
+    const sunrunTask = task.value
+    const plan: RunPlan =
+      isSunRun && sunrunTask
+        ? planRealisticRun({
+            requiredKm: Number(sunrunTask.mileage) || 3,
+            minSpeedKmh: sunrunTask.minSpeed,
+            maxSpeedKmh: sunrunTask.maxSpeed,
+            minMinutes: sunrunTask.minTime,
+            maxMinutes: sunrunTask.maxTime,
+            basePaceSecPerKm: run.value.paceSecPerKm,
+            seed: newRunSeed(),
+          })
+        : {
+            targetKm: FREE_RUN_CAP_KM,
           paceSecPerKm: run.value.paceSecPerKm,
           overshootRatio: 0,
           durationSeconds: 0,
@@ -125,8 +137,9 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
       //    （随机一道 + 缓慢换道，按弧长），这样跑出来是**真跑道的形状**；
       //    没配置则回退官方路线。⚠️ `officialRoute` 始终是**厂商模板** —— 拟合度必须按它算
       //    （服务端就是按它算），两者不能混。
-      const trackEntry = lib.get(line.pointId)
-      let geometry: { latitude: number | string; longitude: number | string }[] = line.pointList
+      //    ℹ️ 自由跑没有线路 ⇒ 直接用官方模板当形状参考（描过就跑你描的车道线，等同"本地自由跑"）。
+      const trackEntry = line ? lib.get(line.pointId) : undefined
+      let geometry: { latitude: number | string; longitude: number | string }[] = line?.pointList ?? []
       if (trackEntry && trackEntry.outer.length >= 3 && trackEntry.inner.length >= 3) {
         // ⚠️ **按这条本地路线里存的"所选道次"**生成 —— 不再随机、不再换道
         //    （2026-09-17 用户确认："缓慢换道"就是车道线看着乱的根因，已删除该功能）
@@ -147,7 +160,7 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
         ...createRunState(),
         status: 'running',
         runType: run.value.runType,
-        lineId: line.pointId,
+        lineId: line?.pointId ?? '',
         paceSecPerKm: plan.paceSecPerKm,
         plan: { ...plan, targetKm: actualKm, durationSeconds: Math.round(actualKm * plan.paceSecPerKm) },
         speed: run.value.speed,
@@ -155,7 +168,7 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
         targetKm: actualKm,
         points: generated.points,
         visibleCount: 1,
-        officialRoute: line.pointList,
+        officialRoute: line?.pointList ?? [],
         // 供「轨迹预览」按圈着色（多圈同色会糊成一条粗带）
         lapLengthM: generated.lapLengthM,
         lapDriftM: generated.lapDriftM,
@@ -187,7 +200,9 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
   const finish = () => {
     stopTimer()
     if (run.value.status === 'finished' || run.value.points.length < 2) return
-    if (!task.value) return
+    // ⚠️ 自由跑没有任务（厂商口径：自由跑不带任务号）⇒ 这里只在**阳光跑**时要求任务
+    const isFreeRun = run.value.runType !== 0
+    if (!isFreeRun && !task.value) return
 
     const endedAtMs = Date.now()
     const distanceKm = run.value.distanceM / 1000
@@ -218,14 +233,17 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
         snCode: stuNumber,
         schoolCode,
         task: task.value,
-        line: {
-          pointId: run.value.lineId || 'demo-line',
-          // ⚠️ `DEMO_LINES` 里没有 taskId；真包里 `taskId` 取线路的 taskId（实测两者同值），
-          //    这里显式补上，保持预览与真实提交一致。
-          taskId: task.value.taskId ?? '',
-          pointName: '',
-          pointList: run.value.officialRoute ?? [],
-        },
+        // 自由跑没有线路 ⇒ 传 null（构造器会把 taskId 置空、路径点列为 []，与厂商口径一致）
+        line: isFreeRun
+          ? null
+          : {
+              pointId: run.value.lineId || 'demo-line',
+              // ⚠️ `DEMO_LINES` 里没有 taskId；真包里 `taskId` 取线路的 taskId（实测两者同值），
+              //    这里显式补上，保持预览与真实提交一致。
+              taskId: task.value?.taskId ?? '',
+              pointName: '',
+              pointList: run.value.officialRoute ?? [],
+            },
         km: distanceKm,
         durationSeconds,
         fitDegree,
@@ -244,7 +262,9 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
       snCode: stuNumber,
       schoolCode,
       task: task.value,
-      line: { pointId: run.value.lineId || 'demo-line', taskId: task.value.taskId ?? '', pointName: '', pointList: [] },
+      line: isFreeRun
+        ? null
+        : { pointId: run.value.lineId || 'demo-line', taskId: task.value?.taskId ?? '', pointName: '', pointList: [] },
       km: distanceKm,
       durationSeconds,
       fitDegree,
@@ -255,12 +275,21 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
       endMs: endedAtMs,
     })
 
-    const check = evaluateRunAgainstTask({
-      task: task.value,
-      km: distanceKm,
-      durationSeconds,
-      fitDegree,
-    })
+    /**
+     * ⚠️ 自检只对**阳光跑**有意义（`evaluateRunAgainstTask` 检查的是"任务的里程/时长/拟合度约束"）。
+     *    自由跑**没有任务** ⇒ 不做任务自检，给一个"无约束、恒通过"的结果
+     *    （`items: []` 是显式空清单；页面在自由跑时会隐藏"任务与约束"面板，不会显示空表）。
+     */
+    const sunrunTaskForCheck = task.value
+    const check: TaskCheckResult =
+      !isFreeRun && sunrunTaskForCheck
+        ? evaluateRunAgainstTask({
+            task: sunrunTaskForCheck,
+            km: distanceKm,
+            durationSeconds,
+            fitDegree,
+          })
+        : { pass: true, problems: [], items: [] }
 
     run.value.status = 'finished'
     run.value.fitDegree = fitDegree
@@ -269,6 +298,10 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
       km: distanceKm,
       durationSeconds,
       fitDegree,
+      // 提交口径的 runType（0 阳光跑 / 1 自由跑）随结果留给页面 —— 真实提交必须与预览同源
+      submitRunType,
+      // 🆕 实际跑出来的那一段：自由跑提前结束时提交必须用它，而不是整条 points
+      points: points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) })),
       scoreRequest,
       detailRequest,
       check,

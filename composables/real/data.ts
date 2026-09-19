@@ -462,6 +462,12 @@ export function useMpRealData() {
       line: selectedLine.value,
       cameraFlag: cameraFlag.value,
       cameraFlagLineId: cameraFlagLineId.value,
+      /**
+       * ⚠️ 必须带上**本次跑步类型**（2026-09-18 自由跑落地）：
+       * 自由跑不选线路、也不校验"开场人脸/随机抽查/摄像头杆"（厂商的自由跑**不打卡**）。
+       * 不带这个参数时 `line` 恒为空 ⇒ 门禁判 `camera_unknown` ⇒ "真实提交"按钮永远灰着。
+       */
+      runType: run.value.runType === 0 ? 0 : 1,
       // ⚠️ 依赖 clockTick：门禁里的"夜间停用（22:30~06:00）"要能**随时间自动刷新**（每 30 秒）
       now: new Date(clockTick.value),
     }),

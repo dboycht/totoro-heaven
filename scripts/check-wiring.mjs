@@ -529,13 +529,18 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
 
   /**
    * 🆕 2026-09-18（用户实测反馈"没弄路线也能选路线"）：「开始跑步」还必须**受"已配置跑道"约束** ——
-   * 本版的生成基准是**用户自己描的跑道**，没描过就不该能开跑（否则会静默用官方模板生成，形状偏十几米）。
-   * 判据：`disabled` 表达式里出现"路线库/已配置线路"的约束（`libEntries` 或 `activeLines`）。
+   * 阳光跑的生成基准是**用户自己描的跑道**，没描过就不该能开跑（否则会静默用官方模板生成，形状偏十几米）。
+   * 判据：要么 `disabled` 里直接含约束（`libEntries` / `activeLines` / `configuredForTask`），
+   *      要么经**同一文件里定义的 `canStart`** 收口（自由跑落地后采用了这种写法）。
+   * ⚠️ 必须两种都接受，否则"把口径收口成一个 computed"这种更好的写法会被误报。
    */
-  if (startBtn && !/configuredForTask|libEntries|activeLines/.test(startBtn[1])) {
+  const disabledExpr = startBtn?.[1] ?? ''
+  const directConstraint = /libEntries|activeLines|configuredForTask/.test(disabledExpr)
+  const viaCanStart = /canStart/.test(disabledExpr) && /const canStart\s*=/.test(runPageText)
+  if (startBtn && !directConstraint && !viaCanStart) {
     failures.push(
-      'pages/run.vue：「开始跑步」的 disabled 必须包含"已配置跑道"的约束（`!libEntries.length` / `!activeLines.length`）' +
-        ' —— 本版只允许用用户自己描的跑道生成轨迹（用户 2026-09-18 要求）',
+      'pages/run.vue：「开始跑步」的 disabled 必须包含"已配置跑道"的约束' +
+        '（直接写 `!configuredForTask`，或经 `canStart` 收口）—— 阳光跑只允许用用户自己描的跑道生成轨迹（用户 2026-09-18 要求）',
     )
   }
 }

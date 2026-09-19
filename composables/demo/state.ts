@@ -79,6 +79,21 @@ export interface DemoRunResult {
   km: number
   durationSeconds: number
   fitDegree: number
+  /**
+   * 🆕 本次**实际跑出来的那一段轨迹**（= 结算时的"已显示点数"切片）。
+   *
+   * ⚠️ 2026-09-18 加：真实提交此前直接传 `run.value.points`（**开跑时一次性生成的整条**），
+   * 而 `km` / 时长 / 拟合度都是按**已跑部分**算的 ⇒ 自由跑提前结束时，提交上去的 `km`
+   * 与 `sunrunPathPointList` 的点数会**互相矛盾**（服务端判分正是拿这两者一起算的）。
+   * 现在结算时就把这一段固定下来，提交与展示用同一份数据。
+   */
+  points: { latitude: number; longitude: number }[]
+  /**
+   * 本次的**提交口径 runType**（`0` 阳光跑 / `1` 自由跑）。
+   * ⚠️ 页面里的 `run.runType` 是 `0 | 1`（交互用），厂商契约是 `0 | 2`；
+   *    这里存**已经转成提交口径**的那个值，真实提交直接用它，避免两处各转一次（口径漂移风险）。
+   */
+  submitRunType: 0 | 1
   scoreRequest: MpScoreRequest
   detailRequest: MpScoreDetailRequest
   check: TaskCheckResult
