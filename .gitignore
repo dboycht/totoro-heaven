@@ -24,6 +24,13 @@ HANDOVER.md
 _mp-analyze/
 # 第三方同目标项目研究材料（含厂商版权解包源码）——仅本地留档，绝不入库/分发
 Totoro-main*
+# ⚠️ 2026-09-19：`Totoro-main*` 是**前缀匹配**，盖不住别的命名（实测 `open-totoro-token-main.zip`
+#    会被 `git add -A` 直接跟踪 —— 用探针文件验过）。补两条通配盖住各种命名形态。
+#    判据（可执行）：`git check-ignore -v --no-index -- open-totoro-token-main.zip` 必须命中。
+#    ⚠️⚠️ 注意 `--no-index`：不加它时，**文件不存在**也会返回 exit=1（看起来像"没被忽略"），
+#    这是本轮踩过的坑 —— 我一度以为规则没生效、又一度以为生效了，来回改了两遍。
+*totoro*token*
+*otoro*main*
 capture/
 .mp-test-build/
 *.local
