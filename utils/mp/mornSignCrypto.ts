@@ -3,13 +3,14 @@
  *
  * ## 这是什么
  * `morningExercises` 是**唯一使用加密参的端点**：请求体只有一个字段 `{ encryptParams }`，
- * 里面是"业务 JSON 明文"经 RSA 分段加密后的 Base64。厂商小程序用的是 JSEncrypt 的 `encryptLong`：
+ * 里面是"业务 JSON 明文"经 RSA 分段加密后的 Base64。算法等价于 JSEncrypt 的 `encryptLong`：
  *
  * ```js
- * // 厂商 app-service.js（解包产物）里的等价实现
- * function splitUtf8(str, 117)              // 按 UTF-8 字节宽度切，每段 ≤117 字节
- * chunks.map(c => rsaEncrypt_pkcs1v15(c))   // 1024-bit 密钥 ⇒ 128-11 = 117
- * Buffer.concat(encrypted).toString('base64')  // 密文拼接后整体 Base64
+ * // 厂商小程序（`_mp-analyze/extracted/app-service.js`）的行为：
+ * splitUtf8(str, 117)                          // 按 UTF-8 字节宽度切，每段 ≤117 字节
+ * chunks.map(c => rsaEncrypt_pkcs1v15(c))       // 1024-bit 密钥 ⇒ 128-11 = 117
+ * 各段密文拼接 → 整体 Base64                    // ⚠️ 拼接与 Base64 是**我们 Node 侧**的等价实现
+ *                                              //    （小程序没有 Buffer API；这里只说"结果等价"）
  * ```
  *
  * ## 为什么可以离线自证

@@ -40,8 +40,14 @@
         <v-card height="100%">
           <v-card-title class="text-subtitle-1">开跑设置</v-card-title>
           <v-card-text>
-            <!-- 标签页：**阳光跑 / 自由跑** 是两个独立标签（各自有 URL），点它 = 切路由 -->
-            <v-tabs :model-value="isFreeTab ? 1 : 0" density="compact" class="mb-2" :disabled="isBusy">
+            <!-- 标签页：**阳光跑 / 自由跑** 是两个独立标签（各自有 URL），点它 = 切路由。
+                 ⚠️ 提交进行中也锁住（否则切标签会 unmount 本组件、倒计时与提醒全部消失 —— 审计 #2）。 -->
+            <v-tabs
+              :model-value="isFreeTab ? 1 : 0"
+              density="compact"
+              class="mb-2"
+              :disabled="isBusy || submitInFlight"
+            >
               <v-tab :value="0" prepend-icon="mdi-white-balance-sunny" to="/run">阳光跑</v-tab>
               <v-tab :value="1" prepend-icon="mdi-run" to="/freerun">自由跑</v-tab>
             </v-tabs>
@@ -101,7 +107,7 @@
                 block
                 prepend-icon="mdi-play"
                 :disabled="!canStart"
-                @click="start"
+                @click="doStart"
               >
                 开始跑步
               </v-btn>
@@ -117,7 +123,21 @@
               >
                 结束并结算
               </v-btn>
-              <v-btn v-if="run.status !== 'idle'" variant="text" block prepend-icon="mdi-refresh" @click="reset">重置</v-btn>
+              <!-- ⚠️ 提交进行中（等报备时长/正在提交）时**禁止重置**：否则会把自己正在等待的
+                   那笔提交从界面上抹掉（审计 #2），用户就看不到进度与结果了。 -->
+              <v-btn
+                v-if="run.status !== 'idle'"
+                variant="text"
+                block
+                prepend-icon="mdi-refresh"
+                :disabled="submitInFlight"
+                @click="reset"
+              >
+                重置
+              </v-btn>
+              <div v-if="submitInFlight" class="text-caption text-warning">
+                ⚠️ 真实提交正在进行（{{ phaseMessage }}）——<b>请勿关闭程序或离开本页</b>，等待结束会自动提交。
+              </div>
             </div>
 
             <v-alert v-if="run.error" type="error" variant="tonal" density="compact" class="mt-3">{{ run.error }}</v-alert>
@@ -416,13 +436,31 @@ const isFreeRun = computed(() => run.value.runType !== 0)
  */
 const route = useRoute()
 const isFreeTab = computed(() => route.path.startsWith('/freerun'))
+/** 当前标签对应的**提交口径**（0 阳光跑 / 1 自由跑）—— 这是唯一权威来源 */
+const tabRunType = computed<0 | 1>(() => (isFreeTab.value ? 1 : 0))
+/** 正在跑/暂停时不允许改口径（会污染进行中的那一笔） */
+const runTypeLocked = computed(() => run.value.status === 'running' || run.value.status === 'paused')
 watchEffect(() => {
-  // URL 是**权威**：进 /freerun 就切成自由跑，回 /run 就切回阳光跑（用户手点 toggle 也会被拉回来）
-  const want: 0 | 1 = isFreeTab.value ? 1 : 0
-  if (run.value.runType !== want && run.value.status !== 'running' && run.value.status !== 'paused') {
-    run.value.runType = want
-  }
+  const want = tabRunType.value
+  if (run.value.runType === want) return
+  if (runTypeLocked.value) return // 进行中：先不动，交给 doStart() 兜底
+  run.value.runType = want
 })
+
+/**
+ * ⚠️ **开跑前把口径与当前标签对齐**（2026-09-18 审计 #1 的修复）。
+ *
+ * 病因：`run.runType` 只是"上一次设置后可能被冻结"的副本 —— `watchEffect` 在 `running/paused` 时跳过改写，
+ * 若用户在这期间（或在"已结算"态）从导航切了标签，副本就可能与 URL 不一致；而 `start()` 直接读这个副本，
+ * 于是出现"界面是自由跑、实际按阳光跑提交"（带任务号 + 路径点列 + **计入成绩**），
+ * 正好违反自由跑的口径（`utils/mp/submitPayload.ts` 的 freeRun 分支）。
+ *
+ * 修法：**不再依赖那个副本** —— 每次开跑都以**当前标签**为准写回，再交给 runner 生成/结算。
+ */
+const doStart = () => {
+  run.value.runType = tabRunType.value
+  start()
+}
 /**
  * 能不能开跑：**两种跑法都要求"已为当前任务的线路描过跑道"**（用户 2026-09-18 口径：
  * "自由跑我们也需要保证线路的稳健性，所以也是限制在自己做的线路中"）。
@@ -435,6 +473,15 @@ watchEffect(() => {
  */
 const canStart = computed(() => configuredForTask.value > 0)
 const isBusy = computed(() => run.value.status === 'running' || run.value.status === 'paused')
+/**
+ * **真实提交正在进行**（等报备时长 / 正在提交）。
+ *
+ * ⚠️ 2026-09-18 审计 #2：这条链路活在 `phase` 里，而"能不能离开/重置"原先只看 `run.status`
+ * （提交期 `run.status` 已是 `finished` ⇒ `isBusy=false`）⇒ 用户可以在倒计时中途点「重置」把
+ * 自己正在等待的那笔提交从界面上抹掉（数据不会写坏，但完全失去监督窗口）。
+ * 所以"锁"必须**同时看两条轨道**。
+ */
+const submitInFlight = computed(() => phase.value === 'waiting' || phase.value === 'submitting')
 
 /** 载入演示数据（按需功能，不发任何请求） */
 const doEnableDemo = () => {

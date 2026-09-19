@@ -536,11 +536,21 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
     failures.push('找不到「开始跑步」按钮（检查器需同步更新：候选文件里没有带该文案的 <v-btn>）')
   }
   for (const b of startBtns) {
-    const disabledExpr = /:disabled="([^"]*)"/.exec(b.attrs)?.[1] ?? ''
-    if (!disabledExpr) {
+    /**
+     * ⚠️ 2026-09-18（审计 #4）：**必须取全部** `:disabled` 而不是第一个 ——
+     * 同一按钮若写了两个绑定，Vue 取后者、而"取第一个"的写法会校验那个**被忽略**的表达式
+     * ⇒ 判据偏移（理论上可静默漏检）。发现多于一个就直接报"写法可疑"。
+     */
+    const disabledMatches = [...b.attrs.matchAll(/:disabled="([^"]*)"/g)].map((m) => m[1] ?? '')
+    if (disabledMatches.length === 0) {
       failures.push(`${b.file}：「开始跑步」按钮找不到 disabled 绑定（检查器需同步更新）`)
       continue
     }
+    if (disabledMatches.length > 1) {
+      failures.push(`${b.file}：「开始跑步」按钮写了 ${disabledMatches.length} 个 :disabled（Vue 只认最后一个，守卫会校验错对象）—— 请只保留一个`)
+      continue
+    }
+    const disabledExpr = disabledMatches[0] ?? ''
     if (/night/.test(disabledExpr)) {
       failures.push(`${b.file}：「开始跑步」按钮被夜间时段拦住了 —— 夜间**只停真实提交**，本地模拟必须可用（用户 2026-09-17 澄清）`)
     }
@@ -561,8 +571,12 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
     failures.push('找不到「真实提交」按钮（检查器需同步更新：候选文件里没有带该文案的 <v-btn>）')
   }
   for (const b of submitBtns) {
-    const disabledExpr = /:disabled="([^"]*)"/.exec(b.attrs)?.[1] ?? ''
-    if (!/gateStatus/.test(disabledExpr)) {
+    const disabledMatches = [...b.attrs.matchAll(/:disabled="([^"]*)"/g)].map((m) => m[1] ?? '')
+    if (disabledMatches.length > 1) {
+      failures.push(`${b.file}：「真实提交」按钮写了 ${disabledMatches.length} 个 :disabled（Vue 只认最后一个）—— 请只保留一个`)
+      continue
+    }
+    if (!/gateStatus/.test(disabledMatches[0] ?? '')) {
       failures.push(`${b.file}：「真实提交」按钮的 disabled 里必须仍含门禁（gateStatus.*）—— 夜间/风控都要拦得住`)
     }
   }

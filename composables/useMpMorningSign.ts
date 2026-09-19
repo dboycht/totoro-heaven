@@ -1,12 +1,13 @@
 /**
  * 早操签到（**只读侧**）—— `useMpMorningSign()`
  *
- * 只做两件事：读签到任务与点位（`getMornSignPaper`）、读签到记录（`getMornSignArchDetail`）。
+ * 当前**只读任务与点位**（`getMornSignPaper`）。
+ * 签到记录端点（`getMornSignArchDetail`）已在契约层与 wrapper 里登记，但**尚无消费者**
+ * （页面没做"签到历史"）—— 所以别把注释写成"读了记录"（2026-09-18 审计指出过）。
  *
- * ⚠️ **不实现任何写操作**（`morningExercises`）：该端点的入参是 RSA 加密的 `encryptParams`，
- *    里面要求填 `qrCode` —— 而 `qrCode` 是**服务端下发的期望值**，小程序拿"你扫到的码"与它做
- *    **本地字符串比对**来证明"人到了现场"。把下发值当扫码结果提交 = 跳过到场校验，
- *    属 `HANDOVER.md §7` 的「不使用服务端漏洞」红线（同结论见 `第三方9_17-早签模块分析.md` §5.2/§11）。
+ * ⚠️ **不实现任何写操作**（`morningExercises`）：它的入参是 RSA 加密的 `encryptParams`，其中要求填
+ *    `qrCode` —— 而 `qrCode` 是**服务端下发的期望值**，小程序拿"你扫到的码"与它做**本地字符串比对**
+ *    来证明"人到了现场"。拿下发值当扫码结果提交 = 跳过到场校验，属 `HANDOVER.md §7` 红线。
  *
  * 支持范围：与阳光跑一致（共享域 + 无风控校验）。**我校实测返回"本学校无需签到"**，
  * 因此本模块的定位是"给需要签到的同学看任务"（大一），不需要的人会看到明确的"未开启"提示。
@@ -26,8 +27,6 @@ export function useMpMorningSign() {
   /** 读取状态（界面据此显示"读取中 / 未开启 / 已读到"） */
   const status = useState<'idle' | 'loading' | 'ready' | 'unavailable' | 'error'>('mpMornSignStatus', () => 'idle')
   const error = useState('mpMornSignError', () => '')
-  /** 上次读取时刻（毫秒） */
-  const loadedAt = useState('mpMornSignLoadedAt', () => 0)
 
   const token = () => String(session.value?.token ?? '')
 
@@ -67,7 +66,6 @@ export function useMpMorningSign() {
     }
     const norm = normalizeMornSignPaper(res.data)
     task.value = norm
-    loadedAt.value = Date.now()
     if (norm.kind === 'ok') {
       status.value = 'ready'
 
@@ -86,5 +84,5 @@ export function useMpMorningSign() {
     return true
   }
 
-  return { task, status, error, loadedAt, loadMornSignTask }
+  return { task, status, error, loadMornSignTask }
 }

@@ -245,7 +245,11 @@ export const MpApiWrapper = {
     return this.call<Record<string, unknown>>('mornSignPaper', { ...params }, options)
   },
 
-  /** 早操签到记录（只读：`scoreList` / `completedTimes`） */
+  /**
+   * 早操签到记录（只读：`scoreList` / `completedTimes`）。
+   * ⚠️ **当前无消费者**（页面没做"签到历史"，2026-09-18 审计指出）—— 保留是为了让"早操签到"这块的
+   *    只读能力成体系（任务/点位/记录），将来要加历史页时直接可用；**它不是写端点**，无副作用。
+   */
   async getMornSignArchDetail(params: { stuNumber: string; token?: string }, options: MpRequestOptions = {}) {
     return this.call<Record<string, unknown>>('mornSignArchDetail', { ...params }, options)
   },

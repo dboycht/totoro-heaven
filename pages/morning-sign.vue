@@ -57,7 +57,13 @@
             </v-col>
           </v-row>
 
-          <div class="text-subtitle-2 mt-3 mb-1">签到点位（{{ task.signPointList.length }} 个）</div>
+          <div class="d-flex flex-wrap align-center ga-2 mt-3 mb-1">
+            <span class="text-subtitle-2">签到点位（{{ task.signPointList.length }} 个）</span>
+            <v-btn size="small" variant="tonal" prepend-icon="mdi-crosshairs-gps" :loading="locating" @click="locate">
+              定位看距离
+            </v-btn>
+            <span v-if="myDistanceText" class="text-caption text-medium-emphasis">{{ myDistanceText }}</span>
+          </div>
           <v-table density="compact">
             <thead>
               <tr>
@@ -146,11 +152,23 @@ const intervalText = computed(() => {
   return `${v}（单位以服务端为准，未实测确认）`
 })
 
-/** 若浏览器允许定位，给出"离最近点位多远"的粗略提示（**不做任何到场判断**） */
+/**
+ * 「离点位多远」——**只在用户主动点击时**才请求定位（不在进入页面时自动弹权限框）。
+ *
+ * ⚠️ 2026-09-18 审计：这段原本**只写不读**（实现了却没入口、`distanceMeters` 也白导入），
+ * 属不可达代码；现在把入口接上（模板里的「定位看距离」按钮）。
+ * ⚠️ 定位在**非安全上下文**（HTTP 且非 localhost）不可用 —— 打包成 EXE 后是 `http://localhost`，
+ * 属于安全上下文，可用；若用户拒绝授权则给出提示，**不影响查看任务**。
+ * ⚠️ 这里**只做提示**：真正"是否在范围内"的校验由服务端按点位坐标 + 范围做，我们不做判断。
+ */
 const myDistanceText = ref('')
 const locating = ref(false)
 const locate = () => {
-  if (!navigator.geolocation || !task.value?.signPointList.length) return
+  if (!task.value?.signPointList.length) return
+  if (!navigator.geolocation) {
+    myDistanceText.value = '本环境不支持定位 —— 不影响查看任务'
+    return
+  }
   locating.value = true
   navigator.geolocation.getCurrentPosition(
     (pos) => {
@@ -167,11 +185,13 @@ const locate = () => {
           name = p.pointName
         }
       }
-      myDistanceText.value = Number.isFinite(best) ? `离「${name}」约 ${Math.round(best)} 米（仅供参考，实际校验由服务端做）` : ''
+      myDistanceText.value = Number.isFinite(best)
+        ? `你离「${name}」约 ${Math.round(best)} 米（仅供参考；是否在范围内由服务端判定）`
+        : '点位坐标不完整，算不出距离'
     },
     () => {
       locating.value = false
-      myDistanceText.value = '拿不到定位（浏览器未授权或不可用）——不影响查看任务'
+      myDistanceText.value = '拿不到定位（未授权或本环境不支持）——不影响查看任务'
     },
     { enableHighAccuracy: true, timeout: 8000 },
   )

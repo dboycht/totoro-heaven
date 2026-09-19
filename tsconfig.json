@@ -1,4 +1,9 @@
 {
+  "//": "⚠️ 2026-09-18：exclude 是**必须的**。",
+  "//2": "`include: [\"./**/*\"]` 会把整个仓库纳入类型检查 —— 连 `_mp-analyze/`（本项目分析/探针目录，",
+  "//3": "git 排除、里面全是临时 .mjs）也被 `nuxi typecheck` 扫到，于是**任何语法错的临时脚本都会让",
+  "//4": "`npm run verify` 变红**（实测复现：在 _mp-analyze/scratch/ 放一个 `const x = {{{` ⇒ error TS1136）。",
+  "//5": "这里只排除确属工具产物的目录，源码目录一个都不排除。",
   "extends": "./.nuxt/tsconfig.json",
   "compilerOptions": {
     "strict": true,
@@ -9,5 +14,6 @@
       "~/*": ["./*"]
     }
   },
-  "include": ["./**/*", ".nuxt/nuxt.d.ts"]
+  "include": ["./**/*", ".nuxt/nuxt.d.ts"],
+  "exclude": ["_mp-analyze", "dist", "node_modules", ".output", ".mp-test-build"]
 }

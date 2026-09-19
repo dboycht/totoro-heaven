@@ -96,14 +96,22 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
     const isSunRun = run.value.runType === 0
 
     /**
-     * ⚠️ **自由跑不取线路**（2026-09-18 按厂商源码）：厂商在自由跑时
-     * `0==runType && (o=columnsLine[...])` 根本不执行 ⇒ 自由跑**不需要在跑道编辑里描圈**，
-     * `paperId`/`lineId` 都是空串。这里用"官方模板/任务第一条线路"只当**形状参考**
-     * （轨迹总要有个几何；跑道编辑里描过就用你描的车道线，见下面的 trackEntry 分支）。
+     * 本次用哪条线路的几何。
+     *
+     * ⚠️ **只允许"本机描过跑道的线路"**（用户 2026-09-18 口径：两种跑法都要保证线路稳健性）。
+     * 2026-09-18 审计 #3 修掉的错法：原来是
+     * `lines.value.find(p => p.pointId === run.lineId) ?? lines.value[0]` ——
+     * 当 `run.lineId` 属于**上一个任务**（切换任务/恢复缓存后常见）时，`find` 落空、静默回落到
+     * `lines[0]`，而它**可能根本没描过** ⇒ 用官方模板生成轨迹，正是本轮要防的场景。
+     * 现在的判据与页面按钮（`canStart`）**同源**：只从 `lib.entries` 里挑，挑不到就明确报错。
      */
-    const line = lines.value.find((item) => item.pointId === run.value.lineId) ?? lines.value[0]
-    if (!line && isSunRun) {
-      run.value.error = '线路缺失（真实模式请先在「工作台」读取真实任务与线路）'
+    const drawnIds = new Set(lib.entries.value.map((e) => String(e.lineId)))
+    const drawnLines = lines.value.filter((l) => drawnIds.has(String(l.pointId)))
+    const line = drawnLines.find((l) => String(l.pointId) === String(run.value.lineId)) ?? drawnLines[0]
+    if (!line) {
+      run.value.error =
+        '这条线路还没描过跑道：本版只允许用你自己描的跑道生成轨迹（官方模板偏十几到几十米）。' +
+        '请去「跑道编辑」选这条线路 → 「快速定位」→ 沿卫星图描外圈 → 保存（本机）。'
       return
     }
 
