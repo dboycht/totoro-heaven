@@ -126,7 +126,9 @@ const ALLOW_DUPLICATE_LABELS = new Map<string, string>([
       '且第二处有额外条件，属于**有意的就近入口**，不是复制粘贴残留 —— 已核实',
   ],
   [
-    'pages/run.vue：去「跑道编辑」描一条',
+    // ⚠️ 2026-09-18 标签页重构后，跑步界面从 `pages/run.vue` 搬到了 `components/RunWorkspace.vue`
+    //    （两个薄页面共用同一个引擎组件）⇒ 白名单的键必须跟着改，否则会误报"重复按钮"（实测踩到）。
+    'components/RunWorkspace.vue：去「跑道编辑」描一条',
     '三处都在**互斥的 `v-if` / `v-else-if` 分支**里（已配置 / 库里有别的任务的跑道 / 完全没描过），' +
       '同一时刻只渲染一个 —— 2026-09-18 审计 M1 补齐"库里有条目但都不属于当前任务"这条分支时核实过',
   ],

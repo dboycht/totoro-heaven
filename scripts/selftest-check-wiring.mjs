@@ -54,6 +54,10 @@ const NEEDED = [
   //    检查器要把页面里的组件标签与**组件文件里声明的 props** 对照，所以组件文件也必须在副本里，
   //    否则 byName 找不到它、检查直接跳过（自测实测：漏拷组件 → 注入违规却"通过"）。
   'components/RunTrajectoryPreview.vue',
+  // ⚠️ 2026-09-18（标签页重构）：跑步界面从 `pages/run.vue` 搬进了 `components/RunWorkspace.vue`
+  //    （run.vue / freerun.vue 都只是薄页面）⇒ R9 现在按"候选文件里的 <v-btn>"找「开始跑步」，
+  //    副本里**必须带上这个组件**，否则自测会报"找不到按钮"（本轮实测踩到）。
+  'components/RunWorkspace.vue',
 ]
 
 /**
@@ -226,7 +230,7 @@ try {
   // ---------- 注入 10：把夜间限制套回「开始跑步」（夜间只该拦真实提交）----------
   {
     const dir = copyBase()
-    const file = join(dir, 'pages/run.vue')
+    const file = join(dir, 'components/RunWorkspace.vue')
     const text = readFileSync(file, 'utf8')
     // ⚠️ 写法会变（现在按钮绑的是 `!canStart`）⇒ 注入按"**最近的那个 `:disabled=`**"就地追加夜间条件，
     //    不再依赖某个固定表达式，避免每次重构按钮都要改自测（本轮已因此失败过一次）。
@@ -234,7 +238,7 @@ try {
       /(<v-btn\b[^>]*?:disabled=")([^"]*)("[^>]*?>\s*开始跑步)/,
       (_m, pre, expr, post) => `${pre}${expr} || gateStatus.blockedBy === 'night'${post}`,
     )
-    if (injected === text) failures.push('注入 10：pages/run.vue 里找不到「开始跑步」的 disabled 绑定（自测需同步更新）')
+    if (injected === text) failures.push('注入 10：RunWorkspace.vue 里找不到「开始跑步」的 disabled 绑定（自测需同步更新）')
     writeFileSync(file, injected, 'utf8')
     const { code, out } = run(dir)
     if (code === 0) failures.push('夜间限制被套回「开始跑步」但检查器仍然通过（适用面守卫失效）')
@@ -244,13 +248,13 @@ try {
   // ---------- 注入 13：去掉「开始跑步」的"已配置跑道"约束（2026-09-18 用户要求收紧）----------
   {
     const dir = copyBase()
-    const file = join(dir, 'pages/run.vue')
+    const file = join(dir, 'components/RunWorkspace.vue')
     const text = readFileSync(file, 'utf8')
     const injected = text
       // 页面把口径收口在 `canStart` 里（自由跑落地后）⇒ 注入要同时拆掉"按钮用 canStart"与"canStart 里的约束"
       .replace(':disabled="!canStart"', ':disabled="!activeTask"')
       .replace(/const canStart = computed\(\(\) =>[\s\S]{0,240}?\n\)\n/, 'const canStart = computed(() => true)\n')
-    if (injected === text) failures.push('注入 13：pages/run.vue 里找不到「开始跑步」的 canStart 绑定（自测需同步更新）')
+    if (injected === text) failures.push('注入 13：RunWorkspace.vue 里找不到「开始跑步」的 canStart 绑定（自测需同步更新）')
     writeFileSync(file, injected, 'utf8')
     const { code, out } = run(dir)
     if (code === 0) failures.push('「开始跑步」不再要求"已配置跑道"，但检查器仍然通过（R9 收紧失效）')
@@ -278,10 +282,10 @@ try {
   // Vue dev 模式用 hyphenate('lapLengthM')='lap-length-m' 严格比对 ⇒ 静默丢弃。检查器必须报出来。
   {
     const dir = copyBase()
-    const file = join(dir, 'pages/run.vue')
+    const file = join(dir, 'components/RunWorkspace.vue')
     const text = readFileSync(file, 'utf8')
     const injected = text.replace(':lapLengthM="run.lapLengthM"', ':lap-length="run.lapLengthM"')
-    if (injected === text) failures.push('注入 12：pages/run.vue 里找不到 `:lapLengthM="run.lapLengthM"`（自测需同步更新）')
+    if (injected === text) failures.push('注入 12：RunWorkspace.vue 里找不到 `:lapLengthM="run.lapLengthM"`（自测需同步更新）')
     writeFileSync(file, injected, 'utf8')
     const { code, out } = run(dir)
     if (code === 0) failures.push('kebab-case 绑定丢掉 prop，但检查器仍然通过（R11 守卫失效）')

@@ -8,7 +8,9 @@
       </v-app-bar-title>
 
       <v-btn to="/" variant="text" prepend-icon="mdi-home-outline" class="text-none">工作台</v-btn>
-      <v-btn to="/run" variant="text" prepend-icon="mdi-run" class="text-none">阳光跑</v-btn>
+      <!-- 2026-09-18：阳光跑 / 自由跑 拆成两个独立标签（各自 URL），早操签到独立成项 -->
+      <v-btn to="/run" variant="text" prepend-icon="mdi-white-balance-sunny" class="text-none">阳光跑</v-btn>
+      <v-btn to="/freerun" variant="text" prepend-icon="mdi-run" class="text-none">自由跑</v-btn>
       <!-- 早操签到：**只在"本账号确实需要签到"时出现**（我校实测返回"本学校无需签到"，
            所以多数人不会看到这一项；需要签到的大一同学首次读取后它才出现） -->
       <v-btn v-if="mornSignRequired" to="/morning-sign" variant="text" prepend-icon="mdi-clock-check-outline" class="text-none">
@@ -17,7 +19,7 @@
       <v-btn to="/track-editor" variant="text" prepend-icon="mdi-vector-polyline" class="text-none">跑道编辑</v-btn>
       <v-btn to="/records" variant="text" prepend-icon="mdi-format-list-bulleted" class="text-none">记录</v-btn>
       <v-btn to="/logs" variant="text" prepend-icon="mdi-text-box-search-outline" class="text-none">日志</v-btn>
-      <v-btn to="/version-info" variant="text" prepend-icon="mdi-image-multiple-outline" class="text-none">版本信息</v-btn>
+      <v-btn to="/version-info" variant="text" prepend-icon="mdi-image-multiple-outline" class="text-none">版本</v-btn>
       <v-spacer />
 
       <v-chip :color="isRealSession ? 'success' : 'default'" variant="tonal" size="small" class="mr-2">

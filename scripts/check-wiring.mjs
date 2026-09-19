@@ -510,38 +510,61 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
 // 夜间 22:30~06:00 **只停「真实提交」**；本地模拟/预览必须照旧可用。
 // 曾经的错法：把 `gateStatus.blockedBy === 'night'` 也挂在「开始跑步」按钮的 disabled 上 ⇒ 夜里连模拟都点不了。
 {
-  const runPageText = read('pages/run.vue') ?? ''
   /**
-   * ⚠️ 2026-09-18 修正：原来用 `:disabled="!activeTask"` 做**精确**匹配，
-   * 一旦这个绑定加上别的条件（本轮加了"没描过跑道也不能跑"⇒ `!activeLines.length`）就匹配不到了
-   * （表现是自测报"找不到按钮"）。改成**先锚定按钮文本、再取其前面的 disabled 绑定**，与内容解耦。
+   * ⚠️ 2026-09-18 重构后调整：跑步界面**从页面搬进了组件**（`pages/run.vue` 与 `pages/freerun.vue`
+   * 都只是薄页面，真正的按钮在 `components/RunWorkspace.vue`）⇒ 检查器不能再硬编码 `pages/run.vue`。
+   *
+   * 判据同时收紧：**只认真正的按钮**（`<v-btn ...>文案</v-btn>`），
+   * 并且对每个按钮**从它的开标签往前找最近的 `:disabled`**（标签配对，不用距离窗口）。
+   * 这样"说明文字里提到开始跑步"（如预览卡的图注）不会被误当成按钮。
    */
-  const startBtn = /(:disabled="[^"]*")[\s\S]{0,200}?开始跑步/.exec(runPageText)
-  if (!startBtn) {
-    failures.push('pages/run.vue：找不到「开始跑步」按钮的 disabled 绑定（检查器需同步更新）')
-  } else if (/night/.test(startBtn[1])) {
-    failures.push('「开始跑步」按钮被夜间时段拦住了 —— 夜间**只停真实提交**，本地模拟必须可用（用户 2026-09-17 澄清）')
-  }
-  const submitBtn = runPageText.match(/:disabled="([^"]*gateStatus[^"]*)"/)
-  if (!submitBtn) {
-    failures.push('pages/run.vue：「真实提交」按钮的 disabled 里必须仍含门禁（gateStatus.*）—— 夜间/风控都要拦得住')
+  const candidates = [...PAGE_FILES, ...listDir('components')].filter((f) => f.endsWith('.vue'))
+  const BTN_RE = /<v-btn\b([^>]*)>([\s\S]{0,120}?)<\/v-btn>/g
+
+  /** 收集所有按钮：{文件, 文案, 属性} */
+  const buttons = []
+  for (const file of candidates) {
+    const text = read(file) ?? ''
+    for (const m of text.matchAll(BTN_RE)) {
+      buttons.push({ file, attrs: m[1] ?? '', label: (m[2] ?? '').replace(/<[^>]*>/g, '').trim() })
+    }
   }
 
-  /**
-   * 🆕 2026-09-18（用户实测反馈"没弄路线也能选路线"）：「开始跑步」还必须**受"已配置跑道"约束** ——
-   * 阳光跑的生成基准是**用户自己描的跑道**，没描过就不该能开跑（否则会静默用官方模板生成，形状偏十几米）。
-   * 判据：要么 `disabled` 里直接含约束（`libEntries` / `activeLines` / `configuredForTask`），
-   *      要么经**同一文件里定义的 `canStart`** 收口（自由跑落地后采用了这种写法）。
-   * ⚠️ 必须两种都接受，否则"把口径收口成一个 computed"这种更好的写法会被误报。
-   */
-  const disabledExpr = startBtn?.[1] ?? ''
-  const directConstraint = /libEntries|activeLines|configuredForTask/.test(disabledExpr)
-  const viaCanStart = /canStart/.test(disabledExpr) && /const canStart\s*=/.test(runPageText)
-  if (startBtn && !directConstraint && !viaCanStart) {
-    failures.push(
-      'pages/run.vue：「开始跑步」的 disabled 必须包含"已配置跑道"的约束' +
-        '（直接写 `!configuredForTask`，或经 `canStart` 收口）—— 阳光跑只允许用用户自己描的跑道生成轨迹（用户 2026-09-18 要求）',
-    )
+  // ① 「开始跑步」：夜间不得拦住它；且必须受"已配置跑道"约束
+  const startBtns = buttons.filter((b) => b.label.includes('开始跑步'))
+  if (startBtns.length === 0) {
+    failures.push('找不到「开始跑步」按钮（检查器需同步更新：候选文件里没有带该文案的 <v-btn>）')
+  }
+  for (const b of startBtns) {
+    const disabledExpr = /:disabled="([^"]*)"/.exec(b.attrs)?.[1] ?? ''
+    if (!disabledExpr) {
+      failures.push(`${b.file}：「开始跑步」按钮找不到 disabled 绑定（检查器需同步更新）`)
+      continue
+    }
+    if (/night/.test(disabledExpr)) {
+      failures.push(`${b.file}：「开始跑步」按钮被夜间时段拦住了 —— 夜间**只停真实提交**，本地模拟必须可用（用户 2026-09-17 澄清）`)
+    }
+    const text = read(b.file) ?? ''
+    const directConstraint = /libEntries|activeLines|configuredForTask/.test(disabledExpr)
+    const viaCanStart = /canStart/.test(disabledExpr) && /const canStart\s*=/.test(text)
+    if (!directConstraint && !viaCanStart) {
+      failures.push(
+        `${b.file}：「开始跑步」的 disabled 必须包含"已配置跑道"的约束` +
+          '（直接写 `!configuredForTask`，或经 `canStart` 收口）—— 两种跑法都只允许用用户自己描的跑道生成轨迹（用户 2026-09-18 要求）',
+      )
+    }
+  }
+
+  // ② 「真实提交」：disabled 必须仍含门禁（gateStatus.*）
+  const submitBtns = buttons.filter((b) => b.label.includes('真实提交'))
+  if (submitBtns.length === 0) {
+    failures.push('找不到「真实提交」按钮（检查器需同步更新：候选文件里没有带该文案的 <v-btn>）')
+  }
+  for (const b of submitBtns) {
+    const disabledExpr = /:disabled="([^"]*)"/.exec(b.attrs)?.[1] ?? ''
+    if (!/gateStatus/.test(disabledExpr)) {
+      failures.push(`${b.file}：「真实提交」按钮的 disabled 里必须仍含门禁（gateStatus.*）—— 夜间/风控都要拦得住`)
+    }
   }
 }
 
