@@ -27,6 +27,20 @@ test('mornSignSubmit：signDate 固定上海时区（UTC 时间戳 → +8 小时
   assert.equal(formatShanghaiDateTime(Date.UTC(2026, 8, 18, 20, 30, 0)), '2026-09-19 04:30:00')
 })
 
+test('mornSignSubmit：跨日/跨月/跨年边界（UTC+8 最容易错的地方）', () => {
+  // 实现是"先加 8 小时再取 UTC 字段"，所以 16:00Z 正好是次日 00:00 —— 跨日必须正确
+  assert.equal(formatShanghaiDateTime(Date.UTC(2026, 8, 18, 15, 59, 0)), '2026-09-18 23:59:00')
+  assert.equal(formatShanghaiDateTime(Date.UTC(2026, 8, 18, 16, 0, 0)), '2026-09-19 00:00:00')
+  assert.equal(formatShanghaiDateTime(Date.UTC(2026, 8, 30, 16, 0, 0)), '2026-10-01 00:00:00', '跨月')
+  assert.equal(formatShanghaiDateTime(Date.UTC(2026, 11, 31, 16, 0, 0)), '2027-01-01 00:00:00', '跨年')
+  // 窗口判定用的是同一套换算：午夜与窗口首尾都要对
+  const task = { startTime: '06:00', endTime: '08:30' } as never
+  assert.equal(evaluateMornSignWindow(task, Date.UTC(2026, 8, 18, 16, 0, 0)).inside, false, '上海 00:00 在窗口外')
+  assert.equal(evaluateMornSignWindow(task, Date.UTC(2026, 8, 18, 22, 0, 0)).inside, true, '上海 06:00 在窗口内')
+  assert.equal(evaluateMornSignWindow(task, Date.UTC(2026, 8, 19, 0, 30, 0)).inside, true, '上海 08:30 在窗口内')
+  assert.equal(evaluateMornSignWindow(task, Date.UTC(2026, 8, 19, 0, 31, 0)).inside, false, '上海 08:31 在窗口外')
+})
+
 test('mornSignSubmit：parseClockMinutes 容错（HH:mm / HH:mm:ss / 非法）', () => {
   assert.equal(parseClockMinutes('06:00'), 360)
   assert.equal(parseClockMinutes('08:30'), 510)
@@ -69,7 +83,6 @@ test('mornSignSubmit：16 字段组装 —— signType 恒为 "0"、qrCode 用�
   }
   const payload = buildMornSignPayload({
     point: point as never,
-    task: { signType: '9' } as never, // 故意给个不同的 signType ⇒ 必须是 '0'
     snCode: '032530213',
     token: 'tk',
     nowMs: at(7, 15),
@@ -93,13 +106,13 @@ test('mornSignSubmit：四要素不全时**抛错**（不发残缺请求）', ()
   for (const missing of ['taskId', 'latitude', 'longitude', 'qrCode']) {
     const point = { ...base, [missing]: '' }
     assert.throws(
-      () => buildMornSignPayload({ point: point as never, task: null, snCode: 'x', token: 'y' }),
+      () => buildMornSignPayload({ point: point as never, snCode: 'x', token: 'y' }),
       /资料不完整/,
       `缺 ${missing} 应抛错`,
     )
   }
   assert.throws(
-    () => buildMornSignPayload({ point: base as never, task: null, snCode: '', token: 'y' }),
+    () => buildMornSignPayload({ point: base as never, snCode: '', token: 'y' }),
     /缺少学号/,
   )
 })

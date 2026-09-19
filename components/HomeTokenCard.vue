@@ -104,23 +104,17 @@
           </template>
         </div>
         <div v-if="!isRealSession && !cacheHasToken" class="text-caption mt-1 text-warning">
-          ⚠️ 本机当前没有可用 token（这份缓存也是旧版本存的、不含 token）—— 请先点「一键获取 token」，
+          ⚠️ 本机当前没有可用 token（这份缓存也是旧版本存的、不含 token）—— 请先点上方「一键获取 token」，
           之后再点「恢复」；<b>新版本此后会把 token 一起存下来</b>，以后就能一键恢复。
         </div>
         <div class="d-flex flex-wrap ga-2 mt-2">
           <v-btn size="small" variant="tonal" prepend-icon="mdi-history" @click="emit('restore-cached')">
             {{ cacheHasToken ? '恢复（重建会话并读取）' : '恢复（用 token 重新读取）' }}
           </v-btn>
-          <v-btn
-            v-if="!isRealSession && !cacheHasToken"
-            size="small"
-            color="primary"
-            variant="flat"
-            prepend-icon="mdi-radar"
-            @click="emit('token-scan')"
-          >
-            一键获取 token
-          </v-btn>
+          <!-- ⚠️ 2026-09-19：**删掉这里的第二个「一键获取 token」** ——
+               本卡片工具栏里那个是**无条件常显**的（同一个按钮），这里再来一份属**重复元素**（用户指出
+               "检查一下别的地方有没有这种重复性元素"）。指引文字保留（把用户指向同一个按钮），
+               但不再放第二个按钮。 -->
           <v-btn size="small" variant="text" prepend-icon="mdi-delete-outline" @click="emit('clear-cached')">
             忽略并清除
           </v-btn>

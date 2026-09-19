@@ -325,15 +325,8 @@ export function smoothClosedRing<T extends { latitude: number; longitude: number
   return out
 }
 
-/** 车道的**起跑点**（最靠"东侧"的那个点）——让起跑位置稳定、可复现 */export function laneStartIndex(lane: LatLng[]): number {
-  let best = 0
-  for (let i = 1; i < lane.length; i++) if (lane[i]!.longitude > lane[best]!.longitude) best = i
-  return best
-}
+/* ⚠️ 2026-09-19 删除两个**零引用**的导出：`laneStartIndex()`（东侧起跑点）与
+   `rotateLoop()`（按起点旋转车道线）。它们是早期"起跑点固定"方案留下的，后来起跑点由
+   `generateRoute.ts` 里的另一套逻辑决定，这两个函数**从未被任何地方引用**（grep 全仓仅声明处）。
+   删掉而不是留着：留着会让人误以为"起跑点由这里控制"，从而改错地方。 */
 
-/** 把车道线旋转到指定起点（起跑点固定，避免每次落在随机位置） */
-export function rotateLoop(lane: LatLng[], startIndex: number): LatLng[] {
-  if (!lane.length) return lane
-  const i = ((startIndex % lane.length) + lane.length) % lane.length
-  return [...lane.slice(i), ...lane.slice(0, i)]
-}

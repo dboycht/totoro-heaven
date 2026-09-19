@@ -72,9 +72,8 @@ export function patchScan(patch: Partial<TokenScanState>): void {
   if (state) state = { ...state, ...patch }
 }
 
-export function clearScan(): void {
-  state = null
-}
+/* ⚠️ 2026-09-19 删除**零引用**的 `clearScan()`：扫描状态由 `beginScan()` 重置，
+   没有调用方需要单独清空（grep 全仓仅声明处）。 */
 
 /**
  * 🔒 只允许**本机**访问，且拒绝跨站来源。

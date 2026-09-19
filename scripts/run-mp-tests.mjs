@@ -51,6 +51,12 @@ const copied =
   copyTree(path.join(root, 'utils', 'mp'), path.join(tmp, 'utils', 'mp')) +
   copyTree(path.join(root, 'src', 'mp'), path.join(tmp, 'src', 'mp')) +
   copyTree(path.join(root, 'src', 'wrappers'), path.join(tmp, 'src', 'wrappers')) +
+  /**
+   * ⚠️ 2026-09-19：`server/utils` 里的模块（如 `logger.ts`）会**相对导入** `utils/mp/*`，
+   * 而 Node 的 ESM 要求带扩展名 ⇒ 副本由 `rewriteImports` 补成 `.ts` 后，
+   * 必须确保 `utils/mp` **也在副本里**（上面第一行已经拷了，路径同形 `../../utils/mp/logFormat.ts` 可解析）。
+   * 缺这一层时实测报 `ERR_MODULE_NOT_FOUND: .../utils/mp/logFormat`。
+   */
   copyTree(path.join(root, 'server', 'utils'), path.join(tmp, 'server', 'utils')) +
   copyTree(path.join(root, 'tests', 'mp'), path.join(tmp, 'tests', 'mp'))
 

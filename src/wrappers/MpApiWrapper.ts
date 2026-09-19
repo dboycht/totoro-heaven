@@ -113,7 +113,36 @@ async function rawRequest(
       return { error: `响应不是 JSON（HTTP ${response.status}）` }
     }
   } catch (err) {
-    return { error: err instanceof Error ? err.message : '请求失败' }
+    return { error: await describeTransportError(err) }
+  }
+}
+
+/**
+ * 把传输层异常转成**给人看的中文原因**。
+ *
+ * ⚠️ 2026-09-19 自查补上：`ky` 对非 2xx 抛的是 `HTTPError`，其 `message` 是英文的
+ * `Request failed with status code 504` —— 而我们在服务端辛苦写的中文原因
+ * （例如代理超时那条"上游 20 秒无响应（网络/校方接口慢或不通）——请稍后重试"）
+ * **用户根本看不到**。这里改成优先读响应体里的 `statusMessage`/`message`。
+ * 判据：**服务端给出的可读原因必须能穿到界面上**，否则等于白写。
+ */
+async function describeTransportError(err: unknown): Promise<string> {
+  const fallback = err instanceof Error ? err.message : '请求失败'
+  const response = (err as { response?: Response })?.response
+  if (!response) return fallback
+  try {
+    const body = await response.clone().text()
+    let reason = ''
+    try {
+      const j = JSON.parse(body) as Record<string, unknown>
+      reason = String(j.statusMessage ?? j.message ?? '')
+    } catch {
+      reason = body.slice(0, 160)
+    }
+    reason = reason.replace(/\s+/g, ' ').trim()
+    return reason ? `HTTP ${response.status}：${reason}` : `HTTP ${response.status}：${fallback}`
+  } catch {
+    return `HTTP ${response.status}：${fallback}`
   }
 }
 

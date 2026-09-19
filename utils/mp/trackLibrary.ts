@@ -40,6 +40,25 @@ export interface TrackRouteEntry {
 const isPts = (v: unknown): v is LatLng[] =>
   Array.isArray(v) && v.every((p) => !!p && typeof p === 'object' && 'latitude' in p && 'longitude' in p)
 
+/**
+ * 一条路线**放行所需的最少点数**（内外圈各算）。
+ *
+ * ⚠️ 2026-09-19 审计 S1：`isPts([])` 对**空数组返回 true**（`every` 在空数组上恒真）
+ * ⇒ 空圈/残缺圈能被存进路线库，之后跑步页把它当"已描过跑道"，而生成器因点数不足
+ * **回落到官方模板**（本版明令禁止）。所以校验必须**带上"点数下限"**，而不只是"元素形状对"。
+ * 3 是几何下限（少于 3 点连三角形都构不成，`runner.ts` 也用 `outer.length >= 3`）。
+ */
+export const MIN_RING_POINTS = 3
+
+/** 内外圈是否都**够点**且形状合法（唯一判据，filter/normalize/upsert 都用它） */
+export const hasValidRings = <T extends { outer?: unknown; inner?: unknown }>(
+  v: T,
+): v is T & { outer: LatLng[]; inner: LatLng[] } =>
+  isPts(v.outer) &&
+  v.outer.length >= MIN_RING_POINTS &&
+  isPts(v.inner) &&
+  v.inner.length >= MIN_RING_POINTS
+
 /** 自定义路名长度上限（按**码点**算，别把 emoji 截成半个 —— 用户可能起「🏃 西操场」这种名字） */
 export const TRACK_NAME_MAX = 24
 
@@ -80,7 +99,8 @@ export function resolveEntryName(e: Pick<TrackRouteEntry, 'lineId' | 'lineName' 
 export function normalizeLibrary(raw: unknown, fallbackVersion = '未知'): TrackRouteEntry[] {
   const out: TrackRouteEntry[] = []
   const push = (lineId: string, v: Record<string, unknown>) => {
-    if (!lineId || !isPts(v.outer) || !isPts(v.inner)) return
+    // ⚠️ 审计 S1：不是"元素形状对"就收 —— 必须**内外圈都够 3 点**（空圈曾能被收进来）
+    if (!lineId || !hasValidRings(v)) return
     // 用户自定义名：归一化后为空（历史数据里可能存过空白）⇒ 归一化成 undefined，一律走 `resolveEntryName` 兜底
     const customName = sanitizeLineName(v.customName)
     out.push({

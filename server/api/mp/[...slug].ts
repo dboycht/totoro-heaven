@@ -35,6 +35,13 @@ import { fingerprintOf } from '../../utils/tokenScanState'
 /** 🔒 允许的上游主机后缀（供应商自有域；见文件头"安全边界"） */
 const ALLOWED_UPSTREAM_SUFFIXES = ['xtotoro.com']
 
+/**
+ * 上游请求超时（毫秒）。
+ * 取 20 秒：比本项目其余上游调用（15–20 秒）一致，且明显长于正常响应（实测多为 200–600 ms），
+ * 只在"网络/校方接口真的卡住"时才触发，避免误杀慢响应。
+ */
+const UPSTREAM_TIMEOUT_MS = 20_000
+
 /** 主机是否在白名单内（`xtotoro.com` 及其子域） */
 const isAllowedUpstreamHost = (hostname: string): boolean => {
   const host = hostname.toLowerCase()
@@ -101,16 +108,30 @@ export default defineEventHandler(async (event) => {
   let res: Response
   let text: string
   try {
-    res = await fetch(target, { method, headers, body })
+    /**
+     * ⚠️ **必须带超时**（2026-09-19 自查补上）：这是**主数据通道**（读任务/成绩/记录全走这里），
+     * 而它原先**没有超时** —— 上游 TCP 卡住时 `fetch` 会一直挂着，界面表现为**无限转圈**
+     * （用户只能强杀程序）。其余 4 处上游调用早就带了 15–20 秒超时，这里是漏网的一处。
+     * 判据：**任何出网请求都要有上限**；超时后给出可读原因，而不是抛一个看不懂的裸 AbortError。
+     */
+    res = await fetch(target, { method, headers, body, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) })
     text = await res.text()
   } catch (err) {
+    const isTimeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
     logError('proxy', `${method} ${suffix} 请求失败`, {
       upstream: new URL(base).hostname,
       ms: Date.now() - startedAt,
       auth: authFp,
       body: summarizeRequestBody(suffix, body),
       error: err instanceof Error ? err.message : String(err),
+      ...(isTimeout ? { timeoutMs: UPSTREAM_TIMEOUT_MS } : {}),
     })
+    if (isTimeout) {
+      throw createError({
+        statusCode: 504,
+        statusMessage: `上游 ${UPSTREAM_TIMEOUT_MS / 1000} 秒无响应（网络/校方接口慢或不通）——请稍后重试`,
+      })
+    }
     throw err
   }
 

@@ -15,6 +15,7 @@
  * 与 `gateStatus` 保持同一判据，且不引入反向依赖）。
  */
 import { MpApiWrapper } from '~/src/wrappers/MpApiWrapper'
+import { MP_SCORE_STATUS } from '~/src/mp/models'
 import type { MpRunLine } from '~/src/mp/types'
 import { buildRunBeginRequest, buildScoreDetailRequest, buildScoreRequest, toSubmitPoints } from '~/utils/mp/submitPayload'
 import { evaluateRunGate } from '~/utils/mp/schoolGate'
@@ -56,6 +57,15 @@ export function useMpRealSubmit() {
     fitDegree: number
     plannedSeconds: number
   }): Promise<RealSubmitResult | null> {
+    /**
+     * ⚠️ **并发互斥（2026-09-19 审计 S2）**：本函数**会创建服务端场次**（非幂等写），
+     * 而它内部的 `waitTimer` 是**闭包级单变量** —— 第二次调用会把第一次的计时器清掉，
+     * 于是第一次的等待 Promise **永不 resolve**（既不发提交、也不报错，`phase` 卡死）。
+     * 所以入口必须先挡住"已经在等/已经在提交"的第二次调用（界面按钮也加了 disabled，这里是兜底）。
+     */
+    if (phase.value === 'waiting' || phase.value === 'submitting') {
+      return null
+    }
     const token = session.value?.token
     const runType: 0 | 1 = input.runType === 1 ? 1 : 0
     const freeRun = runType === 1
@@ -129,18 +139,44 @@ export function useMpRealSubmit() {
       }, 1000)
     })
 
+    /**
+     * ⚠️ **等待结束后必须重新校验上下文**（2026-09-19 审计 S3）。
+     *
+     * 等待可以长达 20 分钟，期间用户完全可能在顶栏点「退出登录」或在工作台点「清空本机数据」——
+     * 那会把 `profile` / `session` 置空。而下面 `const context = { snCode: profile.value.snCode, … }`
+     * 依赖**进入本函数时**的 TS 窄化（`!profile.value` 已在前面判过），**跨 `await` 后窄化并不能保证非空**
+     * ⇒ 会抛 `TypeError: Cannot read properties of null`，而且：
+     *   · 异常冒到调用方（界面无 catch）⇒ 无任何提示；
+     *   · 已创建的场次被丢弃；
+     *   · `phase` 永久停在 `'waiting'` ⇒ 「真实提交」与「重置」双双灰死，只能刷新页面。
+     * 所以这里重取一次，缺了就明确置错并退出（场次丢弃是已知代价，但至少状态正确、有提示）。
+     */
+    const tokenNow = session.value?.token
+    const profileNow = profile.value
+    if (!tokenNow || !profileNow) {
+      phase.value = 'error'
+      phaseMessage.value =
+        '等待期间会话/档案被清除（可能点了「退出登录」或「清空本机数据」）——本次提交已中止，未发送成绩。请重新读取真实数据后再试。'
+      logWarn('submit', '等待期间上下文丢失，提交中止', {
+        scantronId,
+        hadToken: Boolean(tokenNow),
+        hadProfile: Boolean(profileNow),
+      })
+      return null
+    }
+
     // ③ 提交成绩（写；只发一次，失败不重试）
     const submittedAt = Date.now()
     const context = {
-      snCode: profile.value.snCode,
-      schoolCode: profile.value.schoolCode,
+      snCode: profileNow.snCode,
+      schoolCode: profileNow.schoolCode,
       task: task.value,
       line: input.line,
       km: input.km,
       durationSeconds: planned,
       fitDegree: input.fitDegree,
       points: toSubmitPoints(input.points),
-      token,
+      token: tokenNow,
       scantronId,
       startMs: startedAt,
       endMs: submittedAt,
@@ -243,7 +279,7 @@ export function useMpRealSubmit() {
     if (result.value) {
       result.value.record = mine
       result.value.verdictText = mine
-        ? `scorePassType=${mine.scorePassType}（${{ 0: '无效', 1: '有效', 2: '申诉有效', 3: '补录有效' }[Number(mine.scorePassType)] ?? '未知'}）` +
+        ? `scorePassType=${mine.scorePassType}（${(MP_SCORE_STATUS as Record<number, string>)[Number(mine.scorePassType)] ?? '未知'}）` +
           (mine.scorePassRemark ? ` | 备注：${mine.scorePassRemark}` : '') +
           ` | 里程 ${mine.mileage} | 用时 ${mine.usedTime} | 拟合度 ${mine.trajectorySimilary}`
         : '归档里还没找到这条（可稍后再查）'

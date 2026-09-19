@@ -11,6 +11,7 @@
  */
 import type { LatLng } from '~/utils/mp/routeSimilarity'
 import {
+  hasValidRings,
   TRACK_LIBRARY_KEY,
   TRACK_LIBRARY_KEY_LEGACY,
   normalizeLibrary,
@@ -56,13 +57,30 @@ export function useTrackLibrary() {
     return merged
   }
 
-  const persist = () => {
-    if (!import.meta.client) return
-    localStorage.setItem(TRACK_LIBRARY_KEY, JSON.stringify(entries.value))
+  /**
+   * 写盘。⚠️ 2026-09-19 审计 M4：原来**没有 try/catch** —— 配额满/隐私模式下
+   * `setItem` 会抛，而此时**内存里已经改过了**（`entries.value = ...`）⇒ 内存与磁盘不一致、
+   * 而且异常会冒到调用方、连"保存成功"的提示都不会显示。现在吞掉异常并返回是否落盘成功，
+   * 调用方可据此提示"只存在内存里，刷新会丢"。
+   */
+  const persist = (): boolean => {
+    if (!import.meta.client) return false
+    try {
+      localStorage.setItem(TRACK_LIBRARY_KEY, JSON.stringify(entries.value))
+      return true
+    } catch {
+      return false
+    }
   }
 
   /** 新建或覆盖（覆盖时**保留原创建日期**，只更新几何与"本次版本"） */
   const upsert = (input: { lineId: string; lineName: string; outer: LatLng[]; inner: LatLng[]; laneNo?: number; laneCount?: number; note?: string }) => {
+    /**
+     * ⚠️ 2026-09-19 审计 S1 的**纵深防御**：即使界面判据被绕过（历史上就是 `ringCheck` 为 null
+     * 让保存按钮没禁用），这里也**拒绝把不完整的圈写进库** —— 库里一旦有它，跑步页就会
+     * 把它当"已描过跑道"，而生成器会回落到官方模板（本版禁止）。
+     */
+    if (!hasValidRings({ outer: input.outer, inner: input.inner })) return undefined
     const old = entries.value.find((e) => String(e.lineId) === String(input.lineId))
     const entry: TrackRouteEntry = {
       lineId: input.lineId,

@@ -252,9 +252,14 @@ const locate = () => {
   navigator.geolocation.getCurrentPosition(
     (pos) => {
       locating.value = false
+      // ⚠️ 2026-09-19 审计 L1：原用 `task.value!`（异步回调里的非空断言）——
+      //    期间若任务被重读/变成"未开启"，这里会抛 TypeError、距离提示静默消失。
+      //    改成先取一份快照并判空（拿不到就什么都不做）。
+      const list = task.value?.signPointList
+      if (!list?.length) return
       let best = Number.POSITIVE_INFINITY
       let name = ''
-      for (const p of task.value!.signPointList) {
+      for (const p of list) {
         const lat = Number(p.latitude)
         const lng = Number(p.longitude)
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue
@@ -346,10 +351,28 @@ const doSubmit = async () => {
   const pointId = selectedPointId.value
   if (!pointId) return
   confirmOpen.value = false
+  /**
+   * ⚠️ 2026-09-19 审计 M3：**确认时要复查一次**——用户可能在窗口内打开确认框、拖到窗口外才点确认，
+   * 而确认按钮只判"是否正在提交"，`canSubmit` 已不参与 ⇒ 不复查就会发出一次注定被拒的写请求。
+   * （服务端端点也补了同样的复查，这里是第一道。）
+   */
+  if (!windowState.value.inside) {
+    lastOutcome.value = { accepted: false, message: `未提交：${windowState.value.reason}`, raw: '' }
+    showSnackbar(`未提交：${windowState.value.reason}`, 'warning')
+    return
+  }
+  if (alreadyDone.value) {
+    lastOutcome.value = { accepted: false, message: '未提交：今日已签满', raw: '' }
+    showSnackbar('未提交：今日已签满', 'warning')
+    return
+  }
   const res = await submitMornSign(pointId)
   lastOutcome.value = { accepted: res.accepted, message: res.message, raw: res.raw }
   lastPointName.value = selectedPointLabel.value
   if (res.accepted) showSnackbar('服务端已接受签到', 'success')
+  // ⚠️ 审计 M8：`ok === false` 表示**本地校验就没发请求**（不是服务端拒绝）—— 提示语必须区分，
+  //    否则用户会以为"服务端拒了"，从而去排查服务端/网络方向（误导）。
+  else if (!res.ok) showSnackbar(res.message || '未提交（本地校验未通过）', 'warning')
   else showSnackbar(`服务端拒绝：${res.message || '未知原因'}`, 'error')
 }
 

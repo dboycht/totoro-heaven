@@ -20,7 +20,8 @@
  */
 import { MP_ENDPOINTS, MP_HOST } from '../../../src/mp/types'
 import { encryptLong } from '../../../utils/mp/mornSignCrypto'
-import { buildMornSignPayload, judgeMornSignSubmit } from '../../../utils/mp/mornSignSubmit'
+import { normalizeMornSignPaper } from '../../../utils/mp/morningSign'
+import { buildMornSignPayload, evaluateMornSignWindow, judgeMornSignSubmit } from '../../../utils/mp/mornSignSubmit'
 import { judgeMpResponse, unwrapMpResponse } from '../../../src/mp/envelope'
 import { logInfo, logWarn } from '../../utils/logger'
 import { assertLocalRequest } from '../../utils/tokenScanState'
@@ -37,12 +38,13 @@ async function fetchPoint(input: { snCode: string; token: string }, pointId: str
   if (!json) throw new Error('读取签到任务失败：响应不是 JSON')
   const verdict = judgeMpResponse(json, MP_ENDPOINTS.mornSignPaper.payload)
   if (!verdict.ok) throw new Error(`读取签到任务失败：${verdict.message || '接口未返回成功'}`)
-  const task = unwrapMpResponse<Record<string, unknown>>(json, MP_ENDPOINTS.mornSignPaper.payload)
-  const list = Array.isArray(task?.signPointList) ? (task.signPointList as Record<string, unknown>[]) : []
+  const raw = unwrapMpResponse<Record<string, unknown>>(json, MP_ENDPOINTS.mornSignPaper.payload)
+  const list = Array.isArray(raw?.signPointList) ? (raw.signPointList as Record<string, unknown>[]) : []
   const hit = list.find((p) => String(p?.pointId) === String(pointId))
   if (!hit) throw new Error(`点位 ${pointId} 不在当前签到任务里`)
   return {
-    task,
+    /** 原始任务对象（由调用方用 `normalizeMornSignPaper` 归一化成有类型的任务） */
+    raw: raw ?? {},
     point: {
       taskId: String(hit.taskId ?? ''),
       pointId: String(hit.pointId ?? ''),
@@ -71,12 +73,46 @@ export default defineEventHandler(async (event) => {
   if (!pointId) throw createError({ statusCode: 400, statusMessage: '缺少签到点位（pointId）' })
 
   // ① 提交前**重读一次**点位资料（吸取 E21/E33 的教训：绝不拿旧快照去写）
-  const { task, point } = await fetchPoint({ snCode, token }, pointId)
+  const { raw: taskRaw, point } = await fetchPoint({ snCode, token }, pointId)
+
+  /**
+   * ①' **纵深防御：服务端侧复查时段**（2026-09-19 审计 M3）。
+   * 界面只在窗口内放开「提交签到」，但用户完全可能**在窗口内打开确认框、拖到窗口外再点确认**
+   * —— 那时界面的 `canSubmit` 已不参与（确认按钮只判"是否正在提交"），唯一执行点就被绕过。
+   * 这里用**服务端下发的时段**再判一次（`evaluateMornSignWindow`，与界面同一个纯函数），
+   * 窗口外就**不发上游请求**（服务端本来也会拒，但没必要替用户发一次注定失败的写请求）。
+   *
+   * ⚠️ 用 `normalizeMornSignPaper` 归一化后再判：这样拿到的是**有类型的** `MpMornSignTask`，
+   *    不用 `as never` 硬转（审计指出过 `buildMornSignPayload` 的 `task` 参数其实没被用到，
+   *    所以这里也不再把 task 传给它）。
+   */
+  const norm = normalizeMornSignPaper(taskRaw)
+  if (norm.kind !== 'ok') {
+    return { ok: false, accepted: false, message: `未提交：读不到签到任务（${norm.message}）`, raw: '' }
+  }
+  const task = norm.task
+  const windowState = evaluateMornSignWindow(task, Date.now())
+  if (!windowState.known) {
+    return { ok: false, accepted: false, message: `无法确认签到时段：${windowState.reason}`, raw: '' }
+  }
+  if (!windowState.inside) {
+    logWarn('morn', '提交被本地时段复查拦下（未发上游请求）', {
+      pointId: point.pointId,
+      window: `${task.startTime}~${task.endTime}`,
+      reason: windowState.reason,
+    })
+    return { ok: false, accepted: false, message: `未提交：${windowState.reason}`, raw: '' }
+  }
+  // ①'' 今日已签够也不再发（避免无意义的重复写请求）
+  const needCount = Number(task.dayNeedSignCount)
+  const doneCount = Number(task.dayCompSignCount)
+  if (Number.isFinite(needCount) && needCount > 0 && Number.isFinite(doneCount) && doneCount >= needCount) {
+    return { ok: false, accepted: false, message: `未提交：今日已签满（${doneCount}/${needCount} 次）`, raw: '' }
+  }
 
   // ② 组装 16 字段（缺四要素会在这里抛错）
   const payload = buildMornSignPayload({
     point,
-    task: task as never,
     snCode,
     token,
     phoneInfo: body?.phoneInfo,

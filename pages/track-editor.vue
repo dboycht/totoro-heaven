@@ -278,8 +278,21 @@ const laneNo = ref(3) // 默认居中那道（第 1 道=最内道；居中才不
 const seed = ref(20260917)
 const rings = computed<TrackRings>(() => ({ outer: outer.value, inner: inner.value }))
 const ringsReady = computed(() => outer.value.length >= 3 && inner.value.length >= 3)
-/** 内外圈合法性（用户要求：外圈必须包着内圈、不许相交、环宽要像跑道） */
-const ringCheck = computed(() => (ringsReady.value ? validateRings(rings.value) : null))
+/**
+ * 内外圈合法性（用户要求：外圈必须包着内圈、不许相交、环宽要像跑道）。
+ *
+ * ⚠️ 2026-09-19 审计 S1 修掉的错法：原来是 `ringsReady ? validateRings(...) : null` ——
+ *    **圈不足 3 点时返回 `null`**，而保存按钮判据是 `Boolean(ringCheck && !ringCheck.ok)` ⇒
+ *    `null` 让判据直接为 `false`（= 可点）⇒ **空圈/残缺圈能被存进路线库**；之后跑步页把它当
+ *    "已描过跑道"（绿条提示"以你描的真跑道为基准"），而 `runner.ts` 因点数不足 **回落到官方模板**
+ *    ⇒ 正是本版明令禁止的行为。
+ *    现在：**不足 3 点也返回 `{ ok: false, problems: [...] }`**，判据不再有"null 逃逸"路径。
+ */
+const ringCheck = computed(() =>
+  ringsReady.value
+    ? validateRings(rings.value)
+    : { ok: false, widthM: 0, problems: ['内外圈各需至少 3 个点（当前 外圈 ' + outer.value.length + ' / 内圈 ' + inner.value.length + '）'] },
+)
 const widthM = computed(() => (ringsReady.value ? ringWidthM(rings.value) : 0))
 /** 车道线实测：到内圈/外圈各多少米 —— 一眼看出"是不是夹在两圈中间"（免得误会"贴在内圈上"） */
 const laneGap = computed(() => {
@@ -333,6 +346,16 @@ const save = () => {
     showSnackbar('先选一条线路', 'warning')
     return
   }
+  /**
+   * ⚠️ 2026-09-19 审计 S1：这里原先**不检查几何合法性**就入库（按钮判据曾是唯一防线，而它在
+   *   "内外圈不足 3 点"时因 `ringCheck === null` 而失效）⇒ 空圈能被存进库，跑步页随后把它当
+   *   "已描过跑道"，而生成器因点数不足**回落到官方模板**（本版禁止）。
+   *   现在两道防线：① 这里先判 `ringCheck.ok`；② `lib.upsert` 内部也会拒绝非法圈。
+   */
+  if (!ringCheck.value.ok) {
+    showSnackbar(`内外圈不合法，无法保存：${ringCheck.value.problems.join('；')}`, 'error')
+    return
+  }
   const e = lib.upsert({
     lineId: lineId.value,
     lineName: String(currentLine.value?.pointName ?? lineId.value),
@@ -342,6 +365,10 @@ const save = () => {
     laneNo: laneNo.value,
     laneCount: laneCount.value,
   })
+  if (!e) {
+    showSnackbar('保存被拒绝：内外圈点数不足（各需至少 3 点）', 'error')
+    return
+  }
   showSnackbar(`已存入本机路线库（v${e.appVersion}；创建日期见右侧列表）`)
 }
 const reset = () => {

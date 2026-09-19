@@ -56,7 +56,8 @@ export function useMpDemo() {
     demoMode: state.demoMode,
     task: state.task,
     lines: state.lines,
-    switches: state.switches,
+    // ⚠️ 2026-09-19 审计 R11：不再转发 `switches` —— demo 那份开关**只写不读**（门禁读真实链路的
+    //    `useMpReal().switches`），已连同 `DEMO_SWITCHES` 一起删除，见 `demo/state.ts` 的说明。
     run: state.run,
     records: records.records,
     term: records.term,

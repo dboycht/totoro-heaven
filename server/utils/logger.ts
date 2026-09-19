@@ -108,6 +108,15 @@ export function rotateOldLogs(): void {
     if (!existsSync(LOG_DIR)) return
     const files = readdirSync(LOG_DIR).filter((f) => f.startsWith('app-') && f.endsWith('.log'))
     const cutoff = Date.now() - KEEP_DAYS * 24 * 3600 * 1000
+    /**
+     * ⚠️ 2026-09-19 审计 M6：上一段已按"超期"删掉一批文件，但 `meta` 是**同一份快照**
+     * （里面还留着那些已被删掉的文件）。原来第二段对"已删文件"再 `unlinkSync` 会抛 **ENOENT**，
+     * 而 `catch { break }` 会**直接跳出整个容量回收循环** ⇒ 只要本次删过超期文件，
+     * **20MB 上限就完全不生效**（日志会一直涨下去）。
+     * 修法：跳过"已被删掉"的条目（用 `deleted` 集合标记），并且**失败时 `continue` 而不是 `break`**
+     * ——单个文件删不掉不该让整轮回收停摆。
+     */
+    const deleted = new Set<string>()
     let total = 0
     const meta = files
       .map((f) => {
@@ -118,19 +127,26 @@ export function rotateOldLogs(): void {
       .sort((a, b) => a.mtime - b.mtime)
     for (const m of meta) {
       if (m.mtime < cutoff) {
-        unlinkSync(m.p)
+        try {
+          unlinkSync(m.p)
+          deleted.add(m.p)
+        } catch {
+          /* 删不掉就留着（下一段会把它计入总量） */
+        }
         continue
       }
       total += m.size
     }
-    // 总量超限：从最旧的开始删
+    // 总量超限：从最旧的开始删（跳过已删的）
     for (const m of meta) {
       if (total <= MAX_TOTAL_BYTES) break
+      if (deleted.has(m.p)) continue
       try {
         unlinkSync(m.p)
+        deleted.add(m.p)
         total -= m.size
       } catch {
-        break
+        continue // ⚠️ 不能 break：一个删不掉不该让整轮回收停摆（审计 M6）
       }
     }
   } catch {

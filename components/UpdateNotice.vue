@@ -4,7 +4,7 @@
     v-if="hasUpdate"
     type="warning"
     variant="flat"
-    :density="compact ? 'comfortable' : 'comfortable'"
+    density="comfortable"
     :class="compact ? 'mt-3' : 'mb-4'"
   >
     <div class="font-weight-bold">

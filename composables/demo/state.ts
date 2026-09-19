@@ -25,7 +25,7 @@ import type { MpRunLine, MpScoreDetailRequest, MpScoreRequest, MpSunrunTask } fr
 import type { LatLng } from '~/utils/mp/routeSimilarity'
 import type { RunPlan } from '~/utils/mp/realism'
 import type { TaskCheckResult } from '~/utils/mp/taskRules'
-import { DEMO_LINES, DEMO_SWITCHES, DEMO_TASK } from '~/src/mp/demo'
+import { DEMO_LINES, DEMO_TASK } from '~/src/mp/demo'
 
 export type RunStatus = 'idle' | 'running' | 'paused' | 'finished'
 
@@ -155,8 +155,12 @@ export function useDemoState(hooks: DemoStateHooks) {
   const task = useState<MpSunrunTask | null>('mpDemoTask', () => null)
   /** 当前线路集（同上，默认为空数组） */
   const lines = useState<MpRunLine[]>('mpDemoLines', () => [])
-  /** 当前学校的开跑开关（**默认 null = 未读取**；由 enableDemo 或真实链路注入） */
-  const switches = useState<Record<string, string> | null>('mpDemoSwitches', () => null)
+  /**
+   * ⚠️ 2026-09-19 审计 R11：这里原先还有一份 demo 的 `switches`（`mpDemoSwitches`），
+   * 连同 `DEMO_SWITCHES` 一起**只写不读** —— 门禁读的是**真实链路**的 `mpRealSwitches`
+   * （`useMpReal().switches` → `HomeProfileCard` / `evaluateRunGate`），demo 那份没有任何消费者。
+   * 已删除：假开关留着会让人误以为"演示数据参与门禁判定"。
+   */
   const run = useState<DemoRunState>('mpDemoRun', createRunState)
 
   /**
@@ -167,7 +171,6 @@ export function useDemoState(hooks: DemoStateHooks) {
     demoMode.value = true
     setTask(DEMO_TASK)
     setLines(DEMO_LINES)
-    switches.value = { ...DEMO_SWITCHES }
     run.value = createRunState()
   }
 
@@ -177,7 +180,7 @@ export function useDemoState(hooks: DemoStateHooks) {
   }
 
   /**
-   * **清空本机数据**：任务 / 线路 / 开关 / 跑步机状态 / 本机记录 全部归零，并退出演示。
+   * **清空本机数据**：任务 / 线路 / 跑步机状态 / 本机记录 全部归零，并退出演示。
    * （会话 token 由调用方决定是否清 —— `useMpReal.clearAllLocalData()` 会一并清掉。）
    * 目的：让"刷新/重置后是干净状态"，不再把上次读到的任务一直摊在界面上。
    */
@@ -187,7 +190,6 @@ export function useDemoState(hooks: DemoStateHooks) {
     hooks.stopRunTimer()
     task.value = null
     lines.value = []
-    switches.value = null
     run.value = createRunState()
     hooks.resetRecords()
   }
@@ -218,7 +220,6 @@ export function useDemoState(hooks: DemoStateHooks) {
     demoMode,
     task,
     lines,
-    switches,
     run,
     enableDemo,
     disableDemo,

@@ -321,10 +321,6 @@ export const MP_WARN_TYPE = {
   3: '拟合度异常',
 } as const
 
-/** 提交成绩的时间字段基准（本地时间，`T` 分隔、无时区） */
-export interface MpTimestampParts {
-  /** YYYY-MM-DD */
-  date: string
-  /** HH:mm:ss */
-  time: string
-}
+/* ⚠️ 2026-09-19 删除**零引用**的 `MpTimestampParts`：真正在用的是 `utils/mp/runData.ts` 的
+   `TimeFields`（提交时间字段由它产出）。两个同义类型并存只会让后来者挑错一个。 */
+

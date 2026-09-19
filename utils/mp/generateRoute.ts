@@ -104,8 +104,8 @@ export interface GeneratedRoute {
  *   - 用户拍板：**接受更高的拟合度**，优先"看起来在跑道上"。
  *   - 旁证：该账号 2025 学年的真跑记录大多就是 **1.00 / 0.99** ⇒ 高分本身并不异常。
  */
-export const FIT_TARGET_MIN = 0.97
-export const FIT_TARGET_MAX = 1.0
+/* ⚠️ 2026-09-19 删除**零引用**的 `FIT_TARGET_MIN/MAX` 常量：拟合度目标值没有以常量形式被消费
+   （生成器直接按任务窗口与随机抖动算，界面只做展示）。留着容易被误当成"可调参数"。 */
 
 /** 单点相对路线的**最大允许偏离（米）**：5 m ≈ 跑到宽度量级 ⇒ 保证"还在跑道上" */
 export const MAX_OFF_ROUTE_M = 5

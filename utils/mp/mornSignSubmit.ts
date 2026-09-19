@@ -110,10 +110,15 @@ export function evaluateMornSignWindow(task: MpMornSignTask | null, nowMs: numbe
   return { known: true, inside, minutesUntilStart, minutesUntilEnd, reason }
 }
 
-/** 组装 16 字段（缺任一"四要素"直接抛错，避免发出残缺请求） */
+/**
+ * 组装 16 字段（缺任一"四要素"直接抛错，避免发出残缺请求）。
+ *
+ * ⚠️ 2026-09-19 审计 R16：**不再接收 `task` 参数** —— 原签名里有个 `task` 却从不使用
+ *    （16 字段里只有 `taskId` 来自点位；`signType` 恒为厂商真包里的 `'0'`），
+ *    留着会让调用方误以为"任务会影响报文"，测试还得专门传个假 task 来证明它被忽略。
+ */
 export function buildMornSignPayload(input: {
   point: MpMornSignPoint
-  task: MpMornSignTask | null
   snCode: string
   token: string
   nowMs?: number

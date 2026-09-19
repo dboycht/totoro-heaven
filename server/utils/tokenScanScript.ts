@@ -14,8 +14,8 @@
  *    因此"龙猫"二字用 `[char]0x9F99 + [char]0x732B` 拼出来，而不是字面量。
  */
 
-/** 扫描结果回传的超时（毫秒） */
-export const TOKEN_SCAN_TIMEOUT_MS = 45_000
+/* ⚠️ 2026-09-19 删除**零引用**的 `TOKEN_SCAN_TIMEOUT_MS`：真实超时由
+   `tokenScanRunner.ts` 的轮询间隔与 PS 脚本内的 `-TimeoutSec` 决定，这个常量从未被读取。 */
 
 export const TOKEN_SCAN_PS1 = `param(
   [Parameter(Mandatory=$true)][string]$Endpoint,

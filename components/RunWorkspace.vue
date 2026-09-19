@@ -40,17 +40,14 @@
         <v-card height="100%">
           <v-card-title class="text-subtitle-1">开跑设置</v-card-title>
           <v-card-text>
-            <!-- 标签页：**阳光跑 / 自由跑** 是两个独立标签（各自有 URL），点它 = 切路由。
-                 ⚠️ 提交进行中也锁住（否则切标签会 unmount 本组件、倒计时与提醒全部消失 —— 审计 #2）。 -->
-            <v-tabs
-              :model-value="isFreeTab ? 1 : 0"
-              density="compact"
-              class="mb-2"
-              :disabled="isBusy || submitInFlight"
-            >
-              <v-tab :value="0" prepend-icon="mdi-white-balance-sunny" to="/run">阳光跑</v-tab>
-              <v-tab :value="1" prepend-icon="mdi-run" to="/freerun">自由跑</v-tab>
-            </v-tabs>
+            <!-- ⚠️ 2026-09-19：**删掉卡内的「阳光跑 / 自由跑」标签条** —— 顶部导航已经是两个独立入口
+                 （`/run` 与 `/freerun`），卡内再来一份就是**重复元素**（用户指出）。
+                 当前跑法由 URL 决定（`tabRunType`），下面用一行"当前模式"代替，只做**说明**不做切换。 -->
+            <div class="d-flex align-center ga-2 mb-2">
+              <v-icon size="small" color="primary">{{ isFreeRun ? 'mdi-run' : 'mdi-white-balance-sunny' }}</v-icon>
+              <span class="text-body-2 font-weight-bold">当前模式：{{ isFreeRun ? '自由跑' : '阳光跑' }}</span>
+              <span class="text-caption text-medium-emphasis">（切换请用顶部导航）</span>
+            </div>
 
             <!-- ⚠️ 自由跑**不对应任何线路**（2026-09-18 按厂商源码落地）：
                  厂商在自由跑时 `0==runType && (取线路)` 根本不执行 ⇒ paperId/lineId 都是空串，
@@ -349,8 +346,21 @@
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="confirmOpen = false">取消</v-btn>
-          <v-btn color="error" variant="flat" prepend-icon="mdi-cloud-upload-outline" @click="doRealSubmit">确认提交</v-btn>
+          <!-- ⚠️ 2026-09-19 审计 S2：确认按钮原先**没有 disabled/loading** ⇒ 双击会发两次
+               `getRunBegin`（服务端开两个场次），而 `submitRealRun()` 内部的 `waitTimer` 是闭包单变量，
+               第二次调用会把第一次的计时器清掉 ⇒ 第一次的 Promise 永不 resolve。
+               这里加锁只是第一层，真正兜底在 `submitRealRun()` 的入口互斥（见 real/submit.ts）。 -->
+          <v-btn variant="text" :disabled="submitInFlight" @click="confirmOpen = false">取消</v-btn>
+          <v-btn
+            color="error"
+            variant="flat"
+            prepend-icon="mdi-cloud-upload-outline"
+            :disabled="submitInFlight"
+            :loading="submitInFlight"
+            @click="doRealSubmit"
+          >
+            确认提交
+          </v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -361,7 +371,7 @@
 import { formatDuration, formatPace } from '~/utils/mp/runData'
 import { useMpDemo } from '~/composables/useMpDemo'
 import { useMpReal } from '~/composables/useMpReal'
-import { logInfo, logWarn } from '~/composables/useEventLog'
+import { logError, logInfo, logWarn } from '~/composables/useEventLog'
 import { groupRoutesByCampus, toSelectItems, warnForSelection } from '~/utils/mp/routeGroups'
 
 const { isLoggedIn, task, run, progress, paceText, start, pause, resume, finish, reset, demoMode, enableDemo } = useMpDemo()
@@ -603,6 +613,17 @@ onMounted(() => {
 /** 真实提交：确认后走 useMpReal 的完整流程（门禁 → 开跑 → 真实等待 → 提交 → 读判定） */
 const doRealSubmit = async () => {
   confirmOpen.value = false
+  /**
+   * ⚠️ 2026-09-19 审计 S2/S3：这里原先**没有 try/catch**，也没有入口互斥。
+   *   · `submitRealRun` 会创建服务端场次（非幂等写），内部一旦抛异常（例如等待期间档案被清空
+   *     导致空指针），异常会直接冒到这里 ⇒ 界面**没有任何提示**，`phase` 还可能卡死；
+   *   · 双击确认会进两次（按钮已加 disabled，这里再兜一层）。
+   * 所以：入口判"已在等待/提交中就忽略"，并整体包 try/catch 把异常变成可读提示。
+   */
+  if (submitInFlight.value) {
+    showSnackbar('正在等待/提交中，请勿重复点击', 'info')
+    return
+  }
   // 门禁失守直接返回（不调 getRunBegin，避免创建场次后才发现被拦）
   if (!gateStatus.value.allow) {
     logWarn('submit', '点了真实提交但门禁未通过', { blockedBy: gateStatus.value.blockedBy ?? '', reason: gateStatus.value.reason })
@@ -625,23 +646,30 @@ const doRealSubmit = async () => {
     checkPass: r.check.pass,
     points: r.points.length,
   })
-  const out = await submitRealRun({
-    line,
-    // 提交口径与预览同源（结果里那份 submitRunType），避免两处各转一次导致口径漂移
-    runType: r.submitRunType,
-    // ⚠️ 用**实际跑出来的那一段**（自由跑提前结束时，整条 points 会与 km 矛盾）
-    points: r.points,
-    km: r.km,
-    fitDegree: r.fitDegree,
-    plannedSeconds: r.durationSeconds,
-  })
-  if (out?.scoreOk) {
-    showSnackbar('真实提交成功，正在读判定…', 'success')
-    await fetchVerdict(out.scantronId)
-  } else if (out) {
-    showSnackbar(`真实提交失败：${out.scoreMessage}`, 'error')
-  } else {
-    showSnackbar(phaseMessage.value || '真实提交未完成', 'error')
+  try {
+    const out = await submitRealRun({
+      line,
+      // 提交口径与预览同源（结果里那份 submitRunType），避免两处各转一次导致口径漂移
+      runType: r.submitRunType,
+      // ⚠️ 用**实际跑出来的那一段**（自由跑提前结束时，整条 points 会与 km 矛盾）
+      points: r.points,
+      km: r.km,
+      fitDegree: r.fitDegree,
+      plannedSeconds: r.durationSeconds,
+    })
+    if (out?.scoreOk) {
+      showSnackbar('真实提交成功，正在读判定…', 'success')
+      await fetchVerdict(out.scantronId)
+    } else if (out) {
+      showSnackbar(`真实提交失败：${out.scoreMessage}`, 'error')
+    } else {
+      // out === null：可能是被门禁/上下文丢失挡住，也可能是重复点击被忽略 ⇒ 用 phase 的说明兜底
+      showSnackbar(phaseMessage.value || '真实提交未完成（未创建场次或已中止）', 'error')
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    logError('submit', '真实提交抛出未捕获异常（已兜住）', { message })
+    showSnackbar(`真实提交异常（未完成）：${message}`, 'error')
   }
 }
 </script>

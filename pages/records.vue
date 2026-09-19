@@ -121,7 +121,7 @@
 </template>
 
 <script setup lang="ts">
-import { MP_WARN_TYPE } from '~/src/mp/models'
+import { MP_SCORE_STATUS, MP_WARN_TYPE } from '~/src/mp/models'
 import type { MpRunRecord } from '~/src/mp/types'
 
 const { records, stats, term, resetRecords } = useMpDemo()
@@ -141,8 +141,13 @@ const warnLabel = (record: MpRunRecord): string => {
   return known ? `${known}（warnType=${key}）` : `未知标记（warnType=${raw}）`
 }
 
+/**
+ * 成绩状态文案：**改用 `MP_SCORE_STATUS` 单一来源**（2026-09-19 审计 R2）。
+ * 这里原先手写了一份 `{0:'无效',1:'有效',2:'申诉有效',3:'补录有效'}`，而 `src/mp/models.ts`
+ * 里同名同内容的常量**从没被引用过** —— 两份各写一遍，改一处忘一处就会显示错状态。
+ */
 const statusText = (value: number | string) =>
-  ({ 0: '无效', 1: '有效', 2: '申诉有效', 3: '补录有效' })[Number(value)] ?? '- -'
+  (MP_SCORE_STATUS as Record<number, string>)[Number(value)] ?? '- -'
 const statusColor = (value: number | string) =>
   ({ 0: 'error', 1: 'success', 2: 'success', 3: 'success' })[Number(value)] ?? 'warning'
 

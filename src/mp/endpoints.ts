@@ -454,5 +454,5 @@ export const MP_ENDPOINTS = {
 
 export type MpEndpointKey = keyof typeof MP_ENDPOINTS
 
-/** 取端点元数据（返回只读表项） */
-export const mpEndpoint = <K extends MpEndpointKey>(key: K): (typeof MP_ENDPOINTS)[K] => MP_ENDPOINTS[key]
+/* ⚠️ 2026-09-19 删除**零引用**的 `mpEndpoint()` 便捷读取器：全仓没有任何调用点，
+   要用端点元数据的地方都是直接索引 `MP_ENDPOINTS[...]`（wrapper 就是这么做的）。 */
