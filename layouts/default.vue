@@ -11,9 +11,10 @@
       <!-- 2026-09-18：阳光跑 / 自由跑 拆成两个独立标签（各自 URL），早操签到独立成项 -->
       <v-btn to="/run" variant="text" prepend-icon="mdi-white-balance-sunny" class="text-none">阳光跑</v-btn>
       <v-btn to="/freerun" variant="text" prepend-icon="mdi-run" class="text-none">自由跑</v-btn>
-      <!-- 早操签到：**只在"本账号确实需要签到"时出现**（我校实测返回"本学校无需签到"，
-           所以多数人不会看到这一项；需要签到的大一同学首次读取后它才出现） -->
-      <v-btn v-if="mornSignRequired" to="/morning-sign" variant="text" prepend-icon="mdi-clock-check-outline" class="text-none">
+      <!-- 早操签到：**常驻显示**（用户 2026-09-18 明确要求）。
+           页面自身会按服务端返回区分"需要签到 / 本学校无需签到"，所以不需要靠导航项隐藏来避嫌；
+           常驻的好处是需要签到的大一同学**一眼就能看到这个入口**（不必先读一次真实数据才现身）。 -->
+      <v-btn to="/morning-sign" variant="text" prepend-icon="mdi-clock-check-outline" class="text-none">
         早操签到
       </v-btn>
       <v-btn to="/track-editor" variant="text" prepend-icon="mdi-vector-polyline" class="text-none">跑道编辑</v-btn>
@@ -53,14 +54,12 @@ const { logoutAndClearSession } = useMpReal()
 const showSnackbar = useNotice()
 
 /**
- * 早操签到导航项：只有"本账号确实需要签到"时才显示（`required` 由只读接口读过一次后置位）。
- * ⚠️ 这里**只是触发一次只读探测**（`getMornSignPaper`），**没有任何写操作**；失败静默（导航项就不出现）。
+ * 早操签到导航项已改为**常驻显示**（用户 2026-09-18 要求）⇒ 这里**不再做自动探测**。
+ *
+ * 为什么不留探测：它原先唯一的用途就是"读过一次后决定导航项是否出现"；导航项常驻后，
+ * 这个探测只会让**每次打开应用都白打一次接口**（需要签到的同学进那个页还会再读一次）。
+ * 现在改为**按需读取**：进「早操签到」页或点页内「重新读取」时才发请求（只读，无写操作）。
  */
-const { required: mornSignRequired, status: mornStatus, loadMornSignTask } = useMpMorningSign()
-onMounted(() => {
-  // 有真实会话且还没读过 → 探测一次，用于决定导航项是否出现
-  if (isLoggedIn.value && mornStatus.value === 'idle') void loadMornSignTask()
-})
 
 /** 真实会话 = 存了非 demo 前缀的 token（演示会话 token 以 `demo-` 开头） */
 const isRealSession = computed(() => Boolean(session.value?.token) && !session.value?.token?.startsWith('demo-'))

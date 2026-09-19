@@ -28,11 +28,6 @@ export function useMpMorningSign() {
   const error = useState('mpMornSignError', () => '')
   /** 上次读取时刻（毫秒） */
   const loadedAt = useState('mpMornSignLoadedAt', () => 0)
-  /**
-   * 本账号是否需要签到（**供导航项决定是否显示**）。
-   * 只在真正读过一次之后才为 true，避免给不需要的人加导航项。
-   */
-  const required = useState('mpMornSignRequired', () => false)
 
   const token = () => String(session.value?.token ?? '')
 
@@ -75,7 +70,7 @@ export function useMpMorningSign() {
     loadedAt.value = Date.now()
     if (norm.kind === 'ok') {
       status.value = 'ready'
-      required.value = true
+
       logInfo('real', '读到早操签到任务', {
         points: norm.task.signPointList.length,
         need: norm.task.dayNeedSignCount,
@@ -85,11 +80,11 @@ export function useMpMorningSign() {
     } else {
       // ⚠️ "本学校无需签到"走这里：**不是错误**，界面按"未开启"展示
       status.value = 'unavailable'
-      required.value = false
+
       logInfo('real', '早操签到未开启（服务端明确返回）', { message: norm.message })
     }
     return true
   }
 
-  return { task, status, error, loadedAt, required, loadMornSignTask }
+  return { task, status, error, loadedAt, loadMornSignTask }
 }

@@ -108,6 +108,15 @@ import { distanceMeters, mornSignProgressText, type MornSignResult } from '~/uti
 const { task: state, status, error, loadMornSignTask } = useMpMorningSign()
 const showSnackbar = useNotice()
 
+/**
+ * 进入本页时**自动读一次**（只读）。
+ * ⚠️ 之所以放在页面里而不是导航栏：早操签到导航项是**常驻**的，若在导航栏探测就等于
+ * "每次打开应用都白打一次接口"；放在这里 = 只有真正想看的人才产生这次请求。
+ */
+onMounted(() => {
+  if (status.value === 'idle') void loadMornSignTask()
+})
+
 /** 归一化结果的窄化：`kind==='ok'` 时才有 task */
 const norm = computed(() => state.value)
 const task = computed(() => (norm.value?.kind === 'ok' ? norm.value.task : null))
