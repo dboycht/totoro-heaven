@@ -1,13 +1,16 @@
 <template>
   <div>
-    <!-- 顶部说明：这是**另一个产品子系统**（与阳光跑并列），只做只读 -->
+    <!-- 顶部说明：这是**另一个产品子系统**（与阳光跑并列）。
+         ⚠️ 2026-09-19 起本页**不再只是只读** —— 加了"提交签到"（用户明确要求）。横幅必须与事实一致，
+            否则就是误导（这里刚从"（只读）/ 不会替你提交签到"改成现在的写法）。 -->
     <v-alert type="info" variant="flat" density="comfortable" class="mb-4">
       <div class="font-weight-bold">
-        <v-icon class="mr-1">mdi-clock-check-outline</v-icon>早操签到（只读）
+        <v-icon class="mr-1">mdi-clock-check-outline</v-icon>早操签到
       </div>
       <div class="text-body-2">
-        这里只帮你<b>看懂签到任务</b>：任务时段、需要签几次、点位在哪、范围多大，以及今天签了几次。
-        <b>不会替你提交签到</b> —— 提交需要"人到现场扫码"才能成立（详见下方说明）。
+        这里帮你<b>看懂签到任务</b>：任务时段、需要签几次、点位在哪、范围多大，以及今天签了几次。
+        页面下方还有一个<b>「提交签到」</b>按钮（<b>只在时段内可点、由你本人按、点一次发一次</b>）——
+        它会<b>跳过"扫码"那一步</b>，性质与注意事项都写在下面，请自己决定用不用。
       </div>
     </v-alert>
 
@@ -81,37 +84,113 @@
             </tbody>
           </v-table>
 
+          <!-- ⚠️ 提交区：**用户显式要求实现**（2026-09-19），刻意做成最窄形态：
+               只在服务端下发的时段内可点、点一次发一次、不重试、没有定时器、没有后台常驻。
+               界面如实写明它跳过了"扫码"这一步 —— 不粉饰。 -->
           <v-alert type="warning" variant="tonal" density="compact" class="mt-3">
-            <div class="font-weight-bold">为什么这里不提供"一键签到"</div>
+            <div class="font-weight-bold">关于「提交签到」（本页唯一会写服务器的动作）</div>
             <div class="text-caption mt-1">
-              厂商的签到靠两件事证明"你人到了现场"：<b>定位落在点位</b>{{ offsetRangeText }}，以及
-              <b>你扫到点位上贴的二维码</b>（小程序拿扫码结果与服务端下发的期望值<b>本地比对</b>，不等就报"无效二维码！"）。
-              服务端把"期望二维码内容"一起下发给了客户端 —— 直接拿它当"扫码结果"提交，就等于
-              <b>跳过"人到现场"这一步</b>，那是利用对方校验的设计缺陷，本项目不做（也与"只做校园跑"的定位不符）。
-              <br />所以：<b>二维码请你到现场扫</b>；这个页面负责让你提前知道"什么时候、去哪、签几次"。
+              厂商的签到要证明"你人到了现场"：<b>定位落在点位</b>{{ offsetRangeText }} + <b>扫到点位上贴的二维码</b>
+              （小程序拿扫码结果与服务端下发的期望值<b>本地比对</b>）。
+              下面的提交<b>省掉了"扫码"这一步</b>（用服务端下发的期望值填 `qrCode`）——
+              这是应你的要求实现的，页面上标明，不粉饰。
+              <br />约束：<b>只在 {{ task.startTime }}–{{ task.endTime }} 内可点</b>、<b>点一次发一次</b>、
+              <b>失败不重发</b>、<b>没有定时器、没有后台常驻</b>。
             </div>
+          </v-alert>
+
+          <v-row dense class="mt-2">
+            <v-col cols="12" md="6">
+              <v-select
+                v-model="selectedPointId"
+                :items="pointItems"
+                item-title="title"
+                item-value="value"
+                label="签到点位"
+                density="compact"
+                hide-details
+                :disabled="submitting"
+              />
+            </v-col>
+            <v-col cols="12" md="6" class="d-flex flex-column justify-center ga-1">
+              <v-btn
+                color="primary"
+                block
+                prepend-icon="mdi-map-marker-check"
+                :disabled="!canSubmit"
+                :loading="submitting"
+                @click="confirmOpen = true"
+              >
+                提交签到
+              </v-btn>
+              <div class="text-caption" :class="windowState.inside ? 'text-success' : 'text-medium-emphasis'">
+                {{ windowState.reason }}
+              </div>
+            </v-col>
+          </v-row>
+
+          <v-alert v-if="lastOutcome" :type="lastOutcome.accepted ? 'success' : 'error'" variant="tonal" density="compact" class="mt-2">
+            <div class="font-weight-bold">
+              {{ lastOutcome.accepted ? '服务端已接受签到' : '服务端拒绝' }}
+              <span v-if="lastPointName" class="text-caption">（{{ lastPointName }}）</span>
+            </div>
+            <div v-if="lastOutcome.message" class="text-caption mt-1">{{ lastOutcome.message }}</div>
+            <v-expansion-panels v-if="lastOutcome.raw" variant="accordion" class="mt-1">
+              <v-expansion-panel>
+                <v-expansion-panel-title class="text-caption">服务端原始响应</v-expansion-panel-title>
+                <v-expansion-panel-text>
+                  <pre class="text-caption" style="white-space: pre-wrap; word-break: break-all">{{ lastOutcome.raw }}</pre>
+                </v-expansion-panel-text>
+              </v-expansion-panel>
+            </v-expansion-panels>
           </v-alert>
         </template>
       </v-card-text>
     </v-card>
+
+    <!-- 显式确认：提交是"替你在服务端记一次到场"，必须由本人点 -->
+    <v-dialog v-model="confirmOpen" max-width="520">
+      <v-card>
+        <v-card-title class="text-subtitle-1">确认提交签到？</v-card-title>
+        <v-card-text class="text-body-2">
+          <div>账号：<b>{{ accountLabel }}</b></div>
+          <div>点位：<b>{{ selectedPointLabel }}</b></div>
+          <div>提交时间：<b>{{ previewSignDate }}</b>（真实时间，不做伪造）</div>
+          <div class="mt-2 text-warning">
+            ⚠️ 这一步<b>不会替你扫码</b>：二维码用的是服务端下发的期望值。
+            服务端对"是否本人到场"的判定完全依赖客户端，所以它会照收 —— 这由你决定。
+          </div>
+          <div class="text-caption mt-1 text-medium-emphasis">只会发送一次，失败不会自动重发。</div>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="confirmOpen = false">取消</v-btn>
+          <v-btn color="primary" variant="flat" :loading="submitting" @click="doSubmit">确认提交</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 /**
- * 早操签到（**只读**）页 —— 2026-09-18
+ * 早操签到页 —— 2026-09-18 只读版；**2026-09-19 按用户明确要求加了"提交"**
  *
  * 定位：与「阳光跑」并列的另一个产品子系统（`SYSTEM_PRODUCT-20210615000003`）。
- * **我校（南航）实测返回"本学校无需签到"**，所以本页对多数人是"未开启"；对**需要签到的同学（大一）**，
- * 它把"时段 / 需签次数 / 点位 / 范围"摊开，省得他们翻小程序。
+ * 页面把"时段 / 需签次数 / 点位 / 范围"摊开；窗口判定**完全用服务端下发的 `startTime/endTime`**，
+ * 不硬编码（不同校区/年级可能不同；已实测"同账号连读两次一致、服务端按 token 认人"）。
  *
- * ⚠️ **只读红线**：不实现 `morningExercises`（提交）。理由见页面里的提示与
- * `composables/useMpMorningSign.ts` 顶部注释（`qrCode` = 服务端下发的期望值，
- * 拿它当扫码结果提交 = 跳过到场校验；HANDOVER §7）。
+ * ⚠️ **关于提交（如实标注，不粉饰）**：厂商靠"定位在范围内 + 扫点位二维码"证明人到现场，
+ *    而 `qrCode` 是服务端下发的期望值（小程序只做本地比对）⇒ 提交时填下发值就**跳过了扫码**。
+ *    这是**用户 2026-09-19 明确要求**的越线实现，刻意做成最窄形态：
+ *    **只在窗口内可点、点一次发一次、不重试、无定时器、无后台**。加密与上游请求都在服务端
+ *    （`/api/local/mornsign-submit`），token 不进浏览器可见状态。
  */
 import { distanceMeters, mornSignProgressText, type MornSignResult } from '~/utils/mp/morningSign'
+import { evaluateMornSignWindow, formatShanghaiDateTime } from '~/utils/mp/mornSignSubmit'
 
-const { task: state, status, error, loadMornSignTask } = useMpMorningSign()
+const { task: state, status, error, submitting, loadMornSignTask, submitMornSign } = useMpMorningSign()
+const { profile: realProfile } = useMpReal()
 const showSnackbar = useNotice()
 
 /**
@@ -202,6 +281,76 @@ const reload = async () => {
   if (ok && status.value === 'unavailable') showSnackbar('当前账号没有早操签到任务（服务端明确返回）', 'info')
   else if (ok) showSnackbar('已读取早操签到任务', 'success')
   else showSnackbar(error.value || '读取失败', 'error')
+}
+
+// ---------------- 提交（本页唯一会写服务器的动作） ----------------
+
+/** 点位下拉：默认选第一个（服务端返回的顺序） */
+const selectedPointId = ref('')
+const pointItems = computed(() =>
+  (task.value?.signPointList ?? []).map((p) => ({
+    title: `${p.pointName || '未命名点位'}（${p.pointId}）`,
+    value: p.pointId,
+  })),
+)
+const selectedPoint = computed(() => task.value?.signPointList.find((p) => p.pointId === selectedPointId.value) ?? null)
+const selectedPointLabel = computed(() => selectedPoint.value?.pointName || '（未选择）')
+
+/** 任务变化时把选中点位修正到仍存在的那个（第三方也这么做：保留选择，失效则回落第一个） */
+watch(
+  () => task.value?.signPointList.map((p) => p.pointId).join(','),
+  () => {
+    const list = task.value?.signPointList ?? []
+    if (!list.some((p) => p.pointId === selectedPointId.value)) selectedPointId.value = list[0]?.pointId ?? ''
+  },
+  { immediate: true },
+)
+
+/** 窗口状态：**完全取自服务端下发的 startTime/endTime**，每分钟刷新一次展示 */
+const nowTick = ref(Date.now())
+const windowState = computed(() => evaluateMornSignWindow(task.value, nowTick.value))
+let tickTimer: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  tickTimer = setInterval(() => (nowTick.value = Date.now()), 30_000)
+})
+onBeforeUnmount(() => {
+  if (tickTimer) clearInterval(tickTimer)
+  tickTimer = null
+})
+
+/** 能否提交：任务有、点位有、**在窗口内**、未在提交中；另外"今天已签够"就不再允许 */
+const alreadyDone = computed(() => {
+  const t = task.value
+  if (!t) return false
+  const need = Number(t.dayNeedSignCount)
+  const done = Number(t.dayCompSignCount)
+  return Number.isFinite(need) && need > 0 && Number.isFinite(done) && done >= need
+})
+const canSubmit = computed(
+  () => Boolean(task.value && selectedPointId.value) && windowState.value.inside && !alreadyDone.value && !submitting.value,
+)
+
+const confirmOpen = ref(false)
+const previewSignDate = computed(() => formatShanghaiDateTime(nowTick.value))
+const accountLabel = computed(() => {
+  const p = realProfile.value
+  const sn = String(p?.snCode ?? '')
+  return sn ? `${sn}${p?.studentName ? ` ${p.studentName}` : ''}` : '（未读取账号）'
+})
+
+/** 最近一次提交结果（如实在界面展示原文） */
+const lastOutcome = ref<{ accepted: boolean; message: string; raw: string } | null>(null)
+const lastPointName = ref('')
+
+const doSubmit = async () => {
+  const pointId = selectedPointId.value
+  if (!pointId) return
+  confirmOpen.value = false
+  const res = await submitMornSign(pointId)
+  lastOutcome.value = { accepted: res.accepted, message: res.message, raw: res.raw }
+  lastPointName.value = selectedPointLabel.value
+  if (res.accepted) showSnackbar('服务端已接受签到', 'success')
+  else showSnackbar(`服务端拒绝：${res.message || '未知原因'}`, 'error')
 }
 
 useHead({ title: '早操签到 · 龙猫天堂' })

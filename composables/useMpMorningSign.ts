@@ -1,19 +1,25 @@
 /**
- * 早操签到（**只读侧**）—— `useMpMorningSign()`
+ * 早操签到 —— `useMpMorningSign()`
  *
- * 当前**只读任务与点位**（`getMornSignPaper`）。
+ * ## 读取侧
+ * 读**任务与点位**（`getMornSignPaper`）。
  * 签到记录端点（`getMornSignArchDetail`）已在契约层与 wrapper 里登记，但**尚无消费者**
  * （页面没做"签到历史"）—— 所以别把注释写成"读了记录"（2026-09-18 审计指出过）。
  *
- * ⚠️ **不实现任何写操作**（`morningExercises`）：它的入参是 RSA 加密的 `encryptParams`，其中要求填
- *    `qrCode` —— 而 `qrCode` 是**服务端下发的期望值**，小程序拿"你扫到的码"与它做**本地字符串比对**
- *    来证明"人到了现场"。拿下发值当扫码结果提交 = 跳过到场校验，属 `HANDOVER.md §7` 红线。
+ * ## ⚠️ 写入侧：`submitMornSign`（2026-09-19 新增，**用户明确要求**）
+ * `morningExercises` 的入参是 RSA 加密的 `encryptParams`，其中 `qrCode` 用的是**服务端下发的期望值** ——
+ * 而厂商的签到本意是"扫到点位上贴的二维码"，`qrCode` 只是客户端做**本地比对**用的期望值
+ * ⇒ 填下发值提交 = **跳过"到场扫码"这一步**（原 `HANDOVER.md §7` 红线）。
+ * 因此这部分刻意做成**最窄形态**：**按钮由用户按、只在服务端下发的时段内可点、点一次发一次、
+ * 不重试、无定时器、无后台常驻**；界面与文档都如实标注越线性质，不粉饰。
+ * 加密与上游请求都在**服务端**（`/api/local/mornsign-submit`）⇒ token 不进浏览器可见状态。
  *
- * 支持范围：与阳光跑一致（共享域 + 无风控校验）。**我校实测返回"本学校无需签到"**，
- * 因此本模块的定位是"给需要签到的同学看任务"（大一），不需要的人会看到明确的"未开启"提示。
+ * 支持范围：与阳光跑一致（共享域 + 无风控校验）。窗口**完全取自服务端返回**（不硬编码）；
+ * 实测：同账号连读两次一致、服务端按 token 认人（改 `stuNumber` 参数不影响返回）。
  */
 import { MpApiWrapper } from '~/src/wrappers/MpApiWrapper'
 import { normalizeMornSignPaper, type MornSignResult } from '~/utils/mp/morningSign'
+import type { MornSignSubmitOutcome } from '~/utils/mp/mornSignSubmit'
 import { logInfo, logWarn } from './useEventLog'
 import { useRealState } from './real/state'
 import { useMpSession } from './useMpSession'
@@ -84,5 +90,60 @@ export function useMpMorningSign() {
     return true
   }
 
-  return { task, status, error, loadMornSignTask }
+  /**
+   * **提交签到**（用户单击触发；**不重试、不自动**）。
+   *
+   * ⚠️ 这是本项目里**唯一**会"替用户完成签到"的动作，由用户 2026-09-19 明确要求实现，
+   *    且刻意做成最窄形态：**按钮由用户按、只发一次、失败不重发**。它跳过了厂商的"扫码"环节
+   *    （`qrCode` 用服务端下发的期望值）—— 界面与文档都如实标注了这一点。
+   *
+   * 加密与上游请求都在**服务端**（`/api/local/mornsign-submit`）：token 不进浏览器可见状态。
+   * 成功后会**重读一次任务**，让界面上的"已签/需签"立刻反映真实状态。
+   */
+  const submitting = useState('mpMornSignSubmitting', () => false)
+
+  async function submitMornSign(pointId: string): Promise<MornSignSubmitOutcome & { ok: boolean }> {
+    if (submitting.value) return { accepted: false, message: '正在提交中，请勿重复点击', raw: '', ok: false }
+    const t = token()
+    const fromProfile = String(profile.value?.snCode ?? '')
+    const fromSession = String(session.value?.userInfo?.snCode ?? '')
+    const sn = fromProfile || fromSession
+    if (!t || t.startsWith('demo-')) return { accepted: false, message: '需要真实 token 才能提交', raw: '', ok: false }
+    if (!sn) return { accepted: false, message: '缺少学号（snCode）', raw: '', ok: false }
+    if (!pointId) return { accepted: false, message: '请先选择签到点位', raw: '', ok: false }
+
+    submitting.value = true
+    try {
+      const res = await $fetch<{
+        ok: boolean
+        accepted: boolean
+        message: string
+        raw: string
+        pointName?: string
+        signDate?: string
+      }>('/api/local/mornsign-submit', {
+        method: 'POST',
+        body: { snCode: sn, token: t, pointId, phoneInfo: navigator?.userAgent },
+      })
+      logInfo('real', '早操签到提交结果', {
+        accepted: res.accepted,
+        pointId,
+        message: res.message,
+        signDate: res.signDate,
+      })
+      // 成功/失败都重读一次：让"已签 x / 需签 y"与真实状态一致（只读）
+      if (res.accepted) {
+        await loadMornSignTask()
+      }
+      return { accepted: res.accepted, message: res.message, raw: res.raw, ok: res.ok }
+    } catch (err) {
+      const message = (err as Error)?.message || '提交请求失败'
+      logWarn('real', '早操签到提交异常', { message, pointId })
+      return { accepted: false, message, raw: '', ok: false }
+    } finally {
+      submitting.value = false
+    }
+  }
+
+  return { task, status, error, submitting, loadMornSignTask, submitMornSign }
 }
