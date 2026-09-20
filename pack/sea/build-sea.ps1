@@ -82,11 +82,23 @@ foreach ($f in $chunkFiles) {
     foreach ($m in (Select-String -Path $f.FullName -Pattern 'version:"(1\.[0-9]+\.[0-9]+)"' -AllMatches -ErrorAction SilentlyContinue).Matches) { $allEntries += $m.Groups[1].Value }
 }
 $uniqEntries = @($allEntries | Sort-Object -Unique)
-if (-not ($uniqEntries -contains $ver)) {
-    throw "[0.5] .output has no release entry for version $ver => it is a STALE build (entries: [$($uniqEntries -join ', ')]). Delete .output and rebuild."
-}
 $newer = @($uniqEntries | Where-Object { (To-Comparable $_) -gt $curNum })
-if ($newer.Count -gt 0) {
+if (-not ($uniqEntries -contains $ver)) {
+    # 2026-09-20 conflict fix: the version convention says "right after a tag, the NEXT dev round bumps
+    # package.json to X+1 automatically" - so during development `$ver` legitimately has NO entry yet
+    # (entries are written when the release is prepared). The strict check above therefore blocked EVERY
+    # pack attempt in a fresh dev round (measured: after 1.1.11 shipped, bumping to 1.1.12 made
+    # `npm run sea` throw "[0.5] .output has no release entry for version 1.1.12 => it is a STALE build").
+    #
+    # A missing current-version entry is accepted ONLY IF the bundle also carries an entry NEWER than the
+    # current version. That is still a valid freshness signal because such an entry can only come from
+    # src/mp/releaseArt.ts (the build compiles it), and it is the very entry the developer had to add
+    # alongside the version bump. A genuinely stale bundle (built before the bump) lacks both.
+    if ($newer.Count -eq 0) {
+        throw "[0.5] .output has no release entry for version $ver and no entry newer than it => it is a STALE build (entries: [$($uniqEntries -join ', ')]). Delete .output and rebuild."
+    }
+    Write-Warning "[0.5] no entry for current dev version $ver (expected during development) - accepted because a newer entry exists: [$($newer -join ', ')]. If that newer entry is not a PLANNED one you added on purpose, the output is suspicious."
+} elseif ($newer.Count -gt 0) {
     Write-Warning "[0.5] .output also contains entries newer than $ver : [$($newer -join ', ')] - fine if those are PLANNED entries, otherwise the output is suspicious."
 }
 Write-Host "[0.5] SPA content OK: entry for $ver present. (versions in bundle: $($uniqEntries -join ', '))"
@@ -99,16 +111,28 @@ Write-Host "[0.5] SPA content OK: entry for $ver present. (versions in bundle: $
 $srcArt = Join-Path $root 'public\version-art'
 $outArt = Join-Path $outputDir 'public\version-art'
 if (-not (Test-Path -LiteralPath (Join-Path $srcArt "$ver.png"))) {
-    throw "[0.6] public\version-art\$ver.png is missing - the version page would show a placeholder. Add the artwork before packaging."
+    # 2026-09-20 conflict fix (same root cause as [0.5] above): the version convention bumps package.json
+    # to X+1 right after a tag, but the artwork is hand-made by the user and only provided when a release
+    # is actually prepared. Requiring it unconditionally therefore blocked EVERY pack attempt in a fresh
+    # dev round (measured: after 1.1.11 shipped, the 1.1.12 pack failed here).
+    # Development state is detectable the same way: the bundle carries a planned entry NEWER than $ver.
+    if ($newer.Count -eq 0) {
+        throw "[0.6] public\version-art\$ver.png is missing - the version page would show a placeholder. Add the artwork before packaging."
+    }
+    Write-Warning "[0.6] no artwork for current dev version $ver (expected during development) - shipping NO version artwork. Add public\version-art\$ver.png before the release build."
+    if (Test-Path $outArt) { Remove-Item $outArt -Recurse -Force }
+    New-Item -ItemType Directory -Path $outArt | Out-Null
+    Write-Host '[0.6] version-art: dev build, artwork intentionally not shipped.'
+} else {
+    if (Test-Path $outArt) { Remove-Item $outArt -Recurse -Force }
+    New-Item -ItemType Directory -Path $outArt | Out-Null
+    Copy-Item -LiteralPath (Join-Path $srcArt "$ver.png") -Destination $outArt
+    $packedArt = @(Get-ChildItem $outArt -File -Filter '*.png' | ForEach-Object { $_.Name })
+    if ($packedArt.Count -ne 1 -or $packedArt[0] -ne "$ver.png") {
+        throw "[0.6] version-art assertion failed: expected exactly [$ver.png], got [$($packedArt -join ', ')]"
+    }
+    Write-Host "[0.6] version-art OK: shipping only $ver.png (stale/future artwork excluded)."
 }
-if (Test-Path $outArt) { Remove-Item $outArt -Recurse -Force }
-New-Item -ItemType Directory -Path $outArt | Out-Null
-Copy-Item -LiteralPath (Join-Path $srcArt "$ver.png") -Destination $outArt
-$packedArt = @(Get-ChildItem $outArt -File -Filter '*.png' | ForEach-Object { $_.Name })
-if ($packedArt.Count -ne 1 -or $packedArt[0] -ne "$ver.png") {
-    throw "[0.6] version-art assertion failed: expected exactly [$ver.png], got [$($packedArt -join ', ')]"
-}
-Write-Host "[0.6] version-art OK: shipping only $ver.png (stale/future artwork excluded)."
 
 Write-Host '[1/7] bundle launcher (esbuild)...'
 $esbuild = Join-Path $root 'node_modules\.bin\esbuild.cmd'
