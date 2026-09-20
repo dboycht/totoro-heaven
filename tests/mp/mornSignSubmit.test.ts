@@ -10,9 +10,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  COORD_JITTER_RADIUS_M,
   buildMornSignPayload,
+  coordOffsetMeters,
   evaluateMornSignWindow,
   formatShanghaiDateTime,
+  jitterCoord,
   judgeMornSignSubmit,
   parseClockMinutes,
 } from '../../utils/mp/mornSignSubmit.ts'
@@ -86,6 +89,8 @@ test('mornSignSubmit：16 字段组装 —— signType 恒为 "0"、qrCode 用�
     snCode: '032530213',
     token: 'tk',
     nowMs: at(7, 15),
+    // 关掉抖动，才能逐字段断言"组装口径"（抖动本身另有专门用例）
+    jitterRadiusM: 0,
   })
   assert.equal(Object.keys(payload).length, 16, '字段数必须是 16')
   assert.equal(payload.signType, '0')
@@ -99,6 +104,74 @@ test('mornSignSubmit：16 字段组装 —— signType 恒为 "0"、qrCode 用�
   assert.equal(payload.signDate, '2026-09-19 07:15:00')
   assert.equal(payload.phoneNumber, '')
   assert.equal(payload.mac, '')
+})
+
+test('mornSignSubmit：坐标抖动 —— 必须落在半径内、有抖动、且不产生 NaN', () => {
+  assert.equal(COORD_JITTER_RADIUS_M, 5, '默认抖动半径就是 5 m（用户 2026-09-20 要求）')
+  const lat = 31.372635455164314
+  const lng = 119.48083083271979
+  // 固定随机序列（0.25/0.5 ⇒ r = 5·√0.25 = 2.5 m，θ = π ⇒ 正南偏 2.5 m）
+  const seq = [0.25, 0.5, 0.25, 0.5]
+  let i = 0
+  const rand = () => seq[i++ % seq.length]!
+  const out = jitterCoord(lat, lng, 5, rand)
+  assert.equal(out.offsetM.toFixed(3), '2.500')
+  assert.notEqual(out.latitude, String(lat), '必须与原值不同（否则等于没抖动）')
+  assert.ok(!/NaN/.test(out.latitude + out.longitude), '不得出现 NaN')
+
+  // 距离校验：改用被测模块自己的 coordOffsetMeters（避免测试里再手写一份换算）
+  const dist = coordOffsetMeters(lat, lng, out.latitude, out.longitude)
+  assert.ok(dist <= 5.0001, `实际偏移 ${dist.toFixed(3)} m 应 ≤ 5 m`)
+
+  // 多次采样：全部落在 5 m 内，且**不会每次都等于 0**（圆盘采样不是恒 0）
+  let maxSeen = 0
+  let nonzero = 0
+  for (let k = 0; k < 500; k++) {
+    const j = jitterCoord(lat, lng, 5)
+    const d = coordOffsetMeters(lat, lng, j.latitude, j.longitude)
+    maxSeen = Math.max(maxSeen, d)
+    if (d > 0.001) nonzero++
+  }
+  assert.ok(maxSeen <= 5.0001, `500 次采样的最大偏移 ${maxSeen.toFixed(3)} m 应 ≤ 5 m`)
+  assert.ok(nonzero > 490, '绝大多数采样应有实际偏移（不是恒 0）')
+})
+
+test('mornSignSubmit：抖动可关闭、非法坐标不产出 NaN（健壮性）', () => {
+  assert.equal(jitterCoord('31.9', '118.7', 0).latitude, '31.9', '半径 0 ⇒ 原样返回')
+  assert.equal(jitterCoord('31.9', '118.7', -1).longitude, '118.7', '负半径 ⇒ 原样返回')
+  // ⚠️ 判据是"**解析不出数字就原样透传，绝不猜**"。
+  //    注意：传字符串 'abc' ⇒ 返回 'abc'（原样）；传数值 NaN ⇒ 返回字符串 'NaN'（原样）。
+  //    我第一版在这里断言"结果不含 NaN"，那是**断言写错了** —— 原样透传本就可能带 NaN。
+  const bad = jitterCoord('abc', '118.7', 5)
+  assert.equal(bad.latitude, 'abc', '非法纬度 ⇒ 原样返回（不猜）')
+  assert.equal(bad.longitude, '118.7')
+  assert.equal(bad.offsetM, 0, '未抖动 ⇒ 偏移量记 0')
+  // 关键：**合法坐标绝不能因为抖动而变成 NaN**
+  for (const [la, ln] of [
+    ['31.370415772884936', '119.48904656767843'],
+    [0, 0],
+    ['-33.8688', '151.2093'], // 南半球/东经
+  ]) {
+    const out = jitterCoord(la!, ln!, 5)
+    assert.ok(/^-?\d+(\.\d+)?$/.test(out.latitude), `纬度应是数字串，实际 ${out.latitude}`)
+    assert.ok(/^-?\d+(\.\d+)?$/.test(out.longitude), `经度应是数字串，实际 ${out.longitude}`)
+  }
+})
+
+test('mornSignSubmit：抖动**不影响**任何点位标识字段（taskId/pointId/qrCode 原样）', () => {
+  const point = {
+    taskId: 'mornsignTaskPaper-20230307000001',
+    pointId: '06',
+    pointName: '东操场',
+    latitude: '31.370415772884936',
+    longitude: '119.48904656767843',
+    qrCode: 'mornsignPlace-2021091700000706',
+  }
+  const p = buildMornSignPayload({ point: point as never, snCode: '032530213', token: 'tk', jitterRadiusM: 5 })
+  assert.equal(p.taskId, point.taskId)
+  assert.equal(p.pointId, point.pointId)
+  assert.equal(p.qrCode, point.qrCode)
+  assert.notEqual(p.latitude, point.latitude, '坐标应当被抖动')
 })
 
 test('mornSignSubmit：四要素不全时**抛错**（不发残缺请求）', () => {

@@ -30,6 +30,7 @@ export interface MornSignSubmitPayload {
   qrCode: string
   headImage: string
   baseStation: string
+  /** ⚠️ 服务端下发的**点位坐标** + ≤5 m 随机抖动（见 `jitterCoord`）——**不是**"你的真实位置" */
   longitude: string
   latitude: string
   phoneInfo: string
@@ -111,11 +112,87 @@ export function evaluateMornSignWindow(task: MpMornSignTask | null, nowMs: numbe
 }
 
 /**
+ * 上传坐标的默认随机抖动半径（米）——用户 2026-09-20 要求。
+ *
+ * ⚠️ 这不是"更隐蔽"，而是**去掉一个不真实的数据痕迹**：真手机上传的定位**必然有抖动**，
+ *    而把服务端下发的坐标**逐位原样回传**，是最典型的"程序生成"特征（同一任务的多个用户
+ *    会得到完全一致的坐标）。性质与阳光跑那边的"里程略超 2~9% / 配速非整分钟"一致。
+ * 5 m 相对 300 m 围栏是很小的偏移（不会跨出范围），且与手机定位噪声同量级。
+ */
+export const COORD_JITTER_RADIUS_M = 5
+
+/**
+ * 两个坐标之间的**近似距离（米）**（等距近似：纬度 111320 m/度，经度按纬度余弦修正）。
+ *
+ * 用途：① 单测里校验"抖动确实落在半径内"；② 服务端提交日志里记录本次偏移量（便于对账）。
+ * ⚠️ 与 `morningSign.ts` 的 `distanceMeters()` **同算法**（那份用于界面"离点位多远"）。
+ *    两份并存是因为一个在 `mornSignSubmit` 的依赖面上、一个在 `morningSign` 上；
+ *    若将来要合并，**只保留一份**（判据：全仓只应有一个"等距近似"实现）。
+ */
+export function coordOffsetMeters(aLat: string | number, aLng: string | number, bLat: string | number, bLng: string | number): number {
+  const la1 = Number(aLat)
+  const ln1 = Number(aLng)
+  const la2 = Number(bLat)
+  const ln2 = Number(bLng)
+  if (![la1, ln1, la2, ln2].every(Number.isFinite)) return 0
+  const dNorth = (la2 - la1) * M_PER_DEG_LAT
+  const mPerDegLng = M_PER_DEG_LAT * Math.cos((((la1 + la2) / 2) * Math.PI) / 180)
+  const dEast = (ln2 - ln1) * mPerDegLng
+  return Math.hypot(dNorth, dEast)
+}
+
+/** 1 度纬度约多少米（用于米↔度的换算；经度按纬度余弦修正） */
+const M_PER_DEG_LAT = 111_320
+
+/**
+ * 给一个坐标加**圆盘内均匀分布**的随机偏移（默认半径 5 m）。
+ *
+ * 判据：
+ *   · `d = R·√U1`（**开根号**才是圆盘均匀；直接 `R·U1` 会让点向圆心聚集、边缘稀疏）；
+ *   · `θ = 2π·U2`；结果到原点的距离**必 ≤ R**；
+ *   · 纬度方向 1 度 ≈ 111320 m，经度方向要乘 `cos(纬度)` 修正 —— 否则高纬度地区东西向会偏短。
+ *
+ * @param lat 原始纬度（度，字符串或数字）
+ * @param lng 原始经度
+ * @param radiusM 抖动半径（米），传 0 则原样返回（便于开关/测试）
+ * @param rand 随机数源（默认 `Math.random`，测试可注入固定序列）
+ */
+export function jitterCoord(
+  lat: string | number,
+  lng: string | number,
+  radiusM: number = COORD_JITTER_RADIUS_M,
+  rand: () => number = Math.random,
+): { latitude: string; longitude: string; offsetM: number } {
+  const latNum = Number(lat)
+  const lngNum = Number(lng)
+  // 坐标非法 或 半径为 0/负 ⇒ 原样返回（**绝不因为抖动把好数据变成 NaN**）
+  if (!Number.isFinite(latNum) || !Number.isFinite(lngNum) || !(radiusM > 0)) {
+    return { latitude: String(lat), longitude: String(lng), offsetM: 0 }
+  }
+  const r = radiusM * Math.sqrt(rand())
+  const theta = 2 * Math.PI * rand()
+  const dNorth = r * Math.cos(theta)
+  const dEast = r * Math.sin(theta)
+  const mPerDegLng = M_PER_DEG_LAT * Math.cos((latNum * Math.PI) / 180)
+  const newLat = latNum + dNorth / M_PER_DEG_LAT
+  const newLng = lngNum + (Math.abs(mPerDegLng) > 1e-6 ? dEast / mPerDegLng : 0)
+  return {
+    latitude: newLat.toFixed(7),
+    longitude: newLng.toFixed(7),
+    offsetM: r,
+  }
+}
+
+/**
  * 组装 16 字段（缺任一"四要素"直接抛错，避免发出残缺请求）。
  *
  * ⚠️ 2026-09-19 审计 R16：**不再接收 `task` 参数** —— 原签名里有个 `task` 却从不使用
  *    （16 字段里只有 `taskId` 来自点位；`signType` 恒为厂商真包里的 `'0'`），
  *    留着会让调用方误以为"任务会影响报文"，测试还得专门传个假 task 来证明它被忽略。
+ *
+ * ⚠️ 2026-09-20：坐标改为**在服务端下发的点位坐标上做 ≤5 m 的随机抖动**（`jitterRadiusM`，
+ *    传 0 可关闭）—— 理由见 `COORD_JITTER_RADIUS_M` 的注释（去掉"逐位相同"这个程序痕迹）。
+ *    **注意**：抖动不改变任何"点位标识"字段（`taskId`/`pointId`/`qrCode` 一律原样）。
  */
 export function buildMornSignPayload(input: {
   point: MpMornSignPoint
@@ -124,6 +201,10 @@ export function buildMornSignPayload(input: {
   nowMs?: number
   /** 浏览器/系统 UA（上游用它填 phoneInfo；缺省给一个 Windows 串） */
   phoneInfo?: string
+  /** 坐标随机抖动半径（米）；缺省 `COORD_JITTER_RADIUS_M`，传 0 关闭 */
+  jitterRadiusM?: number
+  /** 随机数源（测试注入） */
+  rand?: () => number
 }): MornSignSubmitPayload {
   const { point, snCode, token } = input
   if (!point.taskId || !point.latitude || !point.longitude || !point.qrCode) {
@@ -131,6 +212,8 @@ export function buildMornSignPayload(input: {
   }
   if (!snCode) throw new Error('缺少学号（snCode）')
   if (!token) throw new Error('缺少 token')
+  const radius = input.jitterRadiusM ?? COORD_JITTER_RADIUS_M
+  const jittered = jitterCoord(point.latitude, point.longitude, radius, input.rand)
   return {
     taskId: point.taskId,
     iLocalSubmit: '0',
@@ -141,8 +224,8 @@ export function buildMornSignPayload(input: {
     qrCode: String(point.qrCode),
     headImage: '',
     baseStation: '',
-    longitude: String(point.longitude),
-    latitude: String(point.latitude),
+    longitude: jittered.longitude,
+    latitude: jittered.latitude,
     phoneInfo: String(input.phoneInfo || 'microsoft&microsoft&Windows 11 x64').slice(0, 512),
     mac: '',
     pointId: point.pointId,

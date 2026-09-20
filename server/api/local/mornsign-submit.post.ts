@@ -21,7 +21,13 @@
 import { MP_ENDPOINTS, MP_HOST } from '../../../src/mp/types'
 import { encryptLong } from '../../../utils/mp/mornSignCrypto'
 import { normalizeMornSignPaper } from '../../../utils/mp/morningSign'
-import { buildMornSignPayload, evaluateMornSignWindow, judgeMornSignSubmit } from '../../../utils/mp/mornSignSubmit'
+import {
+  COORD_JITTER_RADIUS_M,
+  buildMornSignPayload,
+  coordOffsetMeters,
+  evaluateMornSignWindow,
+  judgeMornSignSubmit,
+} from '../../../utils/mp/mornSignSubmit'
 import { judgeMpResponse, unwrapMpResponse } from '../../../src/mp/envelope'
 import { logInfo, logWarn } from '../../utils/logger'
 import { assertLocalRequest } from '../../utils/tokenScanState'
@@ -111,6 +117,9 @@ export default defineEventHandler(async (event) => {
   }
 
   // ② 组装 16 字段（缺四要素会在这里抛错）
+  // ⚠️ 坐标会做 ≤`COORD_JITTER_RADIUS_M`（默认 5 m）的随机抖动 —— 理由见 `mornSignSubmit.ts`：
+  //    真手机定位必有抖动，把服务端下发的坐标**逐位原样回传**是最典型的程序痕迹。
+  //    **点位标识字段（taskId/pointId/qrCode）一律原样**，抖动只作用于坐标。
   const payload = buildMornSignPayload({
     point,
     snCode,
@@ -120,10 +129,14 @@ export default defineEventHandler(async (event) => {
 
   // ③ 加密（唯一使用加密参的端点）
   const encryptParams = encryptLong(JSON.stringify(payload))
+  /** 本次坐标相对点位中心的偏移量（米），用于日志/对账；**不打印坐标本身**（与隐私口径一致） */
+  const offsetM = coordOffsetMeters(point.latitude, point.longitude, payload.latitude, payload.longitude)
   logInfo('morn', '早操签到提交（用户单击触发，不重试）', {
     pointId: point.pointId,
     pointName: point.pointName,
     signDate: payload.signDate,
+    coordOffsetM: Number(offsetM.toFixed(2)),
+    coordJitterRadiusM: COORD_JITTER_RADIUS_M,
     payloadBytes: Buffer.byteLength(JSON.stringify(payload), 'utf8'),
     cipherB64Len: encryptParams.length,
   })
