@@ -27,8 +27,21 @@ export default defineNuxtConfig({
       },
     },
   },
+  /**
+   * ⚠️ **只影响 `npm run dev`，不影响 build / 打包 EXE**（判据见 `ERROR.md` E59）：
+   *   · 生产产物在 `.output/server/index.mjs` 里按 `process.env.NITRO_HOST || process.env.HOST` 绑地址（产物里**没有** devServer）；
+   *   · 打包 EXE 由 `pack/sea/launcher.mjs` 显式设 `NITRO_HOST=127.0.0.1`（端口由 `pickPort()` 定）。
+   *
+   * 🆕 2026-09-20 加 `host`：不写 host 时 Nitro 会绑 `localhost` 解析出的**第一个**地址（本机是 `::1`），于是
+   *   ① 一大堆验证脚本默认的 `127.0.0.1` 全连不上；
+   *   ② 🔴 **「一键获取 token」直接废掉** —— 扫描器把候选 POST 回 `http://127.0.0.1:<port>/api/local/token-import`
+   *      （`server/api/local/token-scan/start.post.ts:16`），只绑 `::1` 时回传连接被拒 ⇒ 扫描器 `exit 1`、
+   *      界面报"扫描器未回传结果（退出码 1）"（看起来像被杀软拦截，实为地址族不匹配）。
+   *   这正是 `server/utils/tokenScanState.ts:91` 注释里"dev 用 `--host 127.0.0.1`"的前提 ⇒ 现在固化进配置。
+   */
   devServer: {
     port: 3000,
+    host: '127.0.0.1',
   },
   vite: {
     server: {
