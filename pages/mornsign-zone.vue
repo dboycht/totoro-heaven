@@ -12,6 +12,46 @@
       </div>
     </v-alert>
 
+    <!-- ⭐ 用户 2026-09-20 点名："主要是需要调方向偏置" —— 把它单独提出来讲清楚，别埋在滑杆里 -->
+    <v-alert type="warning" variant="tonal" density="comfortable" class="mb-4">
+      <div class="font-weight-bold">
+        <v-icon class="mr-1">mdi-compass-outline</v-icon>最该调的是「进场方向」—— 调它的顺序也建议从它开始
+      </div>
+      <div class="text-body-2 mt-1">
+        <b>①先调方向</b>（决定"从哪个方向走过来"，最影响像不像真人）→ ②再调落点带 → ③最后动 GPS 噪声。
+        <br />为什么方向最重要：真人每次都<b>从同一个方向</b>过来（宿舍/教学楼在哪个方位就走哪条路）；
+        而 <b>方向为"每次随机"时，落点会围成一个整圆</b> —— 那是最典型的程序特征。
+        距离反而影响小：站在操场里，离点位中心 40 m 还是 150 m 都正常。
+      </div>
+      <v-table density="compact" class="mt-2 zone-bearing-table">
+        <thead>
+          <tr><th>方位</th><th>角度</th><th>方位</th><th>角度</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>正北（点位在你南边，你从北往南走）</td><td><b>0°</b></td>
+            <td>正东</td><td><b>90°</b></td>
+          </tr>
+          <tr>
+            <td>正南</td><td><b>180°</b></td>
+            <td>正西</td><td><b>270°</b></td>
+          </tr>
+          <tr>
+            <td>东北</td><td>45°</td>
+            <td>东南</td><td>135°</td>
+          </tr>
+          <tr>
+            <td>西南</td><td>225°</td>
+            <td>西北</td><td>315°</td>
+          </tr>
+        </tbody>
+      </v-table>
+      <div class="text-caption mt-1 text-medium-emphasis">
+        怎么定：在卫星图上看「你常来的那栋楼/那个门」相对<b>点位中心</b>在哪个方向；
+        或用手机指南针站在出发点，读指向签到点位的方位角。填好后看左边预览 —— 黄点应集中成<b>一个扇形</b>而不是整圆。
+      </div>
+    </v-alert>
+
     <v-alert v-if="status !== 'ready'" type="warning" variant="tonal" density="comfortable" class="mb-4">
       <div class="font-weight-bold">需要先读到签到任务</div>
       <div class="text-body-2">
@@ -101,7 +141,11 @@
                       @update:model-value="(v: number) => patch(pt.pointId, { radiusM: v >= 1000 ? null : v })"
                     />
 
-                    <div class="text-caption mt-2">进场方向：{{ draftOf(pt.pointId).approachBearingDeg === null ? '每次随机' : `${Math.round(draftOf(pt.pointId).approachBearingDeg!)}°` }}，每次扰动 ±{{ Math.round(draftOf(pt.pointId).bearingJitterDeg) }}°</div>
+                    <div class="text-caption mt-2">
+                      <b>进场方向</b>（⭐建议优先调）：
+                      {{ draftOf(pt.pointId).approachBearingDeg === null ? '每次随机（落点会围成整圆）' : `${Math.round(draftOf(pt.pointId).approachBearingDeg!)}°（${bearingName(draftOf(pt.pointId).approachBearingDeg!)}）` }}
+                      ，每次扰动 ±{{ Math.round(draftOf(pt.pointId).bearingJitterDeg) }}°
+                    </div>
                     <v-slider
                       :model-value="bearingSlider(pt.pointId)"
                       :min="0"
@@ -110,9 +154,14 @@
                       density="compact"
                       hide-details
                       thumb-label
-                      label="方向偏置（360=每次随机）"
+                      label="方向偏置（360=每次随机；0=正北 90=正东 180=正南 270=正西）"
                       @update:model-value="(v: number) => patch(pt.pointId, { approachBearingDeg: v >= 360 ? null : v })"
                     />
+                    <div class="d-flex flex-wrap ga-1 mb-1">
+                      <v-btn v-for="b in BEARING_PRESETS" :key="b.deg" size="x-small" variant="tonal" @click="patch(pt.pointId, { approachBearingDeg: b.deg })">
+                        {{ b.label }} {{ b.deg }}°
+                      </v-btn>
+                    </div>
                     <v-slider
                       :model-value="draftOf(pt.pointId).bearingJitterDeg"
                       :min="0"
@@ -121,7 +170,7 @@
                       density="compact"
                       hide-details
                       thumb-label
-                      label="方向扰动 ±°"
+                      label="方向扰动 ±°（0=完全固定；太大就变成整圆了）"
                       @update:model-value="(v: number) => patch(pt.pointId, { bearingJitterDeg: v })"
                     />
 
@@ -259,6 +308,28 @@ watch(
 )
 
 const pct = (v: number) => `${Math.round(v * 100)}%`
+
+/**
+ * ⭐ 用户 2026-09-20："主要是需要调方向偏置" —— 所以给它**一键预设**，省得对着 0~360 的滑杆猜。
+ * 同时 `bearingName()` 把角度翻译成中文方位，设在滑杆上方（比只显示数字好核对）。
+ */
+const BEARING_PRESETS = [
+  { label: '北', deg: 0 },
+  { label: '东北', deg: 45 },
+  { label: '东', deg: 90 },
+  { label: '东南', deg: 135 },
+  { label: '南', deg: 180 },
+  { label: '西南', deg: 225 },
+  { label: '西', deg: 270 },
+  { label: '西北', deg: 315 },
+] as const
+
+/** 角度 → 中文方位（就近匹配 8 方位；用于界面提示"你填的是哪个方向"） */
+const bearingName = (deg: number): string => {
+  const names = ['正北', '东北', '正东', '东南', '正南', '西南', '正西', '西北']
+  const idx = Math.round((((deg % 360) + 360) % 360) / 45) % 8
+  return names[idx]!
+}
 
 /** 「重新读取任务」按钮的 loading —— ⚠️ 不能直接写 `status === 'loading'`：
  * 外层已经是 `v-if="status === 'ready'"`，TS 会把 status 收窄成 `'ready'`，
