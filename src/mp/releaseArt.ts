@@ -55,9 +55,11 @@ export const VERSION_ENTRIES: VersionEntry[] = [
     version: '1.2.1',
     /**
      * ⚠️ 日期口径（基本规则 12）：**以 GitHub Release 的 `published_at` 转本地日期为准**。
-     * 打包/发布若跨过本地零点，必须同步改成次日（`verify_version_dates.mjs` 会逐条核对并报不一致）。
+     * 本条实际写的是 **2026-09-21**：`releaseArt` 里的日期原本写 09-20（当晚准备发布），
+     * 但打包/验收跨过了本地零点、Release 实际发布于 **09-21 早上** ⇒ 按"命令读到的 published_at"改正，
+     * 并**重新打包**让 EXE 里的条目与 GitHub 上的日期一致（`verify_version_dates.mjs` 会逐条核对）。
      */
-    date: '2026-09-20',
+    date: '2026-09-21',
     channel: 'stable',
     title: '对外推荐的正式版：与 1.1.12 功能一致 + 新增「谢绝公开分享」说明',
     highlights: [
