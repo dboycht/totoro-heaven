@@ -46,8 +46,16 @@ const resolvePrefixUrl = (): string => {
       if (internal) return `${internal.replace(/\/$/, '')}/api/mp/`
       const port = process.env.NITRO_PORT || process.env.PORT || '3000'
       const portNum = parseInt(port, 10)
-      if (Number.isNaN(portNum) || portNum <= 0 || portNum > 65535) return 'http://127.0.0.1:3000/api/mp/'
-      return `http://127.0.0.1:${portNum}/api/mp/`
+      const safePort = Number.isNaN(portNum) || portNum <= 0 || portNum > 65535 ? '3000' : String(portNum)
+      /**
+       * ⚠️ 2026-09-20（`ERROR.md` E59）：**自调用地址的地址族必须与服务的绑定一致**。
+       * 原来这里写死 `127.0.0.1` —— 服务若只绑 IPv6 回环（`NITRO_HOST=::1`）就会连不上，
+       * 与「一键获取 token」那次故障是同一个类（回调/自调用地址与服务地址族不匹配）。
+       * 现在按绑定地址推导：`::1` 用 IPv6 字面量；`0.0.0.0` / `::`（所有接口）用 IPv4 回环最稳。
+       */
+      const boundHost = String(process.env.NITRO_HOST || process.env.HOST || '127.0.0.1').trim()
+      const loopback = boundHost === '::1' || boundHost === '[::1]' ? '[::1]' : '127.0.0.1'
+      return `http://${loopback}:${safePort}/api/mp/`
     }
     const origin = META.env?.VITE_MP_PROXY_BASE || window.location.origin
     if (!origin || !origin.startsWith('http')) return 'http://localhost:3000/api/mp/'

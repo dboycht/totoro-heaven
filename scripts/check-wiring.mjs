@@ -506,6 +506,83 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
   }
 }
 
+// ---------- R12：本机自调用地址必须与"服务实际绑定的地址族"一致（2026-09-20，E59）----------
+// 起因（真实故障）：扫描器要把候选 POST 回本机，而回传地址**写死成 `http://127.0.0.1`**；
+//   dev 不带 `--host` 时只监听 `::1`（本机 `localhost` 先解析成 IPv6）⇒ 回传连接被拒 ⇒
+//   扫描器 `exit 1`、界面报"扫描器未回传结果（退出码 1）"，看起来像被杀软拦截，实为地址族不匹配。
+// 这条规则把三件事钉住，任何一件被改回去都会红：
+//   ① dev 必须**显式**绑回环（`nuxt.config.ts` 的 `devServer.host`）；
+//   ② 打包 EXE 的 launcher 必须把 `NITRO_HOST` 钉成回环；
+//   ③ 本机回调地址**必须走 `localCallbackOrigin()`**，不许再出现写死的 `http://127.0.0.1`。
+{
+  /**
+   * ⚠️ 取值必须**限定在 `devServer` 块内部**（花括号配对截取）。
+   * 第一版写成跨块的懒匹配，一旦块里没有 `host` 就会一路吃到后面的
+   * `vite.server.hmr.host = 'localhost'` ⇒ 自测"删掉 host"的注入**抓不到**（实测踩到，
+   * 正是 R12 自己的自测把这个假绿抓出来的）。
+   */
+  const nuxtCfg = read('nuxt.config.ts')
+  const devBlock = (() => {
+    const at = nuxtCfg.indexOf('devServer:')
+    if (at < 0) return ''
+    const open = nuxtCfg.indexOf('{', at)
+    if (open < 0) return ''
+    let depth = 0
+    for (let i = open; i < nuxtCfg.length; i++) {
+      if (nuxtCfg[i] === '{') depth++
+      else if (nuxtCfg[i] === '}') {
+        depth--
+        if (depth === 0) return nuxtCfg.slice(open + 1, i)
+      }
+    }
+    return ''
+  })()
+  const devHost = (/^\s*host\s*:\s*(?<h>'[^']*'|"[^"]*"|[^,\n}]+)/m.exec(devBlock)?.groups?.h ?? '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+  if (!devHost) {
+    failures.push(
+      'nuxt.config.ts：`devServer` 没有显式写 `host` —— 不带 host 时 Nitro 会绑 `localhost` 解析出的第一个地址（本机是 `::1`），' +
+        '而「一键获取 token」的扫描器与一堆验证脚本都按 IPv4 回环找服务 ⇒ 必然断（ERROR.md E59）。请写 `host: \'127.0.0.1\'`。',
+    )
+  } else if (devHost !== '127.0.0.1') {
+    failures.push(
+      `nuxt.config.ts：\`devServer.host\` = ${devHost} 不行 —— 必须是 IPv4 回环**字面量** \`127.0.0.1\`：` +
+        '`localhost` 在本机先解析成 `::1`（正是 E59 的祸根）；`0.0.0.0` 会把"能读进程内存结果"的本机端点暴露到局域网。' +
+        '（打包版由 launcher 设 `NITRO_HOST=127.0.0.1`，dev 与 EXE 保持一致才不会又分叉。）',
+    )
+  }
+
+  const launcher = read('pack/sea/launcher.mjs')
+  if (!/NITRO_HOST\s*=\s*process\.env\.NITRO_HOST\s*\|\|\s*'127\.0\.0\.1'/.test(launcher)) {
+    failures.push(
+      'pack/sea/launcher.mjs：没有把 `NITRO_HOST` 钉成 `127.0.0.1`（Nitro 的 node-server 预设默认可能绑 0.0.0.0）—— ' +
+        '打包版一旦改成别的地址族，扫描器回传与"只允许本机"的安全前提都会破（ERROR.md E59）。',
+    )
+  }
+
+  for (const rel of listDir('server/api/local')) {
+    if (!rel.endsWith('.ts')) continue
+    const text = read(rel)
+    /**
+     * ⚠️ 必须**逐行跳过注释**：本仓的注释里会引用这段历史（"以前这里写死 `http://127.0.0.1`…"），
+     * 那是给后人看的说明，不是违规 —— 与 `stripCommentLines()` 同一口径（本检查器多处同此）。
+     * 实测：第一版没跳注释 ⇒ 守卫对**已经改好的文件**持续报红（假报警）。
+     */
+    const lines = text.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim()
+      if (t.startsWith('*') || t.startsWith('//') || t.startsWith('/*')) continue
+      if (!/https?:\/\/127\.0\.0\.1/.test(lines[i])) continue
+      failures.push(
+        `${rel}:${i + 1} 出现了**写死的** \`http://127.0.0.1\` —— 本机自调用地址必须按请求地址族生成：` +
+          '请用 `localCallbackOrigin(hostHeader, port)`（server/utils/tokenScanState.ts，纯函数 + 单测）。' +
+          '写死地址族的代价见 ERROR.md E59（「一键获取 token」静默失效）。',
+      )
+    }
+  }
+}
+
 // ---------- R9：夜间停用的**适用面**（2026-09-17 用户澄清口径）----------
 // 夜间 22:30~06:00 **只停「真实提交」**；本地模拟/预览必须照旧可用。
 // 曾经的错法：把 `gateStatus.blockedBy === 'night'` 也挂在「开始跑步」按钮的 disabled 上 ⇒ 夜里连模拟都点不了。

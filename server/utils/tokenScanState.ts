@@ -6,7 +6,13 @@
  * 🔒 nonce：一次性（import 用过即作废），防止其它本地程序往流程里塞 token。
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { getRequestIP } from 'h3'
+/**
+ * ⚠️ `createError` 原本靠 Nitro 的**自动导入**（运行时没问题），但 2026-09-20 起
+ * `tests/mp/localCallbackOrigin.test.ts` 会 import 本模块 ⇒ 本文件同时被 `tsconfig.mp.json`
+ * （纯逻辑层，**没有** Nuxt 自动导入类型）检查 ⇒ 报 `TS2304: Cannot find name 'createError'`。
+ * 显式 import 更确定：既不依赖生成出来的 `.nuxt/types`，也不改变运行时行为（同一个 h3 函数）。
+ */
+import { createError, getRequestIP } from 'h3'
 import type { H3Event } from 'h3'
 
 export type TokenScanPhase = 'idle' | 'scanning' | 'validating' | 'ready' | 'error'
@@ -76,6 +82,47 @@ export function patchScan(patch: Partial<TokenScanState>): void {
    没有调用方需要单独清空（grep 全仓仅声明处）。 */
 
 /**
+ * 🔒 回环 Host 的**唯一判据**（`assertLocalRequest` 与本机回调地址**共用这一份**）。
+ * 允许 `127.0.0.1` / `localhost` / `[::1]`，端口可选。
+ */
+export const LOCAL_HOST_RE = /^(127\.0\.0\.1|localhost|\[::1\])(?::(\d+))?$/
+
+/**
+ * 子进程（内存扫描器）要把结果 **POST 回来**的本机 origin —— **跟着"服务实际绑定"的地址族走**。
+ *
+ * ⚠️ 2026-09-20 血的教训（`ERROR.md` E59）：这里原来把地址**写死成 `http://127.0.0.1`**，
+ *    而 dev 不带 `--host` 时只监听 `::1`（本机 `localhost` 先解析成 IPv6）⇒ 回传 POST 连接被拒 ⇒
+ *    扫描器 `exit 1`、界面报"扫描器未回传结果（退出码 1）"（看起来像被杀软拦截，实为地址族不匹配）。
+ *
+ * 规则（按优先级）：
+ *   ① 服务绑的是 IPv6 回环（`NITRO_HOST=::1`）⇒ 回传也必须用 `[::1]`；
+ *   ② 绑的是 IPv4 回环 / 所有接口（`0.0.0.0`、`::`）⇒ 用 **IPv4 字面量**（子进程少一次名字解析，
+ *      就少一个"解析成 ::1 又连不上"的坑）；
+ *   ③ 绑定未知（dev 场景：`devServer.host` 不写进环境变量）⇒ **跟请求的 Host 同族**：
+ *      Host 是 `[::1]` 就用 IPv6，其余（`127.0.0.1` / `localhost`）统一用 IPv4 字面量。
+ *   ④ 非回环 / 缺失 ⇒ 回落到 IPv4 回环（`assertLocalRequest` 早已把非本机请求挡掉了）。
+ *
+ * @param hostHeader  请求的 Host 头（拿端口 + 未知绑定时的地址族线索）
+ * @param fallbackPort Host 头里没有端口时用它
+ * @param boundHost   服务实际绑定的 host（默认读 `NITRO_HOST`/`HOST`）
+ */
+export function localCallbackOrigin(
+  hostHeader: unknown,
+  fallbackPort: string | number = '3000',
+  boundHost: unknown = process.env.NITRO_HOST || process.env.HOST || '',
+): string {
+  const m = LOCAL_HOST_RE.exec(String(hostHeader ?? '').trim().toLowerCase())
+  const bind = String(boundHost ?? '').trim().toLowerCase()
+  const port = String(m?.[2] || fallbackPort)
+  // ① 绑 IPv6 回环 ⇒ 必须 IPv6
+  if (bind === '::1' || bind === '[::1]') return `http://[::1]:${port}`
+  // ③ 绑定未知（dev 的常见情况）⇒ 看请求来的地址族
+  if (!bind && m?.[1] === '[::1]') return `http://[::1]:${port}`
+  // ②④ 其余一律 IPv4 回环字面量
+  return `http://127.0.0.1:${port}`
+}
+
+/**
  * 🔒 只允许**本机**访问，且拒绝跨站来源。
  * 这类端点能读进程内存的结果，绝不能暴露给局域网或网页。
  */
@@ -87,10 +134,11 @@ export function assertLocalRequest(event: H3Event): void {
   const localIp = ip === '127.0.0.1' || ip === '::1' || ip === 'localhost' || ip === '0:0:0:0:0:0:0:1'
   /**
    * ⚠️ 某些环境（本机 Windows loopback 经沙箱/代理时实测）socket 远端地址是**空串**。
-   * 此时退一步用 **Host 头必须为本机形式** 判定 —— 安全性由"服务只绑 loopback"保证
-   * （`pack/sea/launcher.mjs` 已显式设 `NITRO_HOST=127.0.0.1`；dev 用 `--host 127.0.0.1`）。
+   * 此时退一步用 **Host 头必须为本机形式** 判定（`LOCAL_HOST_RE`，与回调地址同一份判据）——
+   * 安全性由"服务只绑 loopback"保证
+   * （`pack/sea/launcher.mjs` 显式设 `NITRO_HOST=127.0.0.1`；`nuxt.config.ts` 的 `devServer.host` 也已固定）。
    */
-  const localHostHeader = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)
+  const localHostHeader = LOCAL_HOST_RE.test(host)
   const localOk = localIp || (ip === '' && localHostHeader)
   if (!localOk) {
     console.warn(`[token-scan] 拒绝非本机来源：ip=${JSON.stringify(ip)} raw=${JSON.stringify(raw)} host=${JSON.stringify(host)}`)

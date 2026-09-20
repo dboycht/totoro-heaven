@@ -61,6 +61,13 @@ const NEEDED = [
   //    （run.vue / freerun.vue 都只是薄页面）⇒ R9 现在按"候选文件里的 <v-btn>"找「开始跑步」，
   //    副本里**必须带上这个组件**，否则自测会报"找不到按钮"（本轮实测踩到）。
   'components/RunWorkspace.vue',
+  // ⚠️ 2026-09-20（E59 / R12）：新规则断言"本机自调用地址必须与服务绑定的地址族一致"——
+  //    检查器要读 `nuxt.config.ts`（dev 必须显式绑回环）、launcher（NITRO_HOST 钉回环）、
+  //    以及 `server/api/local/**`（不许写死回环字面量）⇒ 这三处必须一并进副本，
+  //    否则基线就会报"文件不存在"（自测把检查器坏了误判成代码有问题）。
+  'nuxt.config.ts',
+  'pack/sea/launcher.mjs',
+  'server/api/local/token-scan/start.post.ts',
 ]
 
 /**
@@ -300,6 +307,35 @@ try {
     if (code === 0) failures.push('kebab-case 绑定丢掉 prop，但检查器仍然通过（R11 守卫失效）')
     else if (!out.includes('静默丢弃')) failures.push(`报错信息不是预期的：\n${out}`)
   }
+
+  // ---------- 注入 14：把 devServer 的 `host` 拿掉（R12；2026-09-20 真实故障）----------
+  // 触发场景 = 今天那次：不带 host ⇒ Nitro 绑 `localhost` 解析出的第一个地址（`::1`）⇒
+  // 扫描器回传 POST 被拒 ⇒「一键获取 token」静默失效、界面报"扫描器未回传结果（退出码 1）"。
+  {
+    const dir = copyBase()
+    const file = join(dir, 'nuxt.config.ts')
+    const text = readFileSync(file, 'utf8')
+    const injected = text.replace(/\n\s*host:\s*'127\.0\.0\.1',/, '')
+    if (injected === text) failures.push('注入 14：nuxt.config.ts 里找不到 `host: \'127.0.0.1\'`（自测需同步更新）')
+    writeFileSync(file, injected, 'utf8')
+    const { code, out } = run(dir)
+    if (code === 0) failures.push('devServer 少了 host，但检查器仍然通过（R12 守卫失效）')
+    else if (!out.includes('devServer')) failures.push(`报错信息不是预期的：\n${out}`)
+  }
+
+  // ---------- 注入 15：本机回调地址写死回环字面量（R12）----------
+  // 把 `localCallbackOrigin(hostHeader, port)` 换回写死的 `http://127.0.0.1`（历史写法）。
+  {
+    const dir = copyBase()
+    const file = join(dir, 'server/api/local/token-scan/start.post.ts')
+    const text = readFileSync(file, 'utf8')
+    const injected = text.replace('${localCallbackOrigin(hostHeader, port)}/api/local/token-import', `http://127.0.0.1:\${port}/api/local/token-import`)
+    if (injected === text) failures.push('注入 15：start.post.ts 里找不到 localCallbackOrigin(...) 调用（自测需同步更新）')
+    writeFileSync(file, injected, 'utf8')
+    const { code, out } = run(dir)
+    if (code === 0) failures.push('本机回调地址写死回环字面量，但检查器仍然通过（R12 守卫失效）')
+    else if (!out.includes('写死的')) failures.push(`报错信息不是预期的：\n${out}`)
+  }
 } finally {
   rmSync(sandbox, { recursive: true, force: true })
 }
@@ -311,8 +347,8 @@ if (failures.length) {
   process.exit(1)
 }
 console.log(
-  '✅ 自测通过：基线通过、13 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
+  '✅ 自测通过：基线通过、15 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
     '代理重复声明前缀 / 模板裸取可空状态 / 空 catch / 夜间限制套回「开始跑步」/ 提示退回字符串注入键 / ' +
-    'kebab 绑定丢 prop / **开始跑步不再要求已配置跑道**）都被抓到且退出码非 0，' +
+    'kebab 绑定丢 prop / **开始跑步不再要求已配置跑道** / **dev 少了 host** / **本机回调写死地址族**）都被抓到且退出码非 0，' +
     '且"写了 v-if 守卫"的反向用例不会被误报。',
 )
