@@ -158,14 +158,39 @@ test('模板守卫：同一个按钮文案不得出现两次（防"复制粘贴�
   assert.deepEqual(bad, [], `发现重复按钮（多半是复制粘贴多留了一份）：\n  - ${bad.join('\n  - ')}`)
 })
 
-test('跑道编辑页：「保存（本机）」必须带"内外圈不合法则禁用"的保护', () => {
-  const tpl = stripHtmlComments(templateOf(readFileSync(join(ROOT, 'pages', 'track-editor.vue'), 'utf8')))
-  // 取"文案含保存（本机）的那个 v-btn 开标签"，要求它的属性里带 ringCheck 的 disabled 保护
-  const btnTags = [...tpl.matchAll(/<v-btn\b[^>]*>/g)].map((m) => m[0])
-  const saveTags = btnTags.filter((t) => /保存（本机）/.test(t) || /保存\(本机\)/.test(t))
-  // 文案在 v-btn 的子节点里时，开标签本身不含文案 ⇒ 用"开标签 + 紧随其后的文案"整体判断
-  const withLabel = [...tpl.matchAll(/<v-btn\b([^>]*)>\s*保存（本机）\s*<\/v-btn>/g)].map((m) => m[1] ?? '')
-  assert.ok(withLabel.length >= 1, `找不到带文案的「保存（本机）」按钮（候选 ${saveTags.length} 个）`)
-  assert.equal(withLabel.length, 1, `「保存（本机）」应只有 1 个，实际 ${withLabel.length} 个`)
-  assert.match(withLabel[0]!, /:disabled="[^"]*ringCheck/, '「保存（本机）」必须按 ringCheck 禁用（否则能存进不合法的内外圈）')
+/**
+ * 跑道编辑「保存（本机）」的守卫。
+ *
+ * ⚠️ 2026-09-20 修正：**不要硬编码"哪个文件里有这个按钮"**。
+ *    本次分组重构把内容从 `pages/track-editor.vue` 搬进了 `components/TrackEditorView.vue`
+ *    （页面变成薄页面）⇒ 硬编码路径的守卫直接报"找不到按钮"（**同一个坑第三次**：
+ *    1.1.10 那次是跑步界面从 `pages/run.vue` 搬到 `components/RunWorkspace.vue`）。
+ *    所以改成**在所有候选文件里找**，并且断言"**只有一个文件实现它**"——
+ *    这样既不会因为搬家失效，也能挡住"复制一份到两个文件"的退化。
+ */
+test('跑道编辑：「保存（本机）」有且仅有一处，且带"内外圈不合法则禁用"的保护', () => {
+  const files = [...vueFiles().map((v) => v.rel), 'components/TrackEditorView.vue'].filter((v, i, a) => a.indexOf(v) === i)
+  /** 每个文件里"带文案的保存按钮"的 disabled 表达式 */
+  const found: { rel: string; attrs: string }[] = []
+  for (const rel of files) {
+    const abs = join(ROOT, rel)
+    if (!existsSync(abs)) continue
+    const tpl = stripHtmlComments(templateOf(readFileSync(abs, 'utf8')))
+    for (const m of tpl.matchAll(/<v-btn\b([^>]*)>\s*保存（本机）\s*<\/v-btn>/g)) {
+      found.push({ rel, attrs: m[1] ?? '' })
+    }
+    // 兼容"文案不在同一行/含插值"的写法：退一步看开标签里是否含 ringCheck（仅用于定位）
+    if (!tpl.includes('保存（本机）')) continue
+  }
+  assert.ok(found.length >= 1, '找不到带文案的「保存（本机）」按钮（候选文件里都没有）')
+  assert.equal(
+    found.length,
+    1,
+    `「保存（本机）」应**只有 1 处实现**，实际 ${found.length} 处：\n  - ${found.map((f) => f.rel).join('\n  - ')}`,
+  )
+  assert.match(
+    found[0]!.attrs,
+    /:disabled="[^"]*ringCheck/,
+    `「保存（本机）」（在 ${found[0]!.rel}）必须按 ringCheck 禁用，否则能存进不合法的内外圈`,
+  )
 })

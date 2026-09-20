@@ -17,12 +17,11 @@
       <v-btn to="/morning-sign" variant="text" prepend-icon="mdi-clock-check-outline" class="text-none">
         早操签到
       </v-btn>
-      <v-btn to="/mornsign-zone" variant="text" prepend-icon="mdi-map-marker-radius-outline" class="text-none">
-        签到区域
-      </v-btn>
-      <v-btn to="/track-editor" variant="text" prepend-icon="mdi-vector-polyline" class="text-none">跑道编辑</v-btn>
-      <v-btn to="/records" variant="text" prepend-icon="mdi-format-list-bulleted" class="text-none">记录</v-btn>
-      <v-btn to="/logs" variant="text" prepend-icon="mdi-text-box-search-outline" class="text-none">日志</v-btn>
+      <!-- 2026-09-20 分组重构（用户要求）：原来 跑道编辑/签到区域/记录/日志 是 4 个平级入口，
+           现在收成 2 个分组，组内小标签各自有独立 URL（`/field/...`、`/data/...`）。
+           旧的 4 个路由仍保留（重定向到新位置），所以旧书签不会失效。 -->
+      <v-btn to="/field" variant="text" prepend-icon="mdi-map-marker-radius" class="text-none">我的场地</v-btn>
+      <v-btn to="/data" variant="text" prepend-icon="mdi-database-outline" class="text-none">数据</v-btn>
       <v-btn to="/version-info" variant="text" prepend-icon="mdi-image-multiple-outline" class="text-none">版本</v-btn>
       <v-spacer />
 
