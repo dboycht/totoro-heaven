@@ -230,8 +230,15 @@ async function main() {
   }
   // ① 先定端口（可能顺延；若已有本工具在跑就直接打开浏览器并退出）
   PORT = await pickPort()
-  process.env.NITRO_PORT = process.env.NITRO_PORT || String(PORT)
-  process.env.PORT = process.env.PORT || String(PORT)
+  /**
+   * ⚠️ 2026-09-20 审计修复（端口必须**强制覆盖**）：原先写 `process.env.NITRO_PORT || String(PORT)`，
+   * 只要父进程/shell 里残留 `NITRO_PORT`（或 Windows 用户环境变量里设过，含无效空串），
+   * 服务就会绑那个**旧端口**，而横幅与自动打开的浏览器用的是本次 `pickPort()` 选出的端口
+   * ⇒ 用户看到"白页 / 打不开"，甚至点开的是**别的程序**。
+   * 期望端口的唯一入口是 `TOTORO_PORT`（`pickPort` 已经消费它），这里不再给外部变量留后门。
+   */
+  process.env.NITRO_PORT = String(PORT)
+  process.env.PORT = String(PORT)
   // ② 横幅要显示**实际**端口，所以放到定端口之后再打印
   console.log(banner())
   await extractAssets()

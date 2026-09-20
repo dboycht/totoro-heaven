@@ -394,6 +394,18 @@ export function useMpRealData() {
       logWarn('gate', '摄像头杆开关读取失败', { lineId: id, message: cam.message })
       return
     }
+    /**
+     * ⚠️ 2026-09-20 审计修复（**响应回验**）：快速切线路时 A 的响应可能晚于 B 到达，
+     * 原先会无条件把 `cameraFlag`/`cameraFlagLineId` 写成 A 的 ⇒ 而当前选中的是 B
+     * ⇒ 门禁判 `flagLineId !== lineId`、一直显示"当前线路的摄像头杆开关尚未读取"，
+     * 而且 watcher 的依赖不含 `cameraFlagLineId`，不会自动纠正（用户只能手动「重新读取」）。
+     * 判据：**异步响应回来时必须确认"它还是当前这条线路的"**，不是就丢弃。
+     */
+    const currentId = String(run.value.lineId || selectedLine.value?.pointId || '')
+    if (currentId && currentId !== id) {
+      logWarn('gate', '摄像头杆开关的响应已过期（线路已切换），丢弃该结果', { requested: id, current: currentId })
+      return
+    }
     const flag = (cam.data as Record<string, unknown> | undefined)?.flag
     cameraFlag.value = typeof flag === 'boolean' ? flag : null
     cameraFlagLineId.value = id

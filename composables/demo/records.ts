@@ -19,7 +19,16 @@ export function useDemoRecords(demoMode: Ref<boolean>) {
     if (import.meta.client) {
       try {
         const raw = localStorage.getItem(RECORDS_KEY)
-        if (raw) return JSON.parse(raw) as MpRunRecord[]
+        /**
+         * ⚠️ 2026-09-20 审计修复：原先只防"JSON 解析失败"，没防"**解析成功但不是数组**"
+         * （`{}` / `"abc"` / `123` 都会解析成功）⇒ `records.value` 变成非数组，
+         * 记录页的 `.filter/.reduce` 直接抛 TypeError、整页崩。
+         * 判据：**落盘数据的结构也要校验**，不只校验能不能解析（同 `normalizeLibrary` 的做法）。
+         */
+        if (raw) {
+          const parsed: unknown = JSON.parse(raw)
+          if (Array.isArray(parsed)) return parsed as MpRunRecord[]
+        }
       } catch {
         /* 忽略损坏的本地缓存 */
       }

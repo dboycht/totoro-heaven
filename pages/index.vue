@@ -333,13 +333,26 @@ const doClearAll = () => {
 // ---------- 一键获取 token（扫 PC 微信小程序进程内存 → 服务端验活 → 自动写入会话） ----------
 const tokenScanState = reactive({ running: false, phase: 'idle' as 'idle' | 'scanning' | 'validating' | 'ready' | 'error', message: '', masked: '' })
 let scanTimer: ReturnType<typeof setInterval> | null = null
+/**
+ * ⚠️ 2026-09-20 审计修复：
+ *  · `scanDisposed`：`clearInterval` 只挡"还没跑的那几轮"，**挡不住已经进入 await 的那一次回调** ——
+ *    原先用户点完「一键获取 token」就切页离开时，在途回调仍会写组件状态，**还会 `await doLoadReal()`
+ *    替他建会话并读取真实数据**（若此时正在真实提交，还会并发）。
+ *  · `scanFailures`：轮询里原先是**完全空的 catch**（项目 R8 纪律要求 catch 必须留痕，但那条规则只扫 `.ts`、`.vue` 漏网）
+ *    ⇒ 本地端点持续失败时界面永远停在"正在扫描…"，只能干等 70 秒超时。
+ */
+let scanDisposed = false
+let scanFailures = 0
 const stopScanPolling = () => {
   if (scanTimer !== null) {
     clearInterval(scanTimer)
     scanTimer = null
   }
 }
-onUnmounted(stopScanPolling)
+onUnmounted(() => {
+  scanDisposed = true
+  stopScanPolling()
+})
 
 const doTokenScan = async () => {
   if (tokenScanState.running) return
@@ -359,8 +372,11 @@ const doTokenScan = async () => {
     const startedAt = Date.now()
 
     stopScanPolling()
+    scanFailures = 0
     scanTimer = setInterval(() => {
       void (async () => {
+        // 卸载后立刻退出：不写组件状态、更不去建会话/读真实数据
+        if (scanDisposed) return
         try {
           const st = await $fetch<{
             phase: 'idle' | 'scanning' | 'validating' | 'ready' | 'error'
@@ -386,6 +402,8 @@ const doTokenScan = async () => {
               candidates: st.candidates,
             })
             showSnackbar(`已获取 token（${st.masked}），正在读取真实数据…`, 'success', { cloud: true })
+            // 卸载后不再"替用户"建会话并读取真实数据（2026-09-20 审计修复）
+            if (scanDisposed) return
             await doLoadReal()
           } else if (st.phase === 'error' || st.phase === 'idle') {
             stopScanPolling()
@@ -400,8 +418,23 @@ const doTokenScan = async () => {
             logWarn('token', '取 token 超时（70 秒）')
             showSnackbar(tokenScanState.message, 'error', { cloud: true })
           }
-        } catch {
-          /* 本地端点偶发失败 → 下一轮继续 */
+        } catch (err) {
+          /**
+           * ⚠️ 2026-09-20 审计修复：原先这里是**完全空的 catch**（吞掉端点失败）⇒ 界面永远停在"正在扫描…"。
+           * 现在：① 留痕（日志）；② 连续失败 5 次就停下并给用户可操作提示（而不是干等 70 秒超时）。
+           */
+          scanFailures += 1
+          logWarn('token', '轮询扫描状态失败（本机端点）', {
+            failures: scanFailures,
+            message: err instanceof Error ? err.message : String(err),
+          })
+          if (scanFailures >= 5) {
+            stopScanPolling()
+            tokenScanState.phase = 'error'
+            tokenScanState.message = '读取扫描状态失败（本机端点连续 5 次无响应）——请重试，或改用「抓包粘贴 token」路线'
+            tokenScanState.running = false
+            showSnackbar(tokenScanState.message, 'error', { cloud: true })
+          }
         }
       })()
     }, 1200)

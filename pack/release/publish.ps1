@@ -1,4 +1,4 @@
-﻿# 一键发布 totoro-heaven release（读 Windows 凭据管理器 token -> 设 GH_TOKEN -> node release.cjs）
+# 一键发布 totoro-heaven release（读 Windows 凭据管理器 token -> 设 GH_TOKEN -> node release.cjs）
 # 用法：.\pack\release\publish.ps1            （默认用 package.json 的 version 作为 tag）
 #       .\pack\release\publish.ps1 -Tag 1.0.4 （覆盖 tag）
 param([string]$Tag = '')
@@ -39,10 +39,19 @@ public static class Cred {
 '@
 
 $tok = [Cred]::GetStr('git:https://github.com', 1)
-if ($tok -match '^gho_') {
+# 2026-09-20 audit fix: accept every GitHub token family (the old `gho_`-only check treated a
+# classic `ghp_` / fine-grained `github_pat_` credential in the store as "no token found").
+if ($tok -match '^(gho_|ghp_|github_pat_)') {
   $env:GH_TOKEN = $tok
   Write-Host ("token ok (len " + $tok.Length + ") -> publishing tag " + $Tag)
   node --use-system-ca (Join-Path $PSScriptRoot 'release.cjs') --tag $Tag
+  # 2026-09-20 audit fix: this script used to ignore node's exit code, so a FAILED publish
+  # (missing asset / HTTP 4xx-5xx / upload error) still ended with "exit 0" for the caller.
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host ("publish FAILED (node exit " + $LASTEXITCODE + ")")
+    exit $LASTEXITCODE
+  }
+  Write-Host 'publish ok'
 } else {
   Write-Host '未能从 Windows 凭据管理器读取 GitHub token（git:https://github.com）'
   exit 1

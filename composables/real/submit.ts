@@ -58,12 +58,16 @@ export function useMpRealSubmit() {
     plannedSeconds: number
   }): Promise<RealSubmitResult | null> {
     /**
-     * ⚠️ **并发互斥（2026-09-19 审计 S2）**：本函数**会创建服务端场次**（非幂等写），
-     * 而它内部的 `waitTimer` 是**闭包级单变量** —— 第二次调用会把第一次的计时器清掉，
+     * ⚠️ **并发互斥（2026-09-19 审计 S2，2026-09-20 审计补 `begin`）**：本函数**会创建服务端场次**
+     * （非幂等写），而它内部的 `waitTimer` 是**闭包级单变量** —— 第二次调用会把第一次的计时器清掉，
      * 于是第一次的等待 Promise **永不 resolve**（既不发提交、也不报错，`phase` 卡死）。
-     * 所以入口必须先挡住"已经在等/已经在提交"的第二次调用（界面按钮也加了 disabled，这里是兜底）。
+     *
+     * 🔴 2026-09-20 修：原判据只有 `waiting|submitting`，**漏了 `'begin'`** ——
+     * `phase='begin'` 时正在 await `getRunBegin`（最长 15 s），这段时间里第二次调用能穿过互斥
+     * ⇒ **服务端被建出两个场次**，且第二次的 `stopWait()` 会清掉第一次的计时器 ⇒ 第一次永久卡住。
+     * 判据：**互斥的相集合必须等于"函数在途"的真实相集合**（begin/waiting/submitting 三态都算在途）。
      */
-    if (phase.value === 'waiting' || phase.value === 'submitting') {
+    if (phase.value === 'begin' || phase.value === 'waiting' || phase.value === 'submitting') {
       return null
     }
     const token = session.value?.token

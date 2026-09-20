@@ -77,6 +77,17 @@ export function useTrackLibrary() {
   }
 
   /**
+   * ⚠️ 2026-09-20 审计修复：`persist()` 的返回值原本只有 `upsert` 间接用了，
+   * `remove` / `rename` **直接丢掉** ⇒ 配额满/隐私模式下"内存删了、磁盘还在"，
+   * 界面照样提示"已删除"，**刷新后被删的路线又回来了**（用户历史反馈的"删不掉"就是这一类）。
+   * 判据：内存与磁盘的**每个写操作**都要把"是否真的落盘"传回调用方。
+   */
+  const remove = (lineId: string): boolean => {
+    entries.value = entries.value.filter((e) => String(e.lineId) !== String(lineId))
+    return persist()
+  }
+
+  /**
    * 新建或覆盖（覆盖时**保留原创建日期**，只更新几何与"本次保存"留痕）。
    *
    * 🆕 2026-09-20（1.1.12 需求②③）：
@@ -137,11 +148,6 @@ export function useTrackLibrary() {
     return entry
   }
 
-  const remove = (lineId: string) => {
-    entries.value = entries.value.filter((e) => String(e.lineId) !== String(lineId))
-    persist()
-  }
-
   /**
    * **重命名**（2026-09-18，1.1.9 需求②）：只改本机显示名，不动几何、不动厂商线路名、不动创建日期。
    * · 名字归一化走纯函数 `sanitizeLineName`（折空白/去控制字符/限长），**与界面输入无关地保证干净**；
@@ -149,8 +155,9 @@ export function useTrackLibrary() {
    * · 找不到这条 ⇒ 返回 `undefined`，**不静默新建**（否则会凭空多出一条空路线）。
    * · 🆕 2026-09-20（1.1.12 需求③）：改名也是一次"编辑" ⇒ 同样写 `updatedAt`/版本/次数与历史，
    *   但**名字没变时不记账**（否则连点两次"保存名字"就把次数刷上去了）。
+   * · 🆕 2026-09-20 审计修复：返回值带上"**是否真的落盘**"（`persisted`），界面据此如实提示。
    */
-  const rename = (lineId: string, nextName: string) => {
+  const rename = (lineId: string, nextName: string): { entry: TrackRouteEntry; persisted: boolean } | undefined => {
     const target = entries.value.find((e) => String(e.lineId) === String(lineId))
     if (!target) return undefined
     const clean = sanitizeLineName(nextName)
@@ -169,8 +176,7 @@ export function useTrackLibrary() {
       })
     }
     entries.value = entries.value.map((e) => (String(e.lineId) === String(lineId) ? updated : e))
-    persist()
-    return updated
+    return { entry: updated, persisted: persist() }
   }
 
   const get = (lineId: string | undefined | null) =>

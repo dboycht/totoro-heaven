@@ -517,11 +517,12 @@ const loadEntry = (id: string) => {
   showSnackbar('已载入这条本地路线')
 }
 const removeEntry = (id: string) => {
-  lib.remove(String(id))
+  const persisted = lib.remove(String(id))
   if (String(id) === String(lineId.value)) reset()
   // 删掉的那条如果正展开着详情，收起它（否则详情区会挂在一个已不存在的条目上）
   if (isDetailOpen(id)) detailId.value = null
-  showSnackbar('已从本机路线库删除')
+  // ⚠️ 2026-09-20 审计修复：落盘失败时不能报"已删除" —— 否则刷新后被删的路线又回来了
+  showSnackbar(persisted ? '已从本机路线库删除' : '已从内存移除，但本机存储写入失败（刷新后可能还在）', persisted ? 'success' : 'warning')
 }
 
 // ---------------------------------------------------------------- 路线库「详情」展开（1.1.12 需求③）
@@ -558,15 +559,18 @@ const openRename = (id: string) => {
   renameOpen.value = true
 }
 const confirmRename = () => {
-  const updated = lib.rename(String(renameId.value), renameText.value)
+  const out = lib.rename(String(renameId.value), renameText.value)
   renameOpen.value = false
-  if (!updated) {
+  if (!out) {
     showSnackbar('这条路线已经不在本机路线库里了', 'warning')
     return
   }
+  const { entry: updated, persisted } = out
   showSnackbar(
-    updated.customName ? `已改名为「${resolveEntryName(updated)}」` : '已恢复显示官方线路名',
-    'success',
+    (updated.customName ? `已改名为「${resolveEntryName(updated)}」` : '已恢复显示官方线路名') +
+      // ⚠️ 落盘失败要说清楚（否则刷新后名字"自己变回去"，用户以为没保存）
+      (persisted ? '' : '（但本机存储写入失败，刷新后可能丢失）'),
+    persisted ? 'success' : 'warning',
   )
 }
 /** 一键恢复官方名（清空自定义名） */

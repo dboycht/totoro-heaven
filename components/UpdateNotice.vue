@@ -48,7 +48,13 @@
       当前 <b>v{{ appVersion }}</b>
       <a :href="releasesUrl" target="_blank" rel="noopener" class="text-primary">查看最新版</a>
       <span v-if="checking" class="text-medium-emphasis"> · 正在检测…</span>
-      <span v-else-if="latest" class="text-medium-emphasis"> · 已是最新（远端 v{{ latest }}，{{ checkedText }}）</span>
+      <!-- ⚠️ 2026-09-20 审计修复：原先只判 `latest` 就写"已是最新" —— 点过「忽略本次」之后
+           `hasUpdate=false` 但 `latest` 仍是那个**更新的**版本 ⇒ 会显示"已是最新（远端 v1.1.13）"
+           这种自相矛盾的话（还要加上"已是最新"是假的）。现在按**版本比较**决定措辞。 -->
+      <span v-else-if="latest && !isNewerVersion(latest, appVersion)" class="text-medium-emphasis">
+        · 已是最新（远端 v{{ latest }}，{{ checkedText }}）
+      </span>
+      <span v-else-if="latest" class="text-medium-emphasis"> · 已忽略本次提醒（远端 v{{ latest }}，{{ checkedText }}）</span>
       <v-btn size="x-small" variant="text" class="ml-2" prepend-icon="mdi-refresh" :loading="checking" @click="checkNow">
         立即检测
       </v-btn>
@@ -57,6 +63,9 @@
 </template>
 
 <script setup lang="ts">
+/** 版本比较（判断"远端是不是真的更新"）——"已是最新"这句必须按它来说，不能只看 `latest` 有没有值 */
+import { isNewerVersion } from '~/utils/mp/version'
+
 /**
  * 「请使用最新版本」提示 + 「立即检测」（2026-09-16 用户要求）
  *

@@ -56,8 +56,18 @@ export function useMornSignZone() {
     }
   }
 
-  /** 取某点位的配置（没有则给默认值，**不落盘**） */
-  const get = (pointId: string): MornSignZone => normalizeZone(zones.value[pointId] ?? DEFAULT_MORN_SIGN_ZONE)
+  /**
+   * 取某点位的配置（没有则给默认值，**不落盘**）。
+   *
+   * ⚠️ 2026-09-20 审计修复（**静默失效**那类）：原先只有「签到区域编辑」页在 `onMounted` 里调 `load()`，
+   * 而**提交路径**（`useMpMorningSign` 的 `submitMornSign`）直接 `get(pointId)` —— 用户刷新后直接进
+   * 「早操签到」页提交时，`zones` 还是空的 ⇒ **用户调好的落点分布/进场方向被静默忽略、按默认值提交**。
+   * 判据：**取配置的入口必须自己保证"已加载"**（懒加载），不能依赖"某个页面恰好先来过"。
+   */
+  const get = (pointId: string): MornSignZone => {
+    if (import.meta.client && !loaded.value) load()
+    return normalizeZone(zones.value[pointId] ?? DEFAULT_MORN_SIGN_ZONE)
+  }
 
   /** 存某点位的配置（归一化后存） */
   const set = (pointId: string, zone: Partial<MornSignZone>): boolean => {

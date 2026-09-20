@@ -55,6 +55,39 @@ if ($needBuild) {
     }
 }
 
+# ---- [0/7-b] 2026-09-20 audit fix: a STALE .output must force a rebuild ----
+# The structural check above only catches @vite/client / absolute paths. A .output left over from an
+# EARLIER build of the SAME version passes it, so editing sources and re-running `npm run sea` used to
+# repack the OLD code while only the version string looked right. Judgment: if any tracked source path
+# is newer than the client manifest, the output cannot have been built from these sources -> rebuild.
+if (-not $needBuild -and (Test-Path $manifestPath)) {
+    $manifestTime = (Get-Item $manifestPath).LastWriteTimeUtc
+    $watch = @('src', 'public', 'pages', 'components', 'composables', 'layouts', 'utils', 'server', 'plugins', 'app.vue', 'nuxt.config.ts', 'package.json')
+    $newest = $null
+    foreach ($rel in $watch) {
+        $p = Join-Path $root $rel
+        if (-not (Test-Path $p)) { continue }
+        $item = Get-Item $p
+        if ($item.PSIsContainer) {
+            $f = Get-ChildItem $p -Recurse -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+        } else { $f = $item }
+        if ($f -and (($newest -eq $null) -or ($f.LastWriteTimeUtc -gt $newest.LastWriteTimeUtc))) { $newest = $f }
+    }
+    if ($newest -and ($newest.LastWriteTimeUtc -gt $manifestTime)) {
+        Write-Host "[0/7-b] sources are NEWER than .output (newest: $($newest.Name) @ $($newest.LastWriteTimeUtc) > manifest @ $manifestTime) -> rebuilding to avoid shipping stale code"
+        $needBuild = $true
+        $nuxtDir = Join-Path $root '.nuxt'
+        if (Test-Path $nuxtDir) { Remove-Item $nuxtDir -Recurse -Force }
+        if (Test-Path $outputDir) { Remove-Item $outputDir -Recurse -Force }
+        & npm run build
+        if ($LASTEXITCODE -ne 0) { throw 'npm run build failed' }
+        $manifest3 = Get-Content $manifestPath -Raw -ErrorAction SilentlyContinue
+        if (-not $manifest3 -or ($manifest3 -match 'vite/client') -or ($manifest3 -match '[A-Za-z]:/')) {
+            throw 'client.manifest.mjs still contaminated (@vite/client / absolute paths). Stop the dev server and retry.'
+        }
+    }
+}
+
 # ---- [0.5] SPA content assertion: the .output MUST have been built from the CURRENT sources ----
 # 2026-09-18 incident: the [0/7] check above only detects a DIRECTORY-STRUCTURE problem
 # (@vite/client or absolute paths). A .output left over from an OLDER release passes that check, so
@@ -95,13 +128,19 @@ if (-not ($uniqEntries -contains $ver)) {
     # src/mp/releaseArt.ts (the build compiles it), and it is the very entry the developer had to add
     # alongside the version bump. A genuinely stale bundle (built before the bump) lacks both.
     if ($newer.Count -eq 0) {
-        throw "[0.5] .output has no release entry for version $ver and no entry newer than it => it is a STALE build (entries: [$($uniqEntries -join ', ')]). Delete .output and rebuild."
+        # 2026-09-20 audit fix: the old message only said "Delete .output and rebuild", which is WRONG for
+        # the "fresh dev round" case (deleting and rebuilding reproduces the same error). Name both causes.
+        throw "[0.5] .output has no release entry for version $ver and no entry newer than it. Cause (1): the output is STALE (built before your latest source change) => delete .output and rebuild. Cause (2): fresh dev round (package.json bumped to $ver but src/mp/releaseArt.ts has no $ver entry yet) => add a $ver entry (planned: true is fine during development) and rebuild. (entries in bundle: [$($uniqEntries -join ', ')])"
     }
     Write-Warning "[0.5] no entry for current dev version $ver (expected during development) - accepted because a newer entry exists: [$($newer -join ', ')]. If that newer entry is not a PLANNED one you added on purpose, the output is suspicious."
 } elseif ($newer.Count -gt 0) {
     Write-Warning "[0.5] .output also contains entries newer than $ver : [$($newer -join ', ')] - fine if those are PLANNED entries, otherwise the output is suspicious."
 }
-Write-Host "[0.5] SPA content OK: entry for $ver present. (versions in bundle: $($uniqEntries -join ', '))"
+# Only claim OK when the bundle really carries what we need (2026-09-20: this line used to print even on
+# the warning paths above, so the log contradicted the actual judgment).
+if (($uniqEntries -contains $ver) -or ($newer.Count -gt 0)) {
+    Write-Host "[0.5] SPA content OK: entry for $ver present. (versions in bundle: $($uniqEntries -join ', '))"
+}
 
 # ---- [0.6] version-art: keep ONLY the current version's image ----
 # User-facing rule: the version page only ever shows the CURRENT version's artwork, so older (and

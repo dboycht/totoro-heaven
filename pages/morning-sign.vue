@@ -165,7 +165,11 @@
         <v-card-actions>
           <v-spacer />
           <v-btn variant="text" @click="confirmOpen = false">取消</v-btn>
-          <v-btn color="primary" variant="flat" :loading="submitting" @click="doSubmit">确认提交</v-btn>
+          <!-- ⚠️ 2026-09-20 审计修复：`loading` 在 Vuetify 3 里**不会禁用按钮**（只置 aria-busy/tabindex=-1）
+               ⇒ 这是"会写服务端"的确认按钮，必须同时给 `:disabled`（跑步页的真实提交按钮就是这个写法）。 -->
+          <v-btn color="primary" variant="flat" :disabled="submitting" :loading="submitting" @click="doSubmit">
+            确认提交
+          </v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>

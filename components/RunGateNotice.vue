@@ -9,10 +9,11 @@
       class="mb-4"
     >
       <div class="font-weight-bold">🌙 夜间停用时段（22:30~06:00）</div>
-      <div class="text-body-2">
-        为避免不必要的麻烦，此时间段<b>已停止开跑与提交</b>（只读功能仍可用）。请在每天 <b>06:00 之后</b>再使用。
-      </div>
-      <div class="text-caption mt-1">{{ gateStatus.reason }}</div>
+      <!-- ⚠️ 2026-09-20 审计修复（口径自相矛盾）：这里原先硬编码"已停止**开跑与提交**"，
+           而夜间时段**只停真实提交**（本地模拟/预览照旧、开始跑步按钮此刻也是可点的），
+           同一页下面 `gateStatus.reason` 又写着"已停止真实提交…本地模拟与预览仍可正常使用" ⇒ 两句话打架。
+           现在**只保留 `nightBlockReason()` 这一个文案来源**（`utils/mp/schoolGate.ts`，其注释明确"不再写停止开跑"）。 -->
+      <div class="text-body-2">{{ gateStatus.reason }}</div>
     </v-alert>
 
     <v-alert v-if="!isLoggedIn" type="warning" variant="tonal" density="comfortable" class="mb-4">

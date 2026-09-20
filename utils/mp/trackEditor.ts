@@ -325,10 +325,11 @@ export function smoothClosedRing<T extends { latitude: number; longitude: number
   return out
 }
 
-/* ⚠️ 2026-09-19 删除两个**零引用**的导出：`laneStartIndex()`（东侧起跑点）与
-   `rotateLoop()`（按起点旋转车道线）。它们是早期"起跑点固定"方案留下的，后来起跑点由
-   `generateRoute.ts` 里的另一套逻辑决定，这两个函数**从未被任何地方引用**（grep 全仓仅声明处）。
-   删掉而不是留着：留着会让人误以为"起跑点由这里控制"，从而改错地方。 */
+/* ⚠️ 2026-09-19 删除过两个**当时**零引用的导出：`laneStartIndex()`（东侧起跑点）与一个早期的
+   `rotateLoop()`（"固定起跑点"方案留下的）。
+   ⚠️ **2026-09-20 更正**：`rotateLoop()` 在 1.1.12 的「起跑点」需求里**被重新实现并投入使用**
+   （见本文件下面的 `rotateLoop` / `applyStartToLoop`）—— **起跑点就是靠它按弧长旋转车道线落地的**。
+   所以别再按上面那句"起跑点由 generateRoute 决定"去改地方：**改起跑点只能改 `applyStartToLoop`**。 */
 
 // ---------------------------------------------------------------- 起跑点（2026-09-20，1.1.12 需求②）
 

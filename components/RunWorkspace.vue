@@ -551,7 +551,15 @@ const isBusy = computed(() => run.value.status === 'running' || run.value.status
  * 自己正在等待的那笔提交从界面上抹掉（数据不会写坏，但完全失去监督窗口）。
  * 所以"锁"必须**同时看两条轨道**。
  */
-const submitInFlight = computed(() => phase.value === 'waiting' || phase.value === 'submitting')
+/**
+ * "提交在途"判据（按钮 disabled / loading 共用）。
+ * ⚠️ 2026-09-20 审计修复：原先只判 `waiting|submitting`，**漏了 `begin`** ——
+ * `phase='begin'` 时正在 await `getRunBegin`（最长 15 s），那段时间按钮可点，
+ * 第二次点击会让服务端**建出两个场次**（`real/submit.ts` 的入口互斥已同步补上 `begin` 兜底）。
+ */
+const submitInFlight = computed(
+  () => phase.value === 'begin' || phase.value === 'waiting' || phase.value === 'submitting',
+)
 
 /** 载入演示数据（按需功能，不发任何请求） */
 const doEnableDemo = () => {

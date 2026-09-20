@@ -45,7 +45,14 @@ const ZIP = path.resolve(ROOT, argOf('zip', path.join('dist', `totoro-heaven-${T
  * 现在：默认路径 `dist/totoro-heaven-<tag>.7z`，**存在才上传**（老版本没有 7z 时行为不变）。
  */
 const SEVEN = path.resolve(ROOT, argOf('sevenZip', path.join('dist', `totoro-heaven-${TAG}.7z`)))
-const NOTES = path.resolve(ROOT, argOf('notes', path.join('dist', `release-notes-${TAG}.md`)))
+/**
+ * Release **正文**（= 更新日志）。
+ * ⚠️ 2026-09-20 审计修复：默认值原先是 `release-notes-<tag>.md`（**开发侧留档**，含"重要提示"抬头），
+ * 而项目惯例里"Release 说明 = 更新日志"那一份是 `release-body-<tag>.md` —— 走默认值就会发错文件；
+ * 更糟的是**缺文件时**原先静默退化成一行 `Release <tag>`，重跑时会把已发布的完整正文 PATCH 掉。
+ * 现在：默认取 `release-body-<tag>.md`，**文件不存在直接失败**（发布不该有"空正文"这种降级）。
+ */
+const NOTES = path.resolve(ROOT, argOf('notes', path.join('dist', `release-body-${TAG}.md`)))
 const TOKEN = process.env.GH_TOKEN || ''
 
 if (!TOKEN) {
@@ -56,6 +63,14 @@ if (!fs.existsSync(ZIP)) {
   console.error(`找不到发布附件：${ZIP}`)
   process.exit(1)
 }
+if (!fs.existsSync(NOTES)) {
+  console.error(
+    `找不到 Release 正文（更新日志）：${NOTES}\n` +
+      `  请先用 _mp-analyze/scratch/gen_release_materials.mjs 生成 dist/release-body-${TAG}.md（或显式传 --notes <文件>）。\n` +
+      '  拒绝用空/兜底正文发布：那会把 GitHub 上已有的更新日志覆盖成一行废话。',
+  )
+  process.exit(1)
+}
 
 /** 附件清单（顺序即上传顺序）；7z 不存在时自动跳过 */
 const ASSETS = [
@@ -63,7 +78,8 @@ const ASSETS = [
   ...(fs.existsSync(SEVEN) ? [{ path: SEVEN, contentType: 'application/x-7z-compressed' }] : []),
 ]
 
-const body = fs.existsSync(NOTES) ? fs.readFileSync(NOTES, 'utf8') : `Release ${TAG}`
+/** 正文已在上面强制校验存在（缺正文一律 exit 1，不做"兜底一行"的降级） */
+const body = fs.readFileSync(NOTES, 'utf8')
 
 /** 极简 https 请求封装（Node 内置，无第三方依赖） */
 function api(method, host, urlPath, payload, contentType = 'application/json') {
@@ -111,16 +127,22 @@ function api(method, host, urlPath, payload, contentType = 'application/json') {
 const apiHost = 'api.github.com'
 const uploadHost = 'uploads.github.com'
 
-/** 取或建 release（幂等） */
+/**
+ * 取或建 release（幂等）。
+ *
+ * ⚠️ 2026-09-20 审计修复（**先草稿、齐了再公开**）：原先创建时就 `draft:false`，
+ * 于是"zip 传成功、7z 传失败"会留下一个**已公开但缺附件**的 Release（用户点进去下载不到完整包，只能人工重跑）。
+ * 现在：新建时 `draft:true`，全部附件传完由 `publishRelease()` 转正；复用已存在的 release 时也先回草稿再转正。
+ */
 async function ensureRelease() {
   const existing = await api('GET', apiHost, `/repos/${REPO}/releases/tags/${encodeURIComponent(TAG)}`)
   if (existing.status === 200 && existing.json && existing.json.id) {
-    console.log(`release ${TAG} 已存在（id=${existing.json.id}），同步说明并复用`)
+    console.log(`release ${TAG} 已存在（id=${existing.json.id}），同步说明并复用（先转草稿，附件齐了再公开）`)
     const patched = await api('PATCH', apiHost, `/repos/${REPO}/releases/${existing.json.id}`, {
       name: TAG,
       body,
       prerelease: false,
-      draft: false,
+      draft: true,
     })
     if (patched.status >= 300) {
       console.error(`更新 release 失败：HTTP ${patched.status} ${patched.text.slice(0, 300)}`)
@@ -136,15 +158,31 @@ async function ensureRelease() {
     tag_name: TAG,
     name: TAG,
     body,
-    draft: false,
+    draft: true,
     prerelease: false,
   })
   if (created.status >= 300) {
     console.error(`创建 release 失败：HTTP ${created.status} ${created.text.slice(0, 300)}`)
     process.exit(1)
   }
-  console.log(`release ${TAG} 创建成功（id=${created.json.id}）`)
+  console.log(`release ${TAG} 已创建为草稿（id=${created.json.id}）—— 附件全部上传成功后再公开`)
   return created.json
+}
+
+/** 附件齐了 → 把草稿转成正式公开的 Release（draft:false） */
+async function publishRelease(releaseId) {
+  const res = await api('PATCH', apiHost, `/repos/${REPO}/releases/${releaseId}`, {
+    name: TAG,
+    body,
+    draft: false,
+    prerelease: false,
+  })
+  if (res.status >= 300) {
+    console.error(`公开 release 失败：HTTP ${res.status} ${res.text.slice(0, 300)}（附件已传好，可重跑本脚本）`)
+    process.exit(1)
+  }
+  console.log('  已转为正式公开（draft=false）')
+  return res.json
 }
 
 /** 上传附件（同名先删，保证可重跑）；逐个上传 ASSETS 里的每个文件 */
@@ -180,16 +218,19 @@ async function uploadAssets(releaseId) {
 async function main() {
   const release = await ensureRelease()
   const assets = await uploadAssets(release.id)
+  // 附件齐了才公开（2026-09-20 审计修复：避免"已公开但缺附件"的半成品）
+  const published = await publishRelease(release.id)
 
   console.log('\n=== 发布完成 ===')
-  console.log(`tag        : ${release.tag_name}`)
-  console.log(`name       : ${release.name}`)
-  console.log(`release id : ${release.id}`)
+  console.log(`tag        : ${published.tag_name}`)
+  console.log(`name       : ${published.name}`)
+  console.log(`release id : ${published.id}`)
+  console.log(`draft      : ${published.draft}（应为 false）`)
   for (const asset of assets) {
     console.log(`asset      : ${asset.name} (${asset.size} bytes)`)
     if (asset.digest) console.log(`  digest   : ${asset.digest}`)
   }
-  console.log(`页面       : ${release.html_url}`)
+  console.log(`页面       : ${published.html_url}`)
 }
 
 // ⚠️ .cjs 是 CommonJS：**不能**用顶层 await，必须包在 async main 里
