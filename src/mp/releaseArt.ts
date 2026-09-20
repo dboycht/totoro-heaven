@@ -96,7 +96,13 @@ export const VERSION_ENTRIES: VersionEntry[] = [
   },
   {
     version: '1.1.10',
-    date: '2026-09-18',
+    /**
+     * ⚠️ 2026-09-20 修正：原写 `2026-09-18`，但 GitHub Release 的 `published_at` 是
+     * `2026-09-18T16:12:48Z` ⇒ **本机日期是 2026-09-19**（它比 1.1.9 晚约 3.5 小时、跨过了本地零点）。
+     * 判据（基本规则 12）：**已发布版本的日期一律以 Release `published_at` 转本地日期为准**；
+     * 由 `_mp-analyze/scratch/verify_version_dates.mjs` 逐条核对（它就是这样抓到的）。
+     */
+    date: '2026-09-19',
     channel: 'preview',
     title: '只跑你自己描的跑道 + 「恢复」真正能重建会话',
     highlights: [
