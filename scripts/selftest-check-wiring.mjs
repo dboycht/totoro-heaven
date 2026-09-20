@@ -37,6 +37,9 @@ const NEEDED = [
   'pages/run.vue',
   'pages/index.vue',
   'pages/records.vue',
+  // ⚠️ 2026-09-20（导航分组重构）：页面内容被抽成组件、页面变成薄页面
+  //    ⇒ 检查器/注入要读的"真正内容"在组件里，副本必须带上（否则注入改不到东西、自测报"找不到"）。
+  'components/RecordsView.vue',
   'utils/mp/submitPayload.ts',
   'utils/mp/runData.ts',
   'src/mp/envelope.ts',
@@ -264,13 +267,19 @@ try {
   // ---------- 注入 11：提示函数退回"各自内联声明"的字符串注入键（1.1.9 的 useNotice 契约）----------
   {
     const dir = copyBase()
-    const file = join(dir, 'pages/records.vue')
+    /**
+     * ⚠️ 2026-09-20（导航分组重构）：`useNotice()` 的调用点已从 `pages/records.vue`
+     * **搬进组件** `components/RecordsView.vue`（页面变成薄页面）。注入必须改**真正含该行**的文件，
+     * 否则 `injected === text` ⇒ 什么也没注入 ⇒ 自测报"守卫失效"（CI 就挂在这里）。
+     * 判据：**注入的目标要跟着"内容搬去哪"走**；搬完内容记得同步自测的清单与注入点。
+     */
+    const file = join(dir, 'components/RecordsView.vue')
     const text = readFileSync(file, 'utf8')
     const injected = text.replace(
       'const showSnackbar = useNotice()',
       "const showSnackbar = inject<(msg: string, color?: string) => void>('showSnackbar', () => {})",
     )
-    if (injected === text) failures.push('注入 11：pages/records.vue 里找不到 `const showSnackbar = useNotice()`（自测需同步更新）')
+    if (injected === text) failures.push('注入 11：components/RecordsView.vue 里找不到 `const showSnackbar = useNotice()`（自测需同步更新）')
     writeFileSync(file, injected, 'utf8')
     const { code, out } = run(dir)
     if (code === 0) failures.push("页面退回 `inject('showSnackbar')` 但检查器仍然通过（单一契约守卫失效）")
