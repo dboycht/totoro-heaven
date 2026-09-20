@@ -16,6 +16,7 @@
  * 本文件只做"拼字段 / 判窗口 / 判结果"三件纯事，**不发起任何请求**（发请求在 `utils/mp/mornSignSubmit.ts`）。
  */
 import type { MpMornSignPoint, MpMornSignTask } from '~/src/mp/types'
+import { sampleZoneCoord, type MornSignZone } from './mornSignZone'
 
 /** 提交载荷（16 字段，逐字段对齐厂商真包口径） */
 export interface MornSignSubmitPayload {
@@ -190,9 +191,10 @@ export function jitterCoord(
  *    （16 字段里只有 `taskId` 来自点位；`signType` 恒为厂商真包里的 `'0'`），
  *    留着会让调用方误以为"任务会影响报文"，测试还得专门传个假 task 来证明它被忽略。
  *
- * ⚠️ 2026-09-20：坐标改为**在服务端下发的点位坐标上做 ≤5 m 的随机抖动**（`jitterRadiusM`，
- *    传 0 可关闭）—— 理由见 `COORD_JITTER_RADIUS_M` 的注释（去掉"逐位相同"这个程序痕迹）。
- *    **注意**：抖动不改变任何"点位标识"字段（`taskId`/`pointId`/`qrCode` 一律原样）。
+ * ⚠️ 2026-09-20：坐标生成分两条路（**点位标识字段一律原样**）：
+ *    ① 传了 `zone` ⇒ 走 `utils/mp/mornSignZone.ts` 的 `sampleZoneCoord`
+ *       （"走到圈里、停在偏内位置" + GPS 噪声，且**绝不越出 `serverRadiusM` 围栏**）；
+ *    ② 没传 `zone` ⇒ 退回旧的 ≤`jitterRadiusM` 圆盘抖动（`jitterRadiusM=0` 可完全关闭）。
  */
 export function buildMornSignPayload(input: {
   point: MpMornSignPoint
@@ -201,10 +203,14 @@ export function buildMornSignPayload(input: {
   nowMs?: number
   /** 浏览器/系统 UA（上游用它填 phoneInfo；缺省给一个 Windows 串） */
   phoneInfo?: string
-  /** 坐标随机抖动半径（米）；缺省 `COORD_JITTER_RADIUS_M`，传 0 关闭 */
+  /** 坐标随机抖动半径（米）；缺省 `COORD_JITTER_RADIUS_M`，传 0 关闭。传了 `zone` 时**忽略本项** */
   jitterRadiusM?: number
   /** 随机数源（测试注入） */
   rand?: () => number
+  /** 签到区域配置（每个点位一份；传了就优先生效） */
+  zone?: Partial<MornSignZone> | null
+  /** 服务端下发的围栏半径（`offsetRange`，米）；`zone.radiusM=null` 时用它 */
+  serverRadiusM?: number | null
 }): MornSignSubmitPayload {
   const { point, snCode, token } = input
   if (!point.taskId || !point.latitude || !point.longitude || !point.qrCode) {
@@ -212,8 +218,11 @@ export function buildMornSignPayload(input: {
   }
   if (!snCode) throw new Error('缺少学号（snCode）')
   if (!token) throw new Error('缺少 token')
-  const radius = input.jitterRadiusM ?? COORD_JITTER_RADIUS_M
-  const jittered = jitterCoord(point.latitude, point.longitude, radius, input.rand)
+  const rand = input.rand ?? Math.random
+  // ① 有区域配置 ⇒ 用区域采样；否则退回圆盘抖动
+  const coord = input.zone
+    ? sampleZoneCoord(point.latitude, point.longitude, input.serverRadiusM ?? null, input.zone, rand)
+    : jitterCoord(point.latitude, point.longitude, input.jitterRadiusM ?? COORD_JITTER_RADIUS_M, rand)
   return {
     taskId: point.taskId,
     iLocalSubmit: '0',
@@ -224,8 +233,8 @@ export function buildMornSignPayload(input: {
     qrCode: String(point.qrCode),
     headImage: '',
     baseStation: '',
-    longitude: jittered.longitude,
-    latitude: jittered.latitude,
+    longitude: coord.longitude,
+    latitude: coord.latitude,
     phoneInfo: String(input.phoneInfo || 'microsoft&microsoft&Windows 11 x64').slice(0, 512),
     mac: '',
     pointId: point.pointId,

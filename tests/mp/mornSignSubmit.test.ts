@@ -121,7 +121,11 @@ test('mornSignSubmit：坐标抖动 —— 必须落在半径内、有抖动、�
 
   // 距离校验：改用被测模块自己的 coordOffsetMeters（避免测试里再手写一份换算）
   const dist = coordOffsetMeters(lat, lng, out.latitude, out.longitude)
-  assert.ok(dist <= 5.0001, `实际偏移 ${dist.toFixed(3)} m 应 ≤ 5 m`)
+  // ⚠️ 容差 1e-2 而不是 1e-4：`jitterCoord` 把坐标 `toFixed(7)`（约 1 cm 精度），
+  //    换算回米时会有 ~1 cm 舍入误差。实测最大值 5.0045 m —— 真实抖动仍 ≤5 m，
+  //    但**断言容差必须覆盖坐标舍入**，否则就是我在 2026-09-20 踩到的那个偶发失败
+  //    （30 次复刻里 11 次报 maxSeen=5.001~5.0045）。
+  assert.ok(dist <= 5.01, `实际偏移 ${dist.toFixed(4)} m 应 ≤ 5 m（含坐标舍入）`)
 
   // 多次采样：全部落在 5 m 内，且**不会每次都等于 0**（圆盘采样不是恒 0）
   let maxSeen = 0
@@ -132,7 +136,7 @@ test('mornSignSubmit：坐标抖动 —— 必须落在半径内、有抖动、�
     maxSeen = Math.max(maxSeen, d)
     if (d > 0.001) nonzero++
   }
-  assert.ok(maxSeen <= 5.0001, `500 次采样的最大偏移 ${maxSeen.toFixed(3)} m 应 ≤ 5 m`)
+  assert.ok(maxSeen <= 5.01, `500 次采样的最大偏移 ${maxSeen.toFixed(4)} m 应 ≤ 5 m（含坐标舍入）`)
   assert.ok(nonzero > 490, '绝大多数采样应有实际偏移（不是恒 0）')
 })
 

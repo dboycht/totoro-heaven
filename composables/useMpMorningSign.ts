@@ -114,6 +114,11 @@ export function useMpMorningSign() {
 
     submitting.value = true
     try {
+      /**
+       * 带上该点位的**签到区域配置**（「签到区域编辑」页设置的；没有则服务端用默认圆盘抖动）。
+       * ⚠️ 配置只影响**坐标**的生成方式；点位标识（taskId/pointId/qrCode）由服务端从任务里取，**一律原样**。
+       */
+      const zone = useMornSignZone().get(pointId)
       const res = await $fetch<{
         ok: boolean
         accepted: boolean
@@ -123,7 +128,7 @@ export function useMpMorningSign() {
         signDate?: string
       }>('/api/local/mornsign-submit', {
         method: 'POST',
-        body: { snCode: sn, token: t, pointId, phoneInfo: navigator?.userAgent },
+        body: { snCode: sn, token: t, pointId, phoneInfo: navigator?.userAgent, zone },
       })
       logInfo('real', '早操签到提交结果', {
         accepted: res.accepted,

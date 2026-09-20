@@ -17,6 +17,9 @@
       <v-btn to="/morning-sign" variant="text" prepend-icon="mdi-clock-check-outline" class="text-none">
         早操签到
       </v-btn>
+      <v-btn to="/mornsign-zone" variant="text" prepend-icon="mdi-map-marker-radius-outline" class="text-none">
+        签到区域
+      </v-btn>
       <v-btn to="/track-editor" variant="text" prepend-icon="mdi-vector-polyline" class="text-none">跑道编辑</v-btn>
       <v-btn to="/records" variant="text" prepend-icon="mdi-format-list-bulleted" class="text-none">记录</v-btn>
       <v-btn to="/logs" variant="text" prepend-icon="mdi-text-box-search-outline" class="text-none">日志</v-btn>

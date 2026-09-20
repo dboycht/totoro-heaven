@@ -70,6 +70,8 @@ export default defineEventHandler(async (event) => {
     token?: string
     pointId?: string
     phoneInfo?: string
+    /** 签到区域配置（每个点位一份，来自「签到区域编辑」页）；不传则退回默认圆盘抖动 */
+    zone?: Record<string, unknown> | null
   }
   const snCode = String(body?.snCode ?? '').trim()
   const token = String(body?.token ?? '').trim()
@@ -117,14 +119,19 @@ export default defineEventHandler(async (event) => {
   }
 
   // ② 组装 16 字段（缺四要素会在这里抛错）
-  // ⚠️ 坐标会做 ≤`COORD_JITTER_RADIUS_M`（默认 5 m）的随机抖动 —— 理由见 `mornSignSubmit.ts`：
-  //    真手机定位必有抖动，把服务端下发的坐标**逐位原样回传**是最典型的程序痕迹。
-  //    **点位标识字段（taskId/pointId/qrCode）一律原样**，抖动只作用于坐标。
+  // ⚠️ 坐标生成两条路（见 `mornSignSubmit.ts` 注释）：
+  //    ① 客户端从「签到区域编辑」带了该点位的 `zone` ⇒ 走 `sampleZoneCoord`
+  //       （"走到圈里、停在偏内位置" + GPS 噪声，**绝不越出服务端 offsetRange 围栏**）；
+  //    ② 没带 ⇒ 退回旧的 ≤5 m 圆盘抖动。
+  //    **点位标识字段（taskId/pointId/qrCode）一律原样**。
+  const serverRadiusM = Number(task.offsetRange) > 0 ? Number(task.offsetRange) : null
   const payload = buildMornSignPayload({
     point,
     snCode,
     token,
     phoneInfo: body?.phoneInfo,
+    zone: (body?.zone ?? null) as never,
+    serverRadiusM,
   })
 
   // ③ 加密（唯一使用加密参的端点）
@@ -136,7 +143,9 @@ export default defineEventHandler(async (event) => {
     pointName: point.pointName,
     signDate: payload.signDate,
     coordOffsetM: Number(offsetM.toFixed(2)),
-    coordJitterRadiusM: COORD_JITTER_RADIUS_M,
+    coordMode: body?.zone ? 'zone' : 'jitter',
+    coordJitterRadiusM: body?.zone ? undefined : COORD_JITTER_RADIUS_M,
+    serverRadiusM: serverRadiusM ?? undefined,
     payloadBytes: Buffer.byteLength(JSON.stringify(payload), 'utf8'),
     cipherB64Len: encryptParams.length,
   })
