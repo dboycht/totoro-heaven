@@ -8,9 +8,10 @@
       </v-app-bar-title>
 
       <v-btn to="/" variant="text" prepend-icon="mdi-home-outline" class="text-none">工作台</v-btn>
-      <!-- 2026-09-18：阳光跑 / 自由跑 拆成两个独立标签（各自 URL），早操签到独立成项 -->
-      <v-btn to="/run" variant="text" prepend-icon="mdi-white-balance-sunny" class="text-none">阳光跑</v-btn>
-      <v-btn to="/freerun" variant="text" prepend-icon="mdi-run" class="text-none">自由跑</v-btn>
+      <!-- 2026-09-20（用户要求）：阳光跑 / 自由跑 合并成一个「跑步」分组，
+           组内两个小标签各有独立 URL（`/runs/sunrun`、`/runs/freerun`），
+           旧地址 `/run`、`/freerun` 保留为跳转 ⇒ 旧书签不失效。 -->
+      <v-btn to="/runs" variant="text" prepend-icon="mdi-run-fast" class="text-none">跑步</v-btn>
       <!-- 早操签到：**常驻显示**（用户 2026-09-18 明确要求）。
            页面自身会按服务端返回区分"需要签到 / 本学校无需签到"，所以不需要靠导航项隐藏来避嫌；
            常驻的好处是需要签到的大一同学**一眼就能看到这个入口**（不必先读一次真实数据才现身）。 -->

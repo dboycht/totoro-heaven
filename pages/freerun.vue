@@ -1,15 +1,19 @@
 <template>
-  <RunWorkspace />
+  <!-- 旧路由保留：只做跳转，不渲染内容（见 script 里的说明） -->
+  <div />
 </template>
 
 <script setup lang="ts">
 /**
- * 「自由跑」标签页（2026-09-18 新增）。
+ * 旧路由「自由跑」→ `/runs/freerun`（2026-09-20 跑步分组重构）
  *
- * - 与「阳光跑」共用同一个引擎组件 components/RunWorkspace.vue，本文件只声明"这是自由跑这个标签"；
- * - 提交口径：runType=1 + 不带任务号 + 不发路径点明细（厂商源码口径，见 utils/mp/submitPayload.ts）；
- * - 本地附加约束（用户要求"自由跑也要保证线路稳健性"）：仍要求已为当前任务描过跑道，
- *   轨迹走你自己描的几何，不用官方模板。详见 RunWorkspace 里 canStart 的注释。
+ * 分组后阳光跑/自由跑成为「跑步」下的两个小标签（各自独立 URL）。
+ * 旧地址保留**跳转**而不是删掉：用户可能已有书签或手输过 URL，删掉会变成 404。
+ * `replace: true` ⇒ 不在历史里留这一跳，否则点后退会在旧地址与新地址之间来回弹。
  */
+onMounted(() => {
+  void navigateTo('/runs/freerun', { replace: true })
+})
+
 useHead({ title: '自由跑 · 龙猫天堂' })
 </script>

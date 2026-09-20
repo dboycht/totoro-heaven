@@ -1,14 +1,19 @@
 <template>
-  <RunWorkspace />
+  <!-- 旧路由保留：只做跳转，不渲染内容（见 script 里的说明） -->
+  <div />
 </template>
 
 <script setup lang="ts">
 /**
- * 「阳光跑」标签页（2026-09-18 起与「自由跑」拆成两个独立标签、各自有 URL）。
+ * 旧路由「阳光跑」→ `/runs/sunrun`（2026-09-20 跑步分组重构）
  *
- * 两者共用同一个引擎组件 components/RunWorkspace.vue（跑步机状态本来就是跨页面共享的 useState），
- * 拆成两份页面会让「等待 / 提交 / 自检」这些逻辑立刻漂移，所以这里只负责路由与标题。
- * 当前标签由 URL 决定：/run = 阳光跑，/freerun = 自由跑。
+ * 分组后阳光跑/自由跑成为「跑步」下的两个小标签（各自独立 URL）。
+ * 旧地址保留**跳转**而不是删掉：用户可能已有书签或手输过 URL，删掉会变成 404。
+ * `replace: true` ⇒ 不在历史里留这一跳，否则点后退会在旧地址与新地址之间来回弹。
  */
+onMounted(() => {
+  void navigateTo('/runs/sunrun', { replace: true })
+})
+
 useHead({ title: '阳光跑 · 龙猫天堂' })
 </script>

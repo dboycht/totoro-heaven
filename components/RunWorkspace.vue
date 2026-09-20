@@ -40,42 +40,44 @@
         <v-card height="100%">
           <v-card-title class="text-subtitle-1">开跑设置</v-card-title>
           <v-card-text>
-            <!-- ⚠️ 2026-09-19：**删掉卡内的「阳光跑 / 自由跑」标签条** —— 顶部导航已经是两个独立入口
-                 （`/run` 与 `/freerun`），卡内再来一份就是**重复元素**（用户指出）。
-                 当前跑法由 URL 决定（`tabRunType`），下面用一行"当前模式"代替，只做**说明**不做切换。 -->
-            <div class="d-flex align-center ga-2 mb-2">
+            <!-- 当前跑法由 URL（分组内的小标签）决定：只做**说明**，切换用上方标签或顶部导航 -->
+            <div class="d-flex align-center flex-wrap ga-2 mb-2">
               <v-icon size="small" color="primary">{{ isFreeRun ? 'mdi-run' : 'mdi-white-balance-sunny' }}</v-icon>
-              <span class="text-body-2 font-weight-bold">当前模式：{{ isFreeRun ? '自由跑' : '阳光跑' }}</span>
-              <span class="text-caption text-medium-emphasis">（切换请用顶部导航）</span>
+              <!-- ⚠️ 用 `text-no-wrap`：此前"当前模式：自由跑"在窄列里被拆成两行（"自由/跑"），很难看 -->
+              <span class="text-body-2 font-weight-bold text-no-wrap">当前模式：{{ isFreeRun ? '自由跑' : '阳光跑' }}</span>
+              <span class="text-caption text-medium-emphasis">（切换用上方标签）</span>
             </div>
 
-            <!-- ⚠️ 自由跑**不对应任何线路**（2026-09-18 按厂商源码落地）：
-                 厂商在自由跑时 `0==runType && (取线路)` 根本不执行 ⇒ paperId/lineId 都是空串，
-                 也不需要打卡/自查那三项开关校验。所以这里**隐藏线路选择**，只给一句形状说明。 -->
+            <!-- ⚠️ 自由跑的**提交口径**（2026-09-18 按厂商源码落地，**不能改**）：
+                 厂商在自由跑时 `0==runType && (取线路)` 根本不执行 ⇒ paperId/lineId 都是空串、
+                 不带任务号、也不需要打卡/自查那三项开关校验。
+                 ⚠️ 但**本机生成轨迹仍要一条几何**（且只允许用你自己描的跑道，见 runner.start 的注释），
+                 所以 2026-09-20 起自由跑**也能选线路** —— 选的只是"本地用哪条几何"，
+                 **提交报文里依旧不带 lineId/paperId**（`buildScoreRequest` 的 freeRun 分支强制为空，
+                 与此处的选择无关；有单测钉住这一点）。 -->
             <v-alert v-if="isFreeRun" type="info" variant="tonal" density="compact" class="mb-2">
-              自由跑<b>不选线路、不带任务号、不校验打卡开关</b>（与小程序一致）——但本机仍<b>要求你已为当前任务描过跑道</b>
-              （自由跑也走你自己描的几何，避免用官方模板跑出十几米的偏差）；到里程上限或你点「结束并结算」即止；
-              <b>它不计入阳光跑成绩</b>。
+              自由跑<b>不带任务号、不校验打卡开关、不计入阳光跑成绩</b>（与小程序一致）。
+              下面选的线路<b>只决定本机用哪条几何生成轨迹</b>（仍然只允许用你自己描过的跑道），
+              <b>不会</b>被写进提交报文 —— 提交时线路标识一律为空。
+              到里程上限或你点「结束并结算」即止。
             </v-alert>
-            <template v-else>
-              <v-select
-                v-model="run.lineId"
-                :items="lineItems"
-                item-title="title"
-                item-value="value"
-                label="线路（按校区自动分组，本校区优先）"
-                density="comfortable"
-                :disabled="isBusy"
-                class="mb-2"
-              />
-              <!-- 跨校区提示：选了别的校区的线路（按坐标判定，不看名称） -->
-              <v-alert v-if="crossCampusWarning" type="warning" variant="tonal" density="compact" class="mb-2">
-                {{ crossCampusWarning }}
-              </v-alert>
-              <div v-if="routeGroups.clusters.length > 1" class="text-caption text-medium-emphasis mb-2">
-                {{ routeGroups.note }}
-              </div>
-            </template>
+            <v-select
+              v-model="run.lineId"
+              :items="lineItems"
+              item-title="title"
+              item-value="value"
+              :label="isFreeRun ? '线路（只影响本地轨迹几何）' : '线路（按校区自动分组，本校区优先）'"
+              density="comfortable"
+              :disabled="isBusy"
+              class="mb-2"
+            />
+            <!-- 跨校区提示：选了别的校区的线路（按坐标判定，不看名称） -->
+            <v-alert v-if="crossCampusWarning" type="warning" variant="tonal" density="compact" class="mb-2">
+              {{ crossCampusWarning }}
+            </v-alert>
+            <div v-if="routeGroups.clusters.length > 1" class="text-caption text-medium-emphasis mb-2">
+              {{ routeGroups.note }}
+            </div>
             <v-select
               v-model="run.speed"
               :items="speedItems"
@@ -158,12 +160,13 @@
       <v-alert v-else-if="activeLinesRaw.length" type="warning" variant="tonal" density="compact" class="mt-3">
         <div class="font-weight-bold">还没有可用的跑道：请先描一条。</div>
         <div class="text-body-2 mt-1">
-          本版<b>只会用你自己描的跑道</b>生成轨迹（官方模板偏差十几米，不再作为生成基准）。
-          去「<b>跑道编辑</b>」选一条线路 → 「快速定位」→ 沿卫星图描外圈 → 「按外圈自动生成内圈」→ 保存（本机）。
+          本版<b>只会用你自己描的跑道</b>生成轨迹（官方模板偏差十几米，不再作为生成基准）——
+          <b>阳光跑与自由跑都是这个口径</b>。
+          去「<b>我的场地 → 跑道编辑</b>」选一条线路 → 「快速定位」→ 沿卫星图描外圈 → 「按外圈自动生成内圈」→ 保存（本机）。
           保存后回到本页，这条线路就会出现在下面的下拉框里。
         </div>
         <div class="mt-2">
-          <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-vector-polyline" to="/track-editor">
+          <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-vector-polyline" to="/field/track-editor">
             去「跑道编辑」描一条
           </v-btn>
         </div>
@@ -438,14 +441,18 @@ const libEntriesNotForTask = computed(() => libTotal.value > 0 && configuredForT
 const isFreeRun = computed(() => run.value.runType !== 0)
 
 /**
- * **标签页按 URL 绑定**（2026-09-18）：`/run` = 阳光跑，`/freerun` = 自由跑。
+ * **标签页按 URL 绑定**：阳光跑与自由跑是同一个分组（「跑步」）里的两个小标签，各自有独立 URL。
  *
- * 为什么这么做：用户要求"自由跑和签到分别做成两个标签页"，而两者**共用同一套跑步引擎与跑步机状态**
- * （`useMpDemo().run` 是跨页面共享的 `useState`）——如果复制成两份页面，逻辑会立刻漂移。
- * 所以用"两个真实路由 + 同一个引擎"：导航/浏览器后退都能正确落在对应标签，代码只有一份。
+ * 为什么这么做：两者**共用同一套跑步引擎与跑步机状态**（`useMpDemo().run` 是跨页面共享的 `useState`）
+ * —— 如果复制成两份页面，逻辑会立刻漂移。所以用"两个真实路由 + 同一个引擎"。
+ *
+ * ⚠️ 2026-09-20 分组重构：路由从 `/run` + `/freerun` 改为 **`/runs/sunrun` + `/runs/freerun`**
+ *    （旧 URL 保留为跳转）。**这里不能再靠固定字符串判断**，改成"看路由最后一段"，
+ *    这样分组/改名都不会再失效（判据：**路由判定要读"末段 / 参数"，不要 `startsWith('/某个固定前缀')`**）。
  */
 const route = useRoute()
-const isFreeTab = computed(() => route.path.startsWith('/freerun'))
+const runTab = computed(() => String(route.path ?? '').split('/').filter(Boolean).pop() ?? 'sunrun')
+const isFreeTab = computed(() => runTab.value === 'freerun')
 /** 当前标签对应的**提交口径**（0 阳光跑 / 1 自由跑）—— 这是唯一权威来源 */
 const tabRunType = computed<0 | 1>(() => (isFreeTab.value ? 1 : 0))
 /** 正在跑/暂停时不允许改口径（会污染进行中的那一笔） */
@@ -479,7 +486,12 @@ const doStart = () => {
  *   厂商的自由跑 `paperId`/`lineId` 都是空串、**不取线路**（见 `utils/mp/submitPayload.ts` 的注释），
  *   所以"必须描过跑道"**不是厂商要求**，而是**我们本地为了轨迹质量加的约束** ——
  *   自由跑若不描，就只能拿官方模板当形状（偏差十几到几十米），用户要的是"稳健"。
- *   提交口径不变：自由跑依旧 `runType=1` + 不带任务号 + 不发路径点明细。
+ *
+ * ⚠️ 2026-09-20 补充（用户要求"自由跑也要选择路径"）：自由跑现在**也会显示线路下拉**，
+ *   但它选的是**本地生成轨迹用哪条几何**，**不是**提交用的线路标识 ——
+ *   提交口径**一个字都没变**：自由跑依旧 `runType=1` + 不带任务号 + `paperId`/`lineId` 为空串 +
+ *   不发路径点明细（由 `buildScoreRequest` 的 freeRun 分支强制，且有单测钉住）。
+ *   判据：**"选线路"这件事只允许影响本地几何；任何把 UI 上的线路选择带进自由跑报文的改动都是错的。**
  */
 const canStart = computed(() => configuredForTask.value > 0)
 const isBusy = computed(() => run.value.status === 'running' || run.value.status === 'paused')

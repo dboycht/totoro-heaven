@@ -119,8 +119,8 @@
               <li>提交那一刻会<b>真实等待</b>报备时长（保证时间线一致），完成后自动读判定</li>
             </ol>
             <div class="d-flex flex-column ga-2">
-              <v-btn color="primary" block prepend-icon="mdi-run" :disabled="!isLoggedIn && !demoMode" to="/run">进入阳光跑</v-btn>
-              <v-btn color="secondary" block variant="tonal" prepend-icon="mdi-format-list-bulleted" to="/records">
+              <v-btn color="primary" block prepend-icon="mdi-run" :disabled="!isLoggedIn && !demoMode" to="/runs/sunrun">进入阳光跑</v-btn>
+              <v-btn color="secondary" block variant="tonal" prepend-icon="mdi-format-list-bulleted" to="/data/records">
                 查看记录
               </v-btn>
             </div>
