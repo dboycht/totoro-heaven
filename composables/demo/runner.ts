@@ -145,7 +145,9 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
       //    （随机一道 + 缓慢换道，按弧长），这样跑出来是**真跑道的形状**；
       //    没配置则回退官方路线。⚠️ `officialRoute` 始终是**厂商模板** —— 拟合度必须按它算
       //    （服务端就是按它算），两者不能混。
-      //    ℹ️ 自由跑没有线路 ⇒ 直接用官方模板当形状参考（描过就跑你描的车道线，等同"本地自由跑"）。
+      //    ℹ️（2026-09-20 更正）**自由跑现在也要选线路**（用户要求）——本函数对两种跑法一视同仁：
+      //       都用 `run.lineId` 从"本机描过的线路"里挑几何。原先这里写着"自由跑没有线路 ⇒ 直接用官方模板"，
+      //       那句在 2026-09-18 收紧"只允许描过的跑道"之后就已经不成立了，容易误导，故删除。
       const trackEntry = line ? lib.get(line.pointId) : undefined
       let geometry: { latitude: number | string; longitude: number | string }[] = line?.pointList ?? []
       if (trackEntry && trackEntry.outer.length >= 3 && trackEntry.inner.length >= 3) {
