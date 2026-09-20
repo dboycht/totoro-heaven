@@ -12,14 +12,14 @@
  */
 import { calculateRouteSimilarity } from '~/utils/mp/routeSimilarity'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
-import { laneLoop, laneRatioFor } from '~/utils/mp/trackEditor'
+import { applyStartToLoop, laneLoop, laneRatioFor } from '~/utils/mp/trackEditor'
 import { buildRunStats, buildTimeFields } from '~/utils/mp/runData'
 import { buildScoreDetailRequest, buildScoreRequest } from '~/utils/mp/submitPayload'
 import { evaluateRunAgainstTask, type TaskCheckResult } from '~/utils/mp/taskRules'
 import { newRunSeed, planRealisticRun, type RunPlan } from '~/utils/mp/realism'
 import { toSubmitRunType, type MpScoreDetailRequest, type MpScoreRequest } from '~/src/mp/types'
 import { DEMO_PASS_POINTS, demoScantronId } from '~/src/mp/demo'
-import { DEMO_STEP_M, FREE_RUN_CAP_KM, REAL_STEP_M, TICK_MS, createRunState, type DemoStateApi } from './state'
+import { DEMO_STEP_M, REAL_STEP_M, TICK_MS, createRunState, type DemoStateApi } from './state'
 import type { DemoRecordsApi } from './records'
 
 /** 跑步计时器放在模块级：整个应用只有一个（多个组件调用 useMpDemo 不会各起一个） */
@@ -27,7 +27,7 @@ let timer: ReturnType<typeof setInterval> | null = null
 let lastFitAt = 0
 
 export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
-  const { demoMode, task, lines, run, session } = state
+  const { demoMode, task, lines, run, session, freeRunKm } = state
   const { records, persistRecords } = recordsApi
   /** 本地路线库（在"跑道编辑"里配置的内外圈）—— 必须在这里（setup 期）取，不能在 start() 里取 */
   const lib = useTrackLibrary()
@@ -131,11 +131,17 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
             seed: newRunSeed(),
           })
         : {
-            targetKm: FREE_RUN_CAP_KM,
-          paceSecPerKm: run.value.paceSecPerKm,
-          overshootRatio: 0,
-          durationSeconds: 0,
-        }
+            /**
+             * 🆕 2026-09-20（1.1.12 需求①）：自由跑的里程**不再是写死的上限**，而是用户在
+             * 「开跑设置」里设的目标距离（`freeRunKm`，0.5~42.2 km，已归一化）。
+             * ⚠️ 它只决定"本地生成多长的轨迹"，不影响提交口径（自由跑仍 `runType=1`、
+             *    不带任务号、不发路径点明细 —— 见 submitPayload 的 freeRun 分支）。
+             */
+            targetKm: freeRunKm.value,
+            paceSecPerKm: run.value.paceSecPerKm,
+            overshootRatio: 0,
+            durationSeconds: 0,
+          }
 
     try {
       // 演示用 20m 采样（点少、页面轻）；真实模式用 3m（≈1Hz GPS，与真实提交口径一致）
@@ -153,10 +159,18 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
       if (trackEntry && trackEntry.outer.length >= 3 && trackEntry.inner.length >= 3) {
         // ⚠️ **按这条本地路线里存的"所选道次"**生成 —— 不再随机、不再换道
         //    （2026-09-17 用户确认："缓慢换道"就是车道线看着乱的根因，已删除该功能）
-        geometry = laneLoop(
-          { outer: trackEntry.outer, inner: trackEntry.inner },
-          laneRatioFor(trackEntry.laneNo ?? 3, trackEntry.laneCount ?? 6),
-          240,
+        //
+        // 🆕 2026-09-20（1.1.12 需求②）：再套一层**起跑点/绕向**变换（唯一入口
+        //    `applyStartToLoop`）—— 生成器永远从几何第 0 点起跑，所以"起跑点"在数据上就是
+        //    "按弧长旋转 + 必要时反向"。老数据没有 `start` ⇒ `rotateLoop(loop, 0)` 原样返回，
+        //    **逐点与旧版一致**（有单测钉住这条回归保证）。
+        geometry = applyStartToLoop(
+          laneLoop(
+            { outer: trackEntry.outer, inner: trackEntry.inner },
+            laneRatioFor(trackEntry.laneNo ?? 3, trackEntry.laneCount ?? 6),
+            240,
+          ),
+          trackEntry.start ?? null,
         )
       }
       const generated = generateCorridorRoute(geometry, {

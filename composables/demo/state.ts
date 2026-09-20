@@ -25,6 +25,7 @@ import type { MpRunLine, MpScoreDetailRequest, MpScoreRequest, MpSunrunTask } fr
 import type { LatLng } from '~/utils/mp/routeSimilarity'
 import type { RunPlan } from '~/utils/mp/realism'
 import type { TaskCheckResult } from '~/utils/mp/taskRules'
+import { FREE_RUN_KM_DEFAULT, FREE_RUN_KM_KEY, clampFreeRunKm, parseStoredFreeRunKm } from '~/utils/mp/freeRun'
 import { DEMO_LINES, DEMO_TASK } from '~/src/mp/demo'
 
 export type RunStatus = 'idle' | 'running' | 'paused' | 'finished'
@@ -35,8 +36,12 @@ export const DEMO_STEP_M = 20
 /** 真实提交用的采样步长（米）：3m ≈ 1Hz GPS（3 m/s × 1s），与 9-14 实测口径一致 */
 export const REAL_STEP_M = 3
 
-/** 自由跑演示的里程上限（真实自由跑由用户手动结束） */
-export const FREE_RUN_CAP_KM = 5
+/**
+ * ⚠️ 2026-09-20（1.1.12 需求①）：原先这里写死了 `FREE_RUN_CAP_KM = 5`（自由跑里程上限）。
+ * 现在自由跑距离**由用户设定**，取值范围/归一化/默认值/存储键全部收口到纯模块
+ * `utils/mp/freeRun.ts`（`FREE_RUN_KM_*`）—— 本文件只保留"共享状态 + 落盘"这层薄壳，
+ * 免得同一个数字在"常量、界面输入框、生成器入参"三处各写一遍（E51 的同类坑）。
+ */
 
 /** 真实时间的 tick 间隔（毫秒）与模拟秒换算基数 */
 export const TICK_MS = 100
@@ -164,6 +169,40 @@ export function useDemoState(hooks: DemoStateHooks) {
   const run = useState<DemoRunState>('mpDemoRun', createRunState)
 
   /**
+   * 🆕 **自由跑目标距离（公里）**（2026-09-20，1.1.12 需求①）：
+   * 用户在前端「开跑设置」里设定，跑步引擎拿它当 `targetKm`（自由跑没有任务里程，只有它）。
+   *
+   * 三条设计口径：
+   *   ① 初始值**从 localStorage 读**（"记住上次选的值"，刷新/重启都还在）；读不到或坏数据 →
+   *      `FREE_RUN_KM_DEFAULT`（= 旧版写死的 5 km，老用户升级后行为不变）；
+   *   ② 写入一律过 `clampFreeRunKm`（区间 0.5~42.2、一位小数）—— 界面**不再自己判合法性**；
+   *   ③ 落盘失败（配额满/隐私模式）只影响"下次开程序记不记得"，本次运行照旧 ⇒ 允许静默，
+   *      但按 R8 纪律在 `catch` 里写明原因。
+   */
+  const freeRunKm = useState<number>('mpFreeRunKm', () => {
+    if (!import.meta.client) return FREE_RUN_KM_DEFAULT
+    try {
+      return parseStoredFreeRunKm(localStorage.getItem(FREE_RUN_KM_KEY))
+    } catch {
+      /* localStorage 被禁用（隐私模式）：回落默认值即可，不必打扰用户 */
+      return FREE_RUN_KM_DEFAULT
+    }
+  })
+
+  /** 设定自由跑距离（归一化 → 写内存 → 尽力落盘）；返回归一化后的值，供提示文案使用 */
+  const setFreeRunKm = (raw: unknown): number => {
+    const km = clampFreeRunKm(raw)
+    freeRunKm.value = km
+    if (!import.meta.client) return km
+    try {
+      localStorage.setItem(FREE_RUN_KM_KEY, String(km))
+    } catch {
+      /* 配额满/隐私模式：内存里已生效，只是"下次开程序"记不住 —— 尽力而为，可静默 */
+    }
+    return km
+  }
+
+  /**
    * **载入演示数据**（唯一的演示入口）：填假任务 / 假线路 / 假开关并打开演示开关。
    * 只用于"不接触真实账号也能看界面与报文"；**不发任何网络请求**。
    */
@@ -221,6 +260,8 @@ export function useDemoState(hooks: DemoStateHooks) {
     task,
     lines,
     run,
+    freeRunKm,
+    setFreeRunKm,
     enableDemo,
     disableDemo,
     clearLocalData,

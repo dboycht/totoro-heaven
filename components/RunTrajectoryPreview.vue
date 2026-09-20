@@ -16,7 +16,7 @@
  *     现在按 `lapLengthM` 把轨迹拆成"第 1 圈、第 2 圈…"，每圈一色、只画 1.2px 细线，
  *     并另给一张**局部放大图**（1 m 的圈间差在整图尺度下只有 ~1.7 px，放大才看得清）。
  */
-import { laneLoop, laneRatioFor, type TrackRings } from '~/utils/mp/trackEditor'
+import { laneLoop, laneRatioFor, pointAtArcM, type TrackRings } from '~/utils/mp/trackEditor'
 
 /** 本机路线库里的一条（只取画面要用的字段，避免组件依赖整个 TrackRouteEntry） */
 type TrackEntryLike = {
@@ -25,6 +25,15 @@ type TrackEntryLike = {
   inner: { latitude: string | number; longitude: string | number }[]
   laneNo?: number
   laneCount?: number
+  /**
+   * 🆕 **起跑点设置**（2026-09-20，1.1.12 需求②）：画一个红点标出"轨迹从哪儿起跑"。
+   * 只读不写；缺省时预览与旧版完全一致（不画红点）。
+   */
+  start?: {
+    offsetM?: number
+    direction?: string
+    point?: { latitude: string | number; longitude: string | number }
+  }
 }
 
 const props = defineProps<{
@@ -57,6 +66,14 @@ const toP = (p: { latitude: string | number; longitude: string | number }): P =>
   longitude: Number(p.longitude),
 })
 const finite = (list: P[]) => list.filter((p) => Number.isFinite(p.latitude) && Number.isFinite(p.longitude))
+/** 任意值 → 合法坐标点（不合法返回 null；只用于可选的起跑点字段） */
+const asPoint = (raw: unknown): P | null => {
+  if (!raw || typeof raw !== 'object') return null
+  const v = raw as { latitude?: unknown; longitude?: unknown }
+  const latitude = Number(v.latitude)
+  const longitude = Number(v.longitude)
+  return Number.isFinite(latitude) && Number.isFinite(longitude) ? { latitude, longitude } : null
+}
 
 /** 两点距离（米，等距近似）——用于判断"描的圈"与"本次轨迹"是否相距过远 */
 const distBetween = (a: P, b: P): number => {
@@ -87,7 +104,15 @@ const track = computed(() => {
   const laneCount = e.laneCount && e.laneCount > 0 ? e.laneCount : 6
   const laneNo = e.laneNo && e.laneNo > 0 ? e.laneNo : Math.max(1, Math.round((laneCount + 1) / 2))
   const lanePts = finite(laneLoop(rings, laneRatioFor(laneNo, laneCount), 240).map(toP))
-  return { outer, inner, lane: lanePts.length >= 3 ? lanePts : [], laneNo, laneCount }
+  /**
+   * 🆕 起跑点（1.1.12 需求②）：优先用**存的坐标**；只有偏移没坐标时按弧长反算到车道线上。
+   * ⚠️ `offsetM = 0` 且没有坐标 ⇒ 视为"未设置"，**不画红点**（与旧行为一致）。
+   */
+  const stored = asPoint(e.start?.point)
+  const offsetM = Number(e.start?.offsetM ?? 0)
+  const startPoint =
+    stored ?? (lanePts.length >= 3 && e.start && offsetM > 0 ? asPoint(pointAtArcM(lanePts, offsetM)) : null)
+  return { outer, inner, lane: lanePts.length >= 3 ? lanePts : [], laneNo, laneCount, startPoint }
 })
 
 /** 单点相对路线的最大允许偏离（米）—— 仅供文案提示，不上报 */
@@ -204,6 +229,8 @@ const view = computed(() => {
     lanePath: tr && tr.lane.length >= 3 ? d(tr.lane, true) : '',
     laneNo: tr?.laneNo ?? 0,
     start: { x: x(pts[0]!), y: y(pts[0]!) },
+    /** 🆕 起跑点标记（红点）：没设起跑点时为 null（不画） */
+    startMarker: tr?.startPoint ? { x: x(tr.startPoint), y: y(tr.startPoint) } : null,
     /**
      * ⚠️ 上屏的点数必须是**真实点数**（审计 L2）：`pts` 是 `segs.flatMap(...)`，而切圈时交界点
      * 会被放进相邻两圈（`lapSegments` 里 `cur.push(pts[i])` 后又 `cur = [pts[i]]`）⇒ 用它当点数
@@ -336,6 +363,16 @@ const focus = computed(() => {
                 opacity="0.95"
               />
               <circle :cx="view.start.x" :cy="view.start.y" r="3.5" fill="#f59e0b" stroke="#fff" stroke-width="1.2" />
+              <!-- 🆕 起跑点（1.1.12 需求②）：红点 = 你在跑道编辑页设的起跑点 -->
+              <circle
+                v-if="view.startMarker"
+                :cx="view.startMarker.x"
+                :cy="view.startMarker.y"
+                r="4.5"
+                fill="#ef4444"
+                stroke="#fff"
+                stroke-width="1.4"
+              />
             </svg>
           </v-col>
           <!-- 右：局部放大（圈间 1~3 m 的差别只有放大才看得清） -->
@@ -379,6 +416,7 @@ const focus = computed(() => {
             <b>本次轨迹是按你描的跑道（绿线=所选第 {{ view.laneNo }} 道）生成的。</b>
             蓝实线 = 外圈　紫线 = 内圈　
           </template>
+          橙点 = 本次轨迹起点<template v-if="view.startMarker">　红点 = 你设的起跑点</template>　
           灰虚线 = 官方路线（{{ view.routePoints }} 点），仅作对照
           <template v-if="view.maxDev !== null">
             　轨迹离这条<b>官方路线</b>最远 <b>{{ view.maxDev.toFixed(1) }} m</b>（P95 {{ view.p95 !== null ? view.p95.toFixed(1) : '—' }} m）

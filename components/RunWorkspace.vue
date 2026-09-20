@@ -59,7 +59,7 @@
               自由跑<b>不带任务号、不校验打卡开关、不计入阳光跑成绩</b>（与小程序一致）。
               下面选的线路<b>只决定本机用哪条几何生成轨迹</b>（仍然只允许用你自己描过的跑道），
               <b>不会</b>被写进提交报文 —— 提交时线路标识一律为空。
-              到里程上限或你点「结束并结算」即止。
+              跑到<b>你设的目标距离</b>或你点「结束并结算」即止。
             </v-alert>
             <v-select
               v-model="run.lineId"
@@ -78,6 +78,43 @@
             <div v-if="routeGroups.clusters.length > 1" class="text-caption text-medium-emphasis mb-2">
               {{ routeGroups.note }}
             </div>
+
+            <!-- 🆕 自由跑目标距离（1.1.12 需求①）：阳光跑不显示这一块（里程由任务决定） -->
+            <div v-if="isFreeRun" class="mb-3">
+              <v-text-field
+                v-model="freeKmText"
+                type="number"
+                :min="FREE_RUN_KM_MIN"
+                :max="FREE_RUN_KM_MAX"
+                :step="FREE_RUN_KM_STEP"
+                suffix="km"
+                label="目标距离（自由跑）"
+                density="comfortable"
+                :disabled="isBusy"
+                hide-details="auto"
+                @change="applyFreeKm(freeKmText)"
+              />
+              <div class="d-flex flex-wrap ga-1 mt-2">
+                <v-btn
+                  v-for="preset in FREE_RUN_KM_PRESETS"
+                  :key="`free-km-${preset}`"
+                  size="x-small"
+                  variant="tonal"
+                  :disabled="isBusy"
+                  @click="applyFreeKm(preset)"
+                >
+                  {{ preset }} km
+                </v-btn>
+              </div>
+              <div class="text-caption text-medium-emphasis mt-1">
+                可设 {{ FREE_RUN_KM_MIN }} ~ {{ FREE_RUN_KM_MAX }} km（一位小数），会自动记住上次的值。
+                <template v-if="freeRunLaps !== null">
+                  按你选的这条跑道，这次约 <b>{{ freeRunLaps }}</b> 圈<template v-if="freeRunSeconds !== null">、约 {{ formatDuration(freeRunSeconds) }}</template>。
+                </template>
+                <template v-else> 描好跑道后，这里会算出"约几圈"。</template>
+              </div>
+            </div>
+
             <v-select
               v-model="run.speed"
               :items="speedItems"
@@ -376,8 +413,19 @@ import { useMpDemo } from '~/composables/useMpDemo'
 import { useMpReal } from '~/composables/useMpReal'
 import { logError, logInfo, logWarn } from '~/composables/useEventLog'
 import { groupRoutesByCampus, toSelectItems, warnForSelection } from '~/utils/mp/routeGroups'
+import { laneLoop, laneRatioFor, ringLengthM } from '~/utils/mp/trackEditor'
+import {
+  FREE_RUN_KM_MAX,
+  FREE_RUN_KM_MIN,
+  FREE_RUN_KM_PRESETS,
+  FREE_RUN_KM_STEP,
+  estimateFreeRunSeconds,
+  estimateLaps,
+  formatFreeRunKm,
+} from '~/utils/mp/freeRun'
 
-const { isLoggedIn, task, run, progress, paceText, start, pause, resume, finish, reset, demoMode, enableDemo } = useMpDemo()
+const { isLoggedIn, task, run, progress, paceText, start, pause, resume, finish, reset, demoMode, enableDemo, freeRunKm, setFreeRunKm } =
+  useMpDemo()
 const {
   profile: realProfile,
   task: realTask,
@@ -603,6 +651,33 @@ watch(
     }
   },
 )
+
+/**
+ * 🆕 **自由跑目标距离**（2026-09-20，1.1.12 需求①）：
+ *   · 阳光下跑的里程由任务决定（`task.mileage`），自由跑没有任务 ⇒ 由用户在这里设定；
+ *   · 输入框走**本地文本态**：`@change`（失焦/回车）才归一化落盘 —— 否则用户打到一半
+ *     （例如刚键入 `1`、还没打 `0`）就被夹紧成 0.5，看着像"数字乱跳"；
+ *   · 归一化与落盘**全部交给 `setFreeRunKm`**（纯函数 `clampFreeRunKm` + localStorage），
+ *     页面不自己判合法性（判据：**同一个数字只能有一处说了算**）。
+ *   · 圈数/时长只是**提示**（按你描的那条跑道的车道周长与当前配速估），不改任何提交口径。
+ */
+const freeKmText = ref(formatFreeRunKm(freeRunKm.value))
+watch(freeRunKm, (v) => {
+  freeKmText.value = formatFreeRunKm(v)
+})
+const applyFreeKm = (raw: unknown) => {
+  const km = setFreeRunKm(raw)
+  freeKmText.value = formatFreeRunKm(km)
+}
+/** 所选跑道"一圈多长"（米）：没描过/几何不足时为 0（界面据此不显示"约几圈"） */
+const selectedLaneLengthM = computed(() => {
+  const e = libEntries.value.find((x) => String(x.lineId) === String(run.value.lineId))
+  if (!e || e.outer.length < 3 || e.inner.length < 3) return 0
+  const loop = laneLoop({ outer: e.outer, inner: e.inner }, laneRatioFor(e.laneNo ?? 3, e.laneCount ?? 6), 240)
+  return loop.length >= 3 ? ringLengthM(loop) : 0
+})
+const freeRunLaps = computed(() => estimateLaps(freeRunKm.value, selectedLaneLengthM.value))
+const freeRunSeconds = computed(() => estimateFreeRunSeconds(freeRunKm.value, run.value.paceSecPerKm))
 
 const speedItems = [
   { value: 1, label: '1× 实时（3.4km 约 21 分钟）' },

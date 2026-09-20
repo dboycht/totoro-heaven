@@ -8,10 +8,45 @@
  * 附**元信息**（创建日期、创建时的软件版本、线路名快照）—— 用户明确要求列表要显示这些。
  */
 import type { LatLng } from './routeSimilarity'
+import { ringLengthM, startDirectionLabel, type LoopDirection } from './trackEditor'
 
 export const TRACK_LIBRARY_KEY = 'mp_track_library_v1'
 /** 旧格式的键（迁移用；旧版是 `{ [lineId]: {outer, inner} }`） */
 export const TRACK_LIBRARY_KEY_LEGACY = 'mp_track_rings_v1'
+
+/**
+ * **一次编辑的留痕**（2026-09-20，1.1.12 需求③）。
+ *
+ * 用户原话："记录编辑保存时间以及编辑使用的版本等一系列数据"——
+ * 所以每次保存都往 `TrackRouteEntry.history` 里压一条（最新在前），
+ * 只留最近 `TRACK_HISTORY_MAX` 条：localStorage 有 5 MB 量级上限，
+ * 而内外圈点列本身就不小（一条路线几百个点），历史**必须**有上限。
+ */
+export interface TrackEditLog {
+  /** 本次保存时间（ISO 字符串；空串 = 时间缺失，界面显示"时间未知"） */
+  at: string
+  /** 本次保存时的软件版本（空串 = 版本未知） */
+  appVersion: string
+  /** 本次改了什么（用户可读的一句话，**不含 markdown 标记**） */
+  summary: string
+}
+
+/** 每条路线最多留几条编辑历史（最新在前） */
+export const TRACK_HISTORY_MAX = 5
+
+/**
+ * **起跑点**（2026-09-20，1.1.12 需求②）：
+ * 轨迹生成器永远从几何数组的第 0 个点起步，所以起跑点在数据上是
+ * "把车道线**按弧长旋转**到 `offsetM`、必要时**反向**"（见 `trackEditor.applyStartToLoop`）。
+ */
+export interface TrackStart {
+  /** 沿**所选车道**的弧长偏移（米，0 ~ 该车道周长；从"描圈的第 0 个点"起算） */
+  offsetM: number
+  /** 绕向：`forward` = 沿描圈方向；`reverse` = 反向（界面按几何翻译成顺/逆时针） */
+  direction: LoopDirection
+  /** 起跑点坐标（吸附到车道线之后的点；手机端可核对位置。缺省 = 只按 offsetM 旋转） */
+  point?: LatLng
+}
 
 export interface TrackRouteEntry {
   /** 厂商线路 id（主键；**提交时仍用它** —— 我们只换"生成用的几何"，不动报文口径） */
@@ -35,6 +70,16 @@ export interface TrackRouteEntry {
   /** **所选道次**（第 1 道=最内道；生成轨迹就按它，不再随机 —— 用户 2026-09-17 确认） */
   laneNo?: number
   note?: string
+  /** 🆕 起跑点（2026-09-20，1.1.12 需求②）：缺失 = 未设置（轨迹仍从车道线第 0 点起跑） */
+  start?: TrackStart
+  /** 🆕 **最近一次保存（编辑）时间**（ISO；旧数据为空串 = 未记录） */
+  updatedAt?: string
+  /** 🆕 **最近一次保存时的软件版本**（旧数据为空串 = 未记录） */
+  updatedAppVersion?: string
+  /** 🆕 **累计编辑次数**（含首次创建；旧数据为 undefined = 未记录） */
+  editCount?: number
+  /** 🆕 最近几次编辑留痕（最新在前，最多 `TRACK_HISTORY_MAX` 条） */
+  history?: TrackEditLog[]
 }
 
 const isPts = (v: unknown): v is LatLng[] =>
@@ -90,6 +135,55 @@ export function resolveEntryName(e: Pick<TrackRouteEntry, 'lineId' | 'lineName' 
   return sanitizeLineName(e.customName) || String(e.lineName ?? '').trim() || String(e.lineId ?? '')
 }
 
+/** 坐标是否可解析成一对有限数（**不要求是数字类型**：契约层允许字符串坐标） */
+const isFinitePoint = (v: unknown): v is LatLng =>
+  !!v && typeof v === 'object' && Number.isFinite(Number((v as LatLng).latitude)) && Number.isFinite(Number((v as LatLng).longitude))
+
+/**
+ * 归一化一条**起跑点设置**（纯函数）：`offsetM` 必须是有限的非负数，`direction` 只认 `reverse`，
+ * 其余一律 `forward`。整块不可解析 ⇒ `undefined`（= 未设置，与旧数据同义）。
+ * ⚠️ 坐标点坐标统一成 `number` 存储（字符串坐标写回 JSON 会变成字符串，比较/算术都要先 Number）。
+ */
+export function normalizeTrackStart(raw: unknown): TrackStart | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const v = raw as Record<string, unknown>
+  const offsetM = Number(v.offsetM)
+  if (!Number.isFinite(offsetM) || offsetM < 0) return undefined
+  const direction: LoopDirection = v.direction === 'reverse' ? 'reverse' : 'forward'
+  const offset = Math.round(offsetM * 10) / 10
+  if (!isFinitePoint(v.point)) return { offsetM: offset, direction }
+  return {
+    offsetM: offset,
+    direction,
+    point: { latitude: Number(v.point.latitude), longitude: Number(v.point.longitude) },
+  }
+}
+
+/** 归一化编辑历史：丢掉不可解析的条目、只留最近 `TRACK_HISTORY_MAX` 条（纯函数） */
+export function normalizeHistory(raw: unknown): TrackEditLog[] {
+  if (!Array.isArray(raw)) return []
+  const out: TrackEditLog[] = []
+  for (const it of raw) {
+    if (!it || typeof it !== 'object') continue
+    const v = it as Record<string, unknown>
+    const at = String(v.at ?? '')
+    const summary = String(v.summary ?? '')
+    // 时间与摘要**都空**的条目没有任何信息量（多半是坏数据）⇒ 丢掉
+    if (!at && !summary) continue
+    out.push({ at, appVersion: String(v.appVersion ?? ''), summary })
+    if (out.length >= TRACK_HISTORY_MAX) break
+  }
+  return out
+}
+
+/**
+ * 把一条新的编辑留痕**压到最前面**并裁到上限（纯函数，唯一的"写历史"入口）。
+ * ⚠️ 上限**只在这一个地方**执行：界面/调用方都不许自己 slice，否则两边上限会漂移。
+ */
+export function prependHistory(prev: TrackEditLog[] | undefined, log: TrackEditLog): TrackEditLog[] {
+  return [log, ...(Array.isArray(prev) ? prev : [])].slice(0, TRACK_HISTORY_MAX)
+}
+
 /**
  * 把任意历史数据**归一化**成新格式（纯函数，便于单测与迁移）：
  *   · 新格式数组 → 原样（补齐缺失字段）
@@ -103,6 +197,9 @@ export function normalizeLibrary(raw: unknown, fallbackVersion = '未知'): Trac
     if (!lineId || !hasValidRings(v)) return
     // 用户自定义名：归一化后为空（历史数据里可能存过空白）⇒ 归一化成 undefined，一律走 `resolveEntryName` 兜底
     const customName = sanitizeLineName(v.customName)
+    const start = normalizeTrackStart(v.start)
+    const history = normalizeHistory(v.history)
+    const editCount = Number(v.editCount)
     out.push({
       lineId,
       lineName: String(v.lineName ?? lineId),
@@ -114,6 +211,12 @@ export function normalizeLibrary(raw: unknown, fallbackVersion = '未知'): Trac
       laneCount: typeof v.laneCount === 'number' && v.laneCount > 0 ? v.laneCount : undefined,
       laneNo: typeof v.laneNo === 'number' && v.laneNo > 0 ? v.laneNo : undefined,
       note: typeof v.note === 'string' ? v.note : undefined,
+      // 🆕 起跑点与编辑留痕：旧数据**没有**这些字段 ⇒ 不凭空造（用展开语法，保持 `'start' in e === false`）
+      ...(start ? { start } : {}),
+      updatedAt: String(v.updatedAt ?? ''),
+      updatedAppVersion: String(v.updatedAppVersion ?? ''),
+      editCount: Number.isFinite(editCount) && editCount > 0 ? Math.round(editCount) : undefined,
+      ...(history.length ? { history } : {}),
     })
   }
   if (Array.isArray(raw)) {
@@ -142,7 +245,31 @@ export function formatLocalDateTime(iso: string): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-/** 一条路线的摘要（列表展示用）：点位数 · 创建日期（本机时间） · 创建版本 */
+/** 版本号展示：`1.1.12` → `v1.1.12`；空串 → `未记录`（**唯一的版本文案出口**） */
+export function versionText(raw: string | undefined | null): string {
+  const s = String(raw ?? '').trim()
+  return s ? `v${s.replace(/^v/, '')}` : '未记录'
+}
+
+/**
+ * 起跑点的一句话（摘要与详情共用；未设置返回"未设置"）。
+ * 形状：`逆时针 · 沿跑道 12 m 处` —— 方向由几何算出来（不写死顺/逆），偏移按米。
+ */
+export function startSummaryText(e: Pick<TrackRouteEntry, 'outer' | 'start'>): string {
+  const s = e.start
+  if (!s) return '未设置'
+  const dir = startDirectionLabel(e.outer ?? [], s.direction)
+  const m = `${Math.round(s.offsetM * 10) / 10} m`
+  return `${dir} · 沿跑道 ${m} 处`
+}
+
+/**
+ * 一条路线的摘要（**列表每行的副标题**）：点位数 · 道次 · 创建日期/版本 · 官方原名
+ * ＋ 🆕 最近保存（时间/版本）与编辑次数（2026-09-20，1.1.12 需求③）。
+ *
+ * ⚠️ 旧的字段顺序与措辞**不许改**：`tests/mp/trackEditor.test.ts` 与验证脚本都按它断言
+ *（"外圈 N 点 / 第 3 道/6 / 创建日期未知 / 版本未知 / 官方名：…"）。
+ */
 export function entrySummaryText(e: TrackRouteEntry): string {
   const when = e.createdAt ? formatLocalDateTime(e.createdAt) : '创建日期未知'
   const version = e.appVersion ? `v${e.appVersion.replace(/^v/, '')}` : '版本未知'
@@ -150,5 +277,68 @@ export function entrySummaryText(e: TrackRouteEntry): string {
   // 改过名时**顺带标出厂商原名**：改的是本机显示名，提交用的仍是厂商 lineId，
   // 把原名留在摘要里，用户才不会"改完就不知道这条对应哪条官方线路"（2026-09-18）。
   const renamed = sanitizeLineName(e.customName) ? `（官方名：${String(e.lineName ?? '').trim() || e.lineId}）` : ''
-  return `外圈 ${e.outer.length} 点 · 内圈 ${e.inner.length} 点 · ${lane} · ${when} · ${version}${renamed}`
+  // 🆕 最近一次保存（时间 + 版本）：旧数据无此字段 ⇒ **一个字都不加**（不显示"未记录"噪音）
+  const saved = e.updatedAt
+    ? ` · 最近保存 ${formatLocalDateTime(e.updatedAt)}${e.updatedAppVersion ? `（${versionText(e.updatedAppVersion)}）` : ''}`
+    : ''
+  const edits = e.editCount ? ` · 编辑 ${e.editCount} 次` : ''
+  const start = e.start ? ` · 起跑点 ${startSummaryText(e)}` : ''
+  return `外圈 ${e.outer.length} 点 · 内圈 ${e.inner.length} 点 · ${lane} · ${when} · ${version}${renamed}${start}${saved}${edits}`
+}
+
+/**
+ * 路线条目的**详情行**（管理界面展开后显示；2026-09-20，1.1.12 需求③）。
+ * 纯函数：只做"数据 → 可读文本"，界面不再自己拼字符串（避免详情与摘要两处口径漂移）。
+ */
+export function entryDetailRows(e: TrackRouteEntry): { label: string; value: string }[] {
+  return [
+    { label: '线路（厂商标识）', value: String(e.lineId ?? '') || '—' },
+    { label: '官方线路名', value: String(e.lineName ?? '').trim() || '（厂商未提供名称）' },
+    { label: '创建时间', value: e.createdAt ? formatLocalDateTime(e.createdAt) : '未记录（旧数据）' },
+    { label: '创建时版本', value: versionText(e.appVersion) },
+    { label: '最近保存时间', value: e.updatedAt ? formatLocalDateTime(e.updatedAt) : '未记录（旧数据）' },
+    { label: '最近保存版本', value: versionText(e.updatedAppVersion) },
+    { label: '编辑次数', value: e.editCount ? `${e.editCount} 次` : '未记录（旧数据）' },
+    { label: '内外圈点数', value: `外圈 ${e.outer.length} 点 · 内圈 ${e.inner.length} 点` },
+    { label: '外圈周长', value: e.outer.length >= 3 ? `${Math.round(ringLengthM(e.outer))} m` : '—' },
+    {
+      label: '道次',
+      value: e.laneNo ? `第 ${e.laneNo} 道${e.laneCount ? `（共 ${e.laneCount} 道）` : ''}` : '未记录',
+    },
+    { label: '起跑点', value: startSummaryText(e) },
+    ...(e.start?.point
+      ? [
+          {
+            label: '起跑点坐标',
+            value: `${Number(e.start.point.latitude).toFixed(6)}, ${Number(e.start.point.longitude).toFixed(6)}`,
+          },
+        ]
+      : []),
+    { label: '备注', value: String(e.note ?? '').trim() || '（无）' },
+  ]
+}
+
+/** 一条编辑留痕的展示文本：`2026-09-20 17:12 · v1.1.12 · 外圈 32 点 · 内圈 24 点 …` */
+export function historyLogText(log: TrackEditLog): string {
+  const when = log.at ? formatLocalDateTime(log.at) : '时间未知'
+  // 列表里用"版本未知"（与 `entrySummaryText` 同一措辞）；`versionText` 的"未记录"留给详情表
+  const ver = log.appVersion ? versionText(log.appVersion) : '版本未知'
+  return `${when} · ${ver} · ${log.summary || '（未记录改动内容）'}`
+}
+
+/**
+ * 一次**保存**的改动摘要（写进编辑历史的那句话，纯函数）。
+ * 只说"存成了什么样"，不说"改了什么"——因为我们不存旧几何做 diff（那会让 localStorage 翻倍）。
+ */
+export function saveSummaryText(input: {
+  outer: LatLng[]
+  inner: LatLng[]
+  laneNo?: number
+  laneCount?: number
+  start?: TrackStart | null
+}): string {
+  const parts = [`外圈 ${input.outer.length} 点`, `内圈 ${input.inner.length} 点`]
+  if (input.laneNo) parts.push(`第 ${input.laneNo} 道${input.laneCount ? `/${input.laneCount}` : ''}`)
+  parts.push(input.start ? `起跑点 ${startSummaryText({ outer: input.outer, start: input.start })}` : '起跑点未设置')
+  return parts.join(' · ')
 }

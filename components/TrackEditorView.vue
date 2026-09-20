@@ -9,8 +9,30 @@
  *
  * 存储：本机 localStorage，按 lineId 保存（`mp_track_rings_v1`）——运行时数据不入库。
  */
-import { laneLoop, laneRatioFor, ringLengthM, ringWidthM, smoothClosedRing, validateRings, insetClosedRing, distanceToRingM, type TrackRings } from '~/utils/mp/trackEditor'
-import { entrySummaryText, resolveEntryName } from '~/utils/mp/trackLibrary'
+import {
+  applyStartToLoop,
+  laneLoop,
+  laneRatioFor,
+  pointAtArcM,
+  ringLengthM,
+  ringWidthM,
+  smoothClosedRing,
+  snapToLoop,
+  startDirectionLabel,
+  validateRings,
+  insetClosedRing,
+  distanceToRingM,
+  type LoopDirection,
+  type TrackRings,
+} from '~/utils/mp/trackEditor'
+import {
+  TRACK_HISTORY_MAX,
+  entryDetailRows,
+  entrySummaryText,
+  historyLogText,
+  resolveEntryName,
+  startSummaryText,
+} from '~/utils/mp/trackLibrary'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
 
@@ -122,10 +144,23 @@ const lib = useTrackLibrary()
 const libEntries = lib.entries
 const draftOuter = ref<N[]>([])
 const draftInner = ref<N[]>([])
+/**
+ * 🆕 **起跑点草稿**（2026-09-20，1.1.12 需求②）：
+ *   · `draftStartOffsetM` = 沿所选车道的弧长偏移（米）；`draftStartPoint` = 吸附后的坐标；
+ *   · `draftStartDirection` = 绕向（`forward` = 沿描圈方向）；
+ *   · 三者**永远由同一批函数一起改**（`setStartFromMap` / `onStartOffsetInput` / `clearStart`），
+ *     不允许某个入口只改其中一个 —— 否则"坐标与偏移对不上"，轨迹起点会飘。
+ */
+const draftStartOffsetM = ref(0)
+const draftStartPoint = ref<N | null>(null)
+const draftStartDirection = ref<LoopDirection>('forward')
 const loadDraft = (id: string) => {
   const e = lib.get(id)
   draftOuter.value = (e?.outer ?? []).map(num)
   draftInner.value = (e?.inner ?? []).map(num)
+  draftStartOffsetM.value = Number(e?.start?.offsetM ?? 0)
+  draftStartPoint.value = e?.start?.point ? num(e.start.point) : null
+  draftStartDirection.value = e?.start?.direction === 'reverse' ? 'reverse' : 'forward'
 }
 onMounted(() => {
   lib.load()
@@ -141,8 +176,14 @@ const onResize = () => {
 }
 
 const mapEl = ref<HTMLElement | null>(null)
-/** 当前编辑哪一圈 */
-const editing = ref<'outer' | 'inner'>('outer')
+/**
+ * 当前编辑**哪一样东西**：外圈 / 内圈 / 起跑点。
+ * 🆕 2026-09-20（1.1.12 需求②）：多出 `'start'` —— 选中它时**地图单击 = 点选起跑点**
+ * （不再往圈里加点）。为此下面所有"对当前圈操作"的函数都改走 `ringTarget`（永不为 `'start'`）。
+ */
+const editing = ref<'outer' | 'inner' | 'start'>('outer')
+/** "当前圈"的收窄版本：只可能是 outer/inner（起跑点模式下不参与圈的编辑） */
+const ringTarget = computed<'outer' | 'inner'>(() => (editing.value === 'inner' ? 'inner' : 'outer'))
 const outer = computed(() => draftOuter.value)
 const inner = computed(() => draftInner.value)
 const setRing = (which: 'outer' | 'inner', pts: N[]) => {
@@ -188,31 +229,32 @@ watch(
 const currentLine = computed(() => lines.value.find((l) => String(l.pointId) === String(lineId.value)))
 const official = computed<N[]>(() => (currentLine.value?.pointList ?? []).map(num))
 
-/** 当前编辑圈的点（含屏幕坐标，供 SVG 画） */
-const editingPts = computed(() => (editing.value === 'outer' ? outer.value : inner.value))
+/** 当前编辑圈的点（含屏幕坐标，供 SVG 画）；**起跑点模式下没有"圈点"**（返回空数组） */
+const editingPts = computed(() => (editing.value === 'outer' ? outer.value : editing.value === 'inner' ? inner.value : []))
 
 /** 把官方路线点灌进当前圈，作为"打底"（用户只需微调） */
 const useOfficialAsRing = () => {
   if (!official.value.length) return
-  setRing(editing.value, official.value.map((p) => ({ ...p })))
-  showSnackbar(`已把官方路线 ${official.value.length} 点填入${editing.value === 'outer' ? '外圈' : '内圈'}`)
+  setRing(ringTarget.value, official.value.map((p) => ({ ...p })))
+  showSnackbar(`已把官方路线 ${official.value.length} 点填入${ringTarget.value === 'outer' ? '外圈' : '内圈'}`)
 }
 
 const undo = () => {
-  const pts = [...editingPts.value]
+  const pts = [...(ringTarget.value === 'outer' ? outer.value : inner.value)]
   pts.pop()
-  setRing(editing.value, pts)
+  setRing(ringTarget.value, pts)
 }
 /** 手工描的点必然有折角 ⇒ Chaikin 圆滑两轮，观感立刻像"跑道圈" */
 const smoothRing = () => {
-  if (editingPts.value.length < 3) {
+  const pts = ringTarget.value === 'outer' ? outer.value : inner.value
+  if (pts.length < 3) {
     showSnackbar('先描够 3 个点再平滑', 'warning')
     return
   }
-  setRing(editing.value, smoothClosedRing(editingPts.value, 2))
+  setRing(ringTarget.value, smoothClosedRing(pts, 2))
   showSnackbar('已平滑这一圈')
 }
-const clearRing = () => setRing(editing.value, [])
+const clearRing = () => setRing(ringTarget.value, [])
 
 // ---------- 鼠标交互：拖动平移 / 点击加点 / 拖动点 ----------
 let dragging = false
@@ -244,10 +286,11 @@ const onMove = (e: MouseEvent) => {
   const dy = e.offsetY - dragFrom.y
   if (Math.abs(dx) + Math.abs(dy) > 3) moved = true
   if (pointDragIndex >= 0) {
-    // 拖动已有的点
-    const pts = [...editingPts.value]
+    // 拖动已有的点（**只可能是圈上的点**：起跑点模式下 `editingPts` 为空 ⇒ 抓不到）
+    const which = ringTarget.value
+    const pts = [...(which === 'outer' ? outer.value : inner.value)]
     pts[pointDragIndex] = toLatLng(e.offsetX, e.offsetY)
-    setRing(editing.value, pts)
+    setRing(which, pts)
     return
   }
   // 拖动画布（往反方向移中心）
@@ -264,8 +307,13 @@ const onUp = (e: MouseEvent) => {
   dragging = false
   pointDragIndex = -1
   if (!wasDragging || moved || idx >= 0) return
-  // 单击（没拖动、也没抓点）⇒ 在点击处加一个点
-  setRing(editing.value, [...editingPts.value, toLatLng(e.offsetX, e.offsetY)])
+  // 单击（没拖动、也没抓点）：🆕 起跑点模式下 = **点选起跑点**；否则在点击处加一个圈点
+  if (editing.value === 'start') {
+    setStartFromMap(toLatLng(e.offsetX, e.offsetY))
+    return
+  }
+  const which = ringTarget.value
+  setRing(which, [...(which === 'outer' ? outer.value : inner.value), toLatLng(e.offsetX, e.offsetY)])
 }
 
 const zoomBy = (d: number) => {
@@ -322,10 +370,81 @@ const makeInnerFromOuter = () => {
 const laneRatio = computed(() => laneRatioFor(laneNo.value, laneCount.value))
 const lane = computed<N[]>(() => (ringsReady.value ? laneLoop(rings.value, laneRatio.value, 240).map(num) : []))
 
-/** 最终轨迹：以车道线为参考几何，叠加"真实抖动"（直道恒定、小颗粒、偶发小凸起） */
+// ---------------------------------------------------------------- 起跑点（1.1.12 需求②）
+
+/** 所选车道的周长（米）—— 起跑点滑杆的上限、也是"约几圈"的分母 */
+const laneLengthM = computed(() => (lane.value.length >= 3 ? ringLengthM(lane.value) : 0))
+/** 滑杆上限（至少 1，避免 max=0 时 Vuetify 把滑杆画成不可用的怪样子） */
+const laneLengthSliderMax = computed(() => Math.max(1, Math.round(laneLengthM.value)))
+/** 起跑点是否**已经设置**：偏移 > 0，或已经有吸附坐标（偏移 0 + 有坐标 = 起点就在第 0 点，仍然算"设过"） */
+const hasStart = computed(() => draftStartOffsetM.value > 0 || Boolean(draftStartPoint.value))
+/**
+ * 地图上要画的那个"起跑点"：
+ * 优先用存下来的坐标；只有偏移没有坐标（旧数据/手输偏移）时**按偏移反算到车道线上**。
+ */
+const startMarker = computed<N | null>(() => {
+  if (!hasStart.value) return null
+  if (draftStartPoint.value) return draftStartPoint.value
+  if (lane.value.length < 3) return null
+  const p = pointAtArcM(lane.value, draftStartOffsetM.value)
+  return p ? num(p) : null
+})
+/** 绕向的两个选项（文案由**几何**算出来：有人从东侧起笔、有人从西侧，数组顺序本身不含方向语义） */
+const directionOptions = computed(() => [
+  { value: 'forward' as LoopDirection, label: startDirectionLabel(outer.value, 'forward') },
+  { value: 'reverse' as LoopDirection, label: startDirectionLabel(outer.value, 'reverse') },
+])
+/** 当前起跑点的一句话（右侧说明与卡片提示共用） */
+const startText = computed(() => {
+  if (!hasStart.value) return '未设置（轨迹从车道线第 0 个点起跑）'
+  return startSummaryText({ outer: outer.value, start: { offsetM: draftStartOffsetM.value, direction: draftStartDirection.value } })
+})
+/**
+ * **地图点选起跑点**：把点击处**吸附到车道线**上（人点不到"线上"），
+ * 同时写偏移与坐标 —— 两者从此保持一致。
+ */
+const setStartFromMap = (p: N) => {
+  if (lane.value.length < 3) {
+    showSnackbar('先把内外圈描好（车道线算出来之后）再点选起跑点', 'warning')
+    return
+  }
+  const snapped = snapToLoop(lane.value, p)
+  if (!snapped) {
+    showSnackbar('这一点没吸附到跑道上，请点在跑道附近再试', 'warning')
+    return
+  }
+  draftStartOffsetM.value = snapped.offsetM
+  draftStartPoint.value = { latitude: Number(snapped.point.latitude), longitude: Number(snapped.point.longitude) }
+  showSnackbar(`起跑点已设在这里（沿跑道 ${snapped.offsetM.toFixed(1)} m，离你点的位置 ${snapped.distanceM.toFixed(1)} m）`)
+}
+/** 滑杆微调偏移 ⇒ 同步把坐标算出来（两个字段永远一致） */
+const onStartOffsetInput = (v: unknown) => {
+  const next = Math.max(0, Math.round(Number(v) || 0))
+  draftStartOffsetM.value = next
+  const p = lane.value.length >= 3 ? pointAtArcM(lane.value, next) : null
+  draftStartPoint.value = p ? num(p) : null
+}
+/** 取消起跑点（回到"不做旋转"的旧行为） */
+const clearStart = () => {
+  draftStartOffsetM.value = 0
+  draftStartPoint.value = null
+  showSnackbar('已取消起跑点设置（轨迹从车道线第 0 个点起跑）')
+}
+/**
+ * **把起跑点与绕向落到几何上**：预览与真实生成都走这个 computed ⇒ 所见即所跑。
+ * ⚠️ 未设起跑点时传 `null`：`rotateLoop(loop, 0)` 原样返回 ⇒ 与旧版逐点一致（回归保证）。
+ */
+const startLane = computed<N[]>(() =>
+  applyStartToLoop(
+    lane.value,
+    hasStart.value ? { offsetM: draftStartOffsetM.value, direction: draftStartDirection.value } : null,
+  ).map(num),
+)
+
+/** 最终轨迹：以（已按起跑点变换过的）车道线为参考几何，叠加"真实抖动"（直道恒定、小颗粒、偶发小凸起） */
 const trajectory = computed<N[]>(() => {
-  if (lane.value.length < 3) return []
-  const g = generateCorridorRoute(lane.value, { targetKm: 3.2, stepM: 3, drift: true, seed: seed.value })
+  if (startLane.value.length < 3) return []
+  const g = generateCorridorRoute(startLane.value, { targetKm: 3.2, stepM: 3, drift: true, seed: seed.value })
   return g.points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
 })
 
@@ -364,12 +483,27 @@ const save = () => {
     // ⭐ 把"所选道次"一起存起来（跑步页就按它生成，不再随机）
     laneNo: laneNo.value,
     laneCount: laneCount.value,
+    /**
+     * 🆕 起跑点（1.1.12 需求②）：`null` = **明确清掉**（用户点了「取消起跑点设置」就要能落盘，
+     * 否则"删了又回来"）。`undefined` 才表示"保持原样" —— 这里**永远传明确值**。
+     */
+    start: hasStart.value
+      ? {
+          offsetM: draftStartOffsetM.value,
+          direction: draftStartDirection.value,
+          ...(draftStartPoint.value
+            ? { point: { latitude: Number(draftStartPoint.value.latitude), longitude: Number(draftStartPoint.value.longitude) } }
+            : {}),
+        }
+      : null,
   })
   if (!e) {
     showSnackbar('保存被拒绝：内外圈点数不足（各需至少 3 点）', 'error')
     return
   }
-  showSnackbar(`已存入本机路线库（v${e.appVersion}；创建日期见右侧列表）`)
+  showSnackbar(
+    `已存入本机路线库（第 ${e.editCount ?? 1} 次保存 · ${e.updatedAppVersion ? `v${e.updatedAppVersion}` : '版本未知'} · 起跑点${hasStart.value ? '已设' : '未设'}）`,
+  )
 }
 const reset = () => {
   setRing('outer', [])
@@ -385,7 +519,26 @@ const loadEntry = (id: string) => {
 const removeEntry = (id: string) => {
   lib.remove(String(id))
   if (String(id) === String(lineId.value)) reset()
+  // 删掉的那条如果正展开着详情，收起它（否则详情区会挂在一个已不存在的条目上）
+  if (isDetailOpen(id)) detailId.value = null
   showSnackbar('已从本机路线库删除')
+}
+
+// ---------------------------------------------------------------- 路线库「详情」展开（1.1.12 需求③）
+
+/**
+ * 正在展开详情的那一条（`null` = 全部收起）。
+ * ⚠️ 用 **lineId** 而不是数组下标：删掉一条后下标会整体前移，展开的详情就会"跳到别的路线"上。
+ * 🆕 为什么不是 `v-expansion-panels`：列表行上的「载入 / 重命名 / 删除」与摘要**必须常显**
+ * （既有验证脚本在**未展开**状态下就要点到它们、断言到摘要里的官方原名）——
+ * 那种面板默认把内容藏进折叠区，会让这些脚本和用户习惯都失效。
+ */
+const detailId = ref<string | null>(null)
+/** 编辑历史的展示上限（与数据层同一个常量，避免两处各写一个 5） */
+const historyMax = TRACK_HISTORY_MAX
+const isDetailOpen = (id: string) => detailId.value === String(id)
+const toggleDetail = (id: string) => {
+  detailId.value = isDetailOpen(id) ? null : String(id)
 }
 
 // ---------- 重命名（1.1.9 需求②：给已保存的跑道改名）----------
@@ -462,6 +615,7 @@ const lineOptions = computed(() =>
             <v-chip size="small" variant="tonal" color="primary">白虚线=官方路线</v-chip>
             <v-chip size="small" variant="tonal" color="success">绿=车道线</v-chip>
             <v-chip size="small" variant="tonal" color="warning">橙=最终轨迹</v-chip>
+            <v-chip size="small" variant="tonal" color="error">红点=起跑点</v-chip>
             <v-spacer />
             <v-btn-toggle v-model="mapStyle" mandatory density="compact" class="mr-2">
               <v-btn value="road" size="small">街道图</v-btn>
@@ -512,11 +666,24 @@ const lineOptions = computed(() =>
                   stroke="#fff"
                   stroke-width="1.2"
                 />
+                <!-- 🆕 起跑点（1.1.12 需求②）：红点 + 白描边 + 文字标注，一眼看出轨迹从哪儿起跑 -->
+                <g v-if="startMarker">
+                  <circle :cx="toPx(startMarker).x" :cy="toPx(startMarker).y" r="6" fill="#ef4444" stroke="#fff" stroke-width="2" />
+                  <text
+                    :x="toPx(startMarker).x + 9"
+                    :y="toPx(startMarker).y - 8"
+                    fill="#fecaca"
+                    font-size="12"
+                    font-weight="bold"
+                  >
+                    起跑点
+                  </text>
+                </g>
               </svg>
             </div>
           </v-card-text>
           <v-card-text class="text-caption text-medium-emphasis">
-            拖动=平移地图　单击=在当前位置<b>加一个点</b>　按住已有的小圆点拖动=改点　（编辑哪一圈见右侧）
+            拖动=平移地图　单击=<b>{{ editing === 'start' ? '点选起跑点（会自动吸附到车道上）' : '在当前位置加一个点' }}</b>　按住已有的小圆点拖动=改点　（编辑哪一样见右侧）
           </v-card-text>
         </v-card>
       </v-col>
@@ -536,6 +703,7 @@ const lineOptions = computed(() =>
             <v-btn-toggle v-model="editing" mandatory density="compact" class="mb-3">
               <v-btn value="outer" size="small">外圈</v-btn>
               <v-btn value="inner" size="small">内圈</v-btn>
+              <v-btn value="start" size="small">起跑点</v-btn>
             </v-btn-toggle>
             <!-- 快速定位（用户要求）：选中线路后一键把地图移到它那里 -->
             <v-btn
@@ -549,21 +717,68 @@ const lineOptions = computed(() =>
             >
               快速定位（把地图移到这条线路）
             </v-btn>
-            <div class="text-caption text-medium-emphasis mb-2">
-              当前{{ editing === 'outer' ? '外圈' : '内圈' }}：<b>{{ editingPts.length }}</b> 点
-              <span v-if="editingPts.length > 2">· 周长 {{ ringLengthM(editingPts).toFixed(0) }} m</span>
-            </div>
-            <v-btn block size="small" variant="tonal" class="mb-2" prepend-icon="mdi-map-marker-path" @click="useOfficialAsRing">
-              用官方路线打底（再微调）
-            </v-btn>
-            <v-btn block size="small" variant="tonal" class="mb-2" prepend-icon="mdi-undo" @click="undo">撤销上一个点</v-btn>
-            <v-btn block size="small" variant="tonal" color="info" class="mb-2" prepend-icon="mdi-auto-fix" @click="smoothRing">
-              把这一圈平滑一下（描的点难免有折角）
-            </v-btn>
-            <v-text-field v-model.number="insetM" type="number" density="compact" hide-details label="内缩米数（≈跑道宽度）" class="mb-2" />
-            <v-btn block size="small" variant="tonal" color="info" class="mb-2" prepend-icon="mdi-arrow-collapse-all" @click="makeInnerFromOuter">
-              按外圈自动生成内圈（向内缩 {{ insetM }} m）
-            </v-btn>
+
+            <!-- ===== 外圈 / 内圈（描点）===== -->
+            <template v-if="editing !== 'start'">
+              <div class="text-caption text-medium-emphasis mb-2">
+                当前{{ editing === 'outer' ? '外圈' : '内圈' }}：<b>{{ editingPts.length }}</b> 点
+                <span v-if="editingPts.length > 2">· 周长 {{ ringLengthM(editingPts).toFixed(0) }} m</span>
+              </div>
+              <v-btn block size="small" variant="tonal" class="mb-2" prepend-icon="mdi-map-marker-path" @click="useOfficialAsRing">
+                用官方路线打底（再微调）
+              </v-btn>
+              <v-btn block size="small" variant="tonal" class="mb-2" prepend-icon="mdi-undo" @click="undo">撤销上一个点</v-btn>
+              <v-btn block size="small" variant="tonal" color="info" class="mb-2" prepend-icon="mdi-auto-fix" @click="smoothRing">
+                把这一圈平滑一下（描的点难免有折角）
+              </v-btn>
+              <v-text-field v-model.number="insetM" type="number" density="compact" hide-details label="内缩米数（≈跑道宽度）" class="mb-2" />
+              <v-btn block size="small" variant="tonal" color="info" class="mb-2" prepend-icon="mdi-arrow-collapse-all" @click="makeInnerFromOuter">
+                按外圈自动生成内圈（向内缩 {{ insetM }} m）
+              </v-btn>
+              <v-btn block size="small" variant="tonal" color="error" class="mb-2" prepend-icon="mdi-delete-outline" @click="clearRing">清空这一圈</v-btn>
+            </template>
+
+            <!-- ===== 起跑点（1.1.12 需求②）===== -->
+            <template v-else>
+              <v-alert type="info" variant="tonal" density="compact" class="mb-2">
+                在<b>地图上点一下跑道</b>，就把起跑点设在那里（自动吸附到你所选的这道上）；下面的滑杆可沿跑道微调。
+              </v-alert>
+              <v-slider
+                :model-value="draftStartOffsetM"
+                :min="0"
+                :max="laneLengthSliderMax"
+                :step="1"
+                :disabled="!ringsReady"
+                label="沿跑道偏移（米）"
+                thumb-label
+                class="mb-1"
+                @update:model-value="onStartOffsetInput"
+              />
+              <div class="text-caption text-medium-emphasis mb-2">绕向（决定轨迹往哪边跑）：</div>
+              <v-btn-toggle v-model="draftStartDirection" mandatory density="compact" class="mb-2">
+                <v-btn v-for="d in directionOptions" :key="d.value" :value="d.value" size="small">{{ d.label }}</v-btn>
+              </v-btn-toggle>
+              <div class="text-caption text-medium-emphasis mb-2">
+                起跑点：<b>{{ startText }}</b>
+                <template v-if="laneLengthM > 0"><br />所选车道一圈 {{ laneLengthM.toFixed(0) }} m（偏移 0 = 你描圈的第一笔处）</template>
+                <template v-if="startMarker && draftStartPoint">
+                  <br />坐标 {{ draftStartPoint.latitude.toFixed(6) }}, {{ draftStartPoint.longitude.toFixed(6) }}
+                </template>
+              </div>
+              <v-btn
+                block
+                size="small"
+                variant="tonal"
+                color="error"
+                class="mb-2"
+                prepend-icon="mdi-close-circle-outline"
+                :disabled="!hasStart"
+                @click="clearStart"
+              >
+                取消起跑点设置
+              </v-btn>
+            </template>
+
             <!-- 合法性判定（用户要求：外圈必须包着内圈） -->
             <v-alert v-if="ringCheck && !ringCheck.ok" type="error" variant="tonal" density="compact" class="mb-2">
               <div class="font-weight-bold">内外圈不合法，先修好再保存：</div>
@@ -584,7 +799,6 @@ const lineOptions = computed(() =>
             >
               保存（本机）
             </v-btn>
-            <v-btn block size="small" variant="tonal" color="error" class="mb-2" prepend-icon="mdi-delete-outline" @click="clearRing">清空这一圈</v-btn>
             <v-btn block size="small" variant="text" color="error" class="mb-2" prepend-icon="mdi-restore" @click="reset">把这条线路的内外圈都清空</v-btn>
           </v-card-text>
         </v-card>
@@ -616,6 +830,9 @@ const lineOptions = computed(() =>
                   <b>{{ laneGap.outer.toFixed(1) }} m</b>（两者之和 ≈ 跑道宽度就是夹在中间）
                 </template>
                 <br />最终轨迹 {{ trajectory.length }} 点（含真实抖动：直道恒定 + 0.15 m 颗粒 + 偶发小凸起）
+                <template v-if="hasStart">
+                  <br />起跑点：<b>{{ startText }}</b> —— 轨迹从该点出发（跑到第 0 点必是起跑点）
+                </template>
               </div>
             </template>
           </v-card-text>
@@ -627,24 +844,52 @@ const lineOptions = computed(() =>
           </v-card-title>
           <v-card-text>
             <div v-if="!libEntries.length" class="text-caption text-medium-emphasis">
-              还没有配置好的路线。描好内外圈后点「保存（本机）」，这里就会按"创建日期 + 版本"列出来。
+              还没有配置好的路线。描好内外圈后点「保存（本机）」，这里就会按「创建 / 最近保存的时间与版本 + 编辑次数」列出来。
             </div>
             <v-list v-else density="compact" class="pa-0">
-              <v-list-item v-for="e in libEntries" :key="e.lineId" class="px-0">
-                <v-list-item-title class="text-body-2">
-                  {{ nameOf(e) }}
-                  <v-chip v-if="String(e.lineId) === String(lineId)" size="x-small" color="primary" variant="tonal" class="ml-1">
-                    正在编辑
-                  </v-chip>
-                  <v-chip v-if="e.customName" size="x-small" color="info" variant="tonal" class="ml-1">已改名</v-chip>
-                </v-list-item-title>
-                <v-list-item-subtitle class="text-caption">{{ entrySummaryText(e) }}</v-list-item-subtitle>
-                <template #append>
-                  <v-btn size="x-small" variant="text" @click="loadEntry(e.lineId)">载入</v-btn>
-                  <v-btn size="x-small" variant="text" color="primary" @click="openRename(e.lineId)">重命名</v-btn>
-                  <v-btn size="x-small" variant="text" color="error" @click="removeEntry(e.lineId)">删除</v-btn>
-                </template>
-              </v-list-item>
+              <template v-for="e in libEntries" :key="e.lineId">
+                <v-list-item class="px-0">
+                  <v-list-item-title class="text-body-2 d-flex flex-wrap align-center ga-1">
+                    {{ nameOf(e) }}
+                    <v-chip v-if="String(e.lineId) === String(lineId)" size="x-small" color="primary" variant="tonal">正在编辑</v-chip>
+                    <v-chip v-if="e.customName" size="x-small" color="info" variant="tonal">已改名</v-chip>
+                    <!-- 🆕 起跑点/编辑次数：不展开也能一眼看到（1.1.12 需求②③）
+                         ⚠️ 编辑次数**只在真的记录过时才显示**：旧条目没有这个字段，
+                            显示"编辑 1 次"是替用户猜的（详情里如实写"未记录（旧数据）"）。 -->
+                    <v-chip v-if="e.start" size="x-small" color="error" variant="tonal">起跑点已设</v-chip>
+                    <v-chip v-if="e.editCount" size="x-small" color="secondary" variant="tonal">编辑 {{ e.editCount }} 次</v-chip>
+                  </v-list-item-title>
+                  <v-list-item-subtitle class="text-caption">{{ entrySummaryText(e) }}</v-list-item-subtitle>
+                  <template #append>
+                    <v-btn size="x-small" variant="text" @click="toggleDetail(e.lineId)">
+                      {{ isDetailOpen(e.lineId) ? '收起详情' : '详情' }}
+                    </v-btn>
+                    <v-btn size="x-small" variant="text" @click="loadEntry(e.lineId)">载入</v-btn>
+                    <v-btn size="x-small" variant="text" color="primary" @click="openRename(e.lineId)">重命名</v-btn>
+                    <v-btn size="x-small" variant="text" color="error" @click="removeEntry(e.lineId)">删除</v-btn>
+                  </template>
+                </v-list-item>
+                <!-- 详情（1.1.12 需求③）：时间 / 版本 / 次数 / 几何 / 起跑点 + 最近几次编辑留痕 -->
+                <v-expand-transition>
+                  <div v-if="isDetailOpen(e.lineId)" class="lib-detail mb-2 pa-2">
+                    <v-table density="compact" class="lib-detail-table mb-2">
+                      <tbody>
+                        <tr v-for="row in entryDetailRows(e)" :key="`${e.lineId}-${row.label}`">
+                          <td class="text-medium-emphasis lib-detail-label">{{ row.label }}</td>
+                          <td>{{ row.value }}</td>
+                        </tr>
+                      </tbody>
+                    </v-table>
+                    <div class="text-caption text-medium-emphasis">
+                      编辑历史（最近 {{ historyMax }} 次，最新在上）
+                    </div>
+                    <ul v-if="e.history?.length" class="text-caption pl-4 mt-1 mb-0">
+                      <li v-for="(log, i) in e.history" :key="`${e.lineId}-log-${i}`">{{ historyLogText(log) }}</li>
+                    </ul>
+                    <div v-else class="text-caption pl-1 mt-1">还没有编辑历史（这一条是用旧版本存的）。</div>
+                  </div>
+                </v-expand-transition>
+              </template>
             </v-list>
           </v-card-text>
         </v-card>
@@ -707,5 +952,20 @@ const lineOptions = computed(() =>
   left: 0;
   top: 0;
   pointer-events: none;
+}
+/* 路线库「详情」区块（1.1.12 需求③）：给它一个浅底，和列表行区分开 */
+.lib-detail {
+  background: rgba(148, 163, 184, 0.08);
+  border-radius: 6px;
+}
+.lib-detail-table {
+  background: transparent;
+}
+.lib-detail-table td {
+  height: 28px;
+}
+.lib-detail-label {
+  width: 42%;
+  white-space: nowrap;
 }
 </style>

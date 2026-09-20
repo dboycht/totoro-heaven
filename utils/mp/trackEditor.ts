@@ -330,3 +330,150 @@ export function smoothClosedRing<T extends { latitude: number; longitude: number
    `generateRoute.ts` 里的另一套逻辑决定，这两个函数**从未被任何地方引用**（grep 全仓仅声明处）。
    删掉而不是留着：留着会让人误以为"起跑点由这里控制"，从而改错地方。 */
 
+// ---------------------------------------------------------------- 起跑点（2026-09-20，1.1.12 需求②）
+
+/**
+ * 起跑点是怎么起作用的（**先把机制说清，再谈界面**）：
+ *
+ *   `generateCorridorRoute(geometry, …)` **永远从 `geometry[0]` 开始按数组顺序推进**
+ *   （生成器内部按弧长前进，不认"起点坐标"这种东西）。所以"设置起跑点"在本工程里
+ *   **不是**给生成器传一个点，而是**把车道线数组变换一下**：
+ *     ① 按弧长**旋转**，让第 0 点落到起跑点处（`rotateLoop`）；
+ *     ② 需要反向跑时，把起点保留在第 0 位、其余元素**倒序**（`applyStartToLoop` 的 reverse 分支）。
+ *
+ *   ⚠️ 判据：**任何"改变起跑点/绕向"的需求，都只能通过这两个函数落到几何上**；
+ *      谁也别去改 `generateRoute.ts` 的推进方向（那是拟合度与多圈切圈的公共基准）。
+ *
+ *   顺带解释"顺时针/逆时针"为什么必须**算出来**而不是写死：
+ *      数组顺序本身不含方向语义 —— 有人从东侧起笔、有人从西侧，画出来的 `outer` 数组
+ *      可能是 CCW 也可能是 CW。所以界面上的"顺时针/逆时针"由 `ringOrientation(外圈)`
+ *      （有向面积符号）与用户选的 `forward/reverse` **共同决定**（`startDirectionLabel`）。
+ */
+
+/** 绕向（相对"描圈时点的顺序"而言，与地理方向无关；地理方向由 `startDirectionLabel` 翻译） */
+export type LoopDirection = 'forward' | 'reverse'
+
+/** 起跑点设置（存进本地路线库的形态） */
+export interface TrackStartInput {
+  /** 沿所选车道的弧长偏移（米，0 ~ 该车道周长） */
+  offsetM: number
+  /** 绕向：`forward` = 沿描圈方向；`reverse` = 反向 */
+  direction: LoopDirection
+}
+
+/** 闭合圈的绕向：用有向面积符号判定（>0 = 逆时针 CCW） */
+export function ringOrientation(ring: LatLng[]): 'ccw' | 'cw' | 'unknown' {
+  const pts = norm(ring)
+  if (pts.length < 3) return 'unknown'
+  const pr = makeProjector(ringCentroidLat(pts))
+  return signedArea(pts.map(pr.toXY)) > 0 ? 'ccw' : 'cw'
+}
+
+/**
+ * 闭合折线上**弧长 `arcM` 处的点**（超出周长自动取模；点数不足/周长非法返回 `null`）。
+ * 与 `cumulative`/`resampleClosed` 同一套口径：**弧长从数组第 0 点起算、沿数组顺序增长**。
+ */
+export function pointAtArcM(loop: LatLng[], arcM: number): LatLng | null {
+  const pts = norm(loop)
+  if (pts.length < 2) return null
+  const { cum, total } = cumulative(pts)
+  if (!(total > 0)) return null
+  const raw = Number(arcM)
+  const target = (((Number.isFinite(raw) ? raw : 0) % total) + total) % total
+  let i = 1
+  while (i < cum.length - 1 && cum[i]! < target) i++
+  const a = pts[i - 1]!
+  const b = pts[i % pts.length]!
+  const segLen = (cum[i]! - cum[i - 1]!) || 1e-9
+  const t = Math.min(1, Math.max(0, (target - cum[i - 1]!) / segLen))
+  return {
+    latitude: a.latitude + (b.latitude - a.latitude) * t,
+    longitude: a.longitude + (b.longitude - a.longitude) * t,
+  }
+}
+
+/**
+ * 把地图上点选的起跑点**吸附到闭合折线（车道线）上**：
+ * 返回线上最近点、它到"数组第 0 点"的弧长偏移，以及**用户点偏了多少米**（`distanceM`，供界面提示）。
+ *
+ * 为什么要吸附而不是直接存点击坐标：车道线是算法算出来的，人点不到"线上"；
+ * 若把点击坐标当起点存下来，轨迹的第 0 点就会**脱离车道线**（起手就是一个偏移点）。
+ */
+export function snapToLoop(
+  loop: LatLng[],
+  p: { latitude: number | string; longitude: number | string },
+): { point: LatLng; offsetM: number; distanceM: number } | null {
+  const pts = norm(loop)
+  if (pts.length < 3) return null
+  const pr = makeProjector(ringCentroidLat(pts))
+  const q = pr.toXY(p)
+  const { cum } = cumulative(pts)
+  let bestD = Number.POSITIVE_INFINITY
+  let bestArc = 0
+  let bestXY: XY | null = null
+  for (let i = 0; i < pts.length; i++) {
+    const aXY = pr.toXY(pts[i]!)
+    const bXY = pr.toXY(pts[(i + 1) % pts.length]!)
+    const c = closestOnSegment(q, aXY, bXY)
+    const d = Math.hypot(c.x - q.x, c.y - q.y)
+    if (d < bestD) {
+      bestD = d
+      bestArc = cum[i]! + Math.hypot(c.x - aXY.x, c.y - aXY.y)
+      bestXY = c
+    }
+  }
+  if (!bestXY) return null
+  const ll = pr.toLL(bestXY)
+  return {
+    point: { latitude: ll.latitude, longitude: ll.longitude },
+    offsetM: Math.round(bestArc * 10) / 10,
+    distanceM: bestD,
+  }
+}
+
+/**
+ * 按弧长**旋转**闭合折线：让第 0 点落到 `offsetM` 处（点数与"等弧长"性质都保持不变）。
+ *
+ * ⚠️ `offsetM <= 0`（或几何非法）时**原样返回点的一份拷贝** ——
+ *    这条短路是**回归保证**：没设起跑点的老数据必须与旧版生成结果**逐点一致**。
+ */
+export function rotateLoop(loop: LatLng[], offsetM: number): LatLng[] {
+  const pts = norm(loop)
+  const copy = () => pts.map((p) => ({ ...p }))
+  if (pts.length < 3) return copy()
+  const off = Number(offsetM)
+  if (!(off > 0)) return copy()
+  const { total } = cumulative(pts)
+  if (!(total > 0)) return copy()
+  const start = off % total
+  const n = pts.length
+  const out: LatLng[] = []
+  for (let k = 0; k < n; k++) {
+    const p = pointAtArcM(pts, start + (total * k) / n)
+    if (p) out.push(p)
+  }
+  return out.length === n ? out : copy()
+}
+
+/**
+ * **把起跑点与绕向落到几何上**（唯一入口，跑步引擎与跑道编辑页预览都必须走它）：
+ * 先按 `offsetM` 旋转，再在 `reverse` 时把起点留在第 0 位、其余倒序。
+ */
+export function applyStartToLoop(loop: LatLng[], start?: TrackStartInput | null): LatLng[] {
+  const rotated = rotateLoop(loop, Number(start?.offsetM) || 0)
+  if (start?.direction !== 'reverse' || rotated.length < 2) return rotated
+  return [rotated[0]!, ...rotated.slice(1).reverse()]
+}
+
+/**
+ * 绕向的**用户可读文案**：把"沿数组顺序 / 反向"翻译成地理上的顺时针 / 逆时针。
+ * 圈向未知（点数不足）时退化成"沿描圈方向 / 反向"，**绝不瞎猜顺逆**。
+ */
+export function startDirectionLabel(ring: LatLng[], direction: LoopDirection): string {
+  const o = ringOrientation(ring)
+  if (o === 'unknown') return direction === 'reverse' ? '反向' : '沿描圈方向'
+  const forward = o === 'ccw' ? '逆时针' : '顺时针'
+  const reverse = o === 'ccw' ? '顺时针' : '逆时针'
+  return direction === 'reverse' ? reverse : forward
+}
+

@@ -59,6 +59,12 @@ export function useMpDemo() {
     // ⚠️ 2026-09-19 审计 R11：不再转发 `switches` —— demo 那份开关**只写不读**（门禁读真实链路的
     //    `useMpReal().switches`），已连同 `DEMO_SWITCHES` 一起删除，见 `demo/state.ts` 的说明。
     run: state.run,
+    /**
+     * 🆕 自由跑目标距离（1.1.12 需求①）：页面读它显示/改它设定，跑步引擎读它当 `targetKm`。
+     * `setFreeRunKm` 负责归一化（0.5~42.2 km、一位小数）并写入 localStorage（记住上次的值）。
+     */
+    freeRunKm: state.freeRunKm,
+    setFreeRunKm: state.setFreeRunKm,
     records: records.records,
     term: records.term,
     stats: records.stats,
