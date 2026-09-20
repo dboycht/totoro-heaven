@@ -45,11 +45,24 @@ export const channelText = (c: ReleaseChannel): string => (c === 'stable' ? '建
 export const VERSION_ADVICE = {
   recommended: '1.2.*',
   preview: '1.1.*',
-  recommendedEta: '9.20',
+  /** ⚠️ 2026-09-20：1.2.0 未按原计划（9.20）发布，日期改为「待定」，别再写死一个已经过去的日期 */
+  recommendedEta: '待定',
 } as const
 
 /** 版本列表（最新在前） */
 export const VERSION_ENTRIES: VersionEntry[] = [
+  {
+    version: '1.1.13',
+    date: '2026-09-20',
+    channel: 'preview',
+    title: '开发中（尚无已确认的新需求）',
+    planned: true,
+    highlights: [
+      '本版仍在开发中，还没有可以对外说明的新内容；',
+      '定版后会在此处补上完整的更新日志。',
+    ],
+    note: '开发中的条目，不在版本页展示；对外推荐正式版为 1.2.*（发布日期待定）。',
+  },
   {
     version: '1.1.12',
     /**
@@ -96,10 +109,10 @@ export const VERSION_ENTRIES: VersionEntry[] = [
     version: '1.2.0',
     date: '2026-09-20',
     channel: 'stable',
-    title: '计划中的正式版（建议使用）',
+    title: '计划中的正式版（建议使用，发布日期待定）',
     planned: true,
     highlights: [
-      '建议使用 1.2.* 的发行版（预计 9.20 发布）：当前 1.1.* 均为预览测试版；',
+      '建议使用 1.2.* 的发行版（发布日期待定）：当前 1.1.* 均为预览测试版；',
       '1.2.* 将在此基础上收敛功能与稳定性，作为对外推荐的正式版本。',
     ],
     note: '本条目为计划项；发布后会补上贺图与完整更新日志。',

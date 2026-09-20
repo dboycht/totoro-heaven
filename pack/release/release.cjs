@@ -8,7 +8,10 @@
  *   node --use-system-ca pack/release/release.cjs --tag 1.1.1 --zip dist/totoro-heaven-1.1.1.zip --notes dist/release-notes-1.1.1.md
  *
  * 默认值：tag = package.json 的 version；zip = dist/totoro-heaven-<tag>.zip；
+ *         sevenZip = dist/totoro-heaven-<tag>.7z（**存在才上传**，自 1.1.10 起每个 Release 都发 zip + 7z）；
  *         notes = dist/release-notes-<tag>.md（缺省时用一行兜底说明）。
+ * ⚠️ `--notes` 就是 Release 的**正文**：本项目的惯例是传 `dist/release-body-<tag>.md`（= 更新日志），
+ *    `dist/release-notes-<tag>.md` 只是开发侧留档（含"重要提示"抬头）。
  *
  * ⚠️ 三个必须记住的坑（E8 实测）：
  *   1. 上传附件的 host 是 **uploads.github.com**（用 api.github.com 会 404）；
@@ -36,6 +39,12 @@ const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
 const TAG = argOf('tag', pkg.version)
 const REPO = argOf('repo', 'dboycht/totoro-heaven')
 const ZIP = path.resolve(ROOT, argOf('zip', path.join('dist', `totoro-heaven-${TAG}.zip`)))
+/**
+ * 🆕 2026-09-20：**第二个附件（7z）**。自 1.1.10 起每个 Release 都发 zip + 7z，
+ * 而本脚本原先只会上传一个 zip ⇒ 7z 得靠另一个一次性脚本补传（容易漏、也没进版本控制）。
+ * 现在：默认路径 `dist/totoro-heaven-<tag>.7z`，**存在才上传**（老版本没有 7z 时行为不变）。
+ */
+const SEVEN = path.resolve(ROOT, argOf('sevenZip', path.join('dist', `totoro-heaven-${TAG}.7z`)))
 const NOTES = path.resolve(ROOT, argOf('notes', path.join('dist', `release-notes-${TAG}.md`)))
 const TOKEN = process.env.GH_TOKEN || ''
 
@@ -47,6 +56,12 @@ if (!fs.existsSync(ZIP)) {
   console.error(`找不到发布附件：${ZIP}`)
   process.exit(1)
 }
+
+/** 附件清单（顺序即上传顺序）；7z 不存在时自动跳过 */
+const ASSETS = [
+  { path: ZIP, contentType: 'application/zip' },
+  ...(fs.existsSync(SEVEN) ? [{ path: SEVEN, contentType: 'application/x-7z-compressed' }] : []),
+]
 
 const body = fs.existsSync(NOTES) ? fs.readFileSync(NOTES, 'utf8') : `Release ${TAG}`
 
@@ -132,42 +147,48 @@ async function ensureRelease() {
   return created.json
 }
 
-/** 上传附件（同名先删，保证可重跑） */
-async function uploadAsset(releaseId) {
-  const name = path.basename(ZIP)
+/** 上传附件（同名先删，保证可重跑）；逐个上传 ASSETS 里的每个文件 */
+async function uploadAssets(releaseId) {
   const list = await api('GET', apiHost, `/repos/${REPO}/releases/${releaseId}/assets`)
-  if (Array.isArray(list.json)) {
-    for (const asset of list.json.filter((a) => a.name === name)) {
-      const del = await api('DELETE', apiHost, `/repos/${REPO}/releases/assets/${asset.id}`)
-      console.log(`  删除同名旧附件 ${name}（HTTP ${del.status}）`)
+  const uploaded = []
+  for (const spec of ASSETS) {
+    const name = path.basename(spec.path)
+    if (Array.isArray(list.json)) {
+      for (const asset of list.json.filter((a) => a.name === name)) {
+        const del = await api('DELETE', apiHost, `/repos/${REPO}/releases/assets/${asset.id}`)
+        console.log(`  删除同名旧附件 ${name}（HTTP ${del.status}）`)
+      }
     }
+    const bytes = fs.readFileSync(spec.path)
+    const res = await api(
+      'POST',
+      uploadHost,
+      `/repos/${REPO}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`,
+      bytes,
+      spec.contentType,
+    )
+    if (res.status >= 300) {
+      console.error(`上传附件失败：${name} HTTP ${res.status} ${res.text.slice(0, 300)}`)
+      process.exit(1)
+    }
+    console.log(`  附件上传成功：${name}（${(bytes.length / 1024 / 1024).toFixed(1)} MB）`)
+    uploaded.push(res.json)
   }
-  const bytes = fs.readFileSync(ZIP)
-  const uploaded = await api(
-    'POST',
-    uploadHost,
-    `/repos/${REPO}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`,
-    bytes,
-    'application/zip',
-  )
-  if (uploaded.status >= 300) {
-    console.error(`上传附件失败：HTTP ${uploaded.status} ${uploaded.text.slice(0, 300)}`)
-    process.exit(1)
-  }
-  console.log(`  附件上传成功：${name}（${(bytes.length / 1024 / 1024).toFixed(1)} MB）`)
-  return uploaded.json
+  return uploaded
 }
 
 async function main() {
   const release = await ensureRelease()
-  const asset = await uploadAsset(release.id)
+  const assets = await uploadAssets(release.id)
 
   console.log('\n=== 发布完成 ===')
   console.log(`tag        : ${release.tag_name}`)
   console.log(`name       : ${release.name}`)
   console.log(`release id : ${release.id}`)
-  console.log(`asset      : ${asset.name} (${asset.size} bytes)`)
-  console.log(`asset url  : ${asset.browser_download_url}`)
+  for (const asset of assets) {
+    console.log(`asset      : ${asset.name} (${asset.size} bytes)`)
+    if (asset.digest) console.log(`  digest   : ${asset.digest}`)
+  }
   console.log(`页面       : ${release.html_url}`)
 }
 
