@@ -152,13 +152,26 @@ $logoIco = Join-Path $root 'logo.ico'
 $hasRcedit = Test-Path $rcedit
 $hasIcon = Test-Path $logoIco
 if ($hasRcedit -and $hasIcon) {
+    $before = (Get-Item $exeOut).LastWriteTimeUtc
     $rceditProc = Start-Process -FilePath $rcedit -ArgumentList @($exeOut, '--set-icon', $logoIco) -PassThru -NoNewWindow
     # Safety net: cap at 120s (on a non-postjected exe it exits normally right away)
     if (-not $rceditProc.WaitForExit(120000)) {
         Write-Warning 'rcedit timed out after 120s - killing it'
         Stop-Process -Id $rceditProc.Id -Force -ErrorAction SilentlyContinue
-    } elseif ($rceditProc.ExitCode -ne 0) {
-        Write-Warning "rcedit icon set failed (exit $($rceditProc.ExitCode))"
+    } else {
+        # 2026-09-20 fix: the TIMED overload of WaitForExit() does NOT guarantee that the process
+        # object's ExitCode is populated - reading it right away yielded an EMPTY value and produced
+        # a false "rcedit icon set failed (exit )" warning, while the icon HAD actually been embedded
+        # (verified by finding logo.ico's image block inside the EXE, i.e. evidence from the artifact,
+        # not from this log). Call the argument-less overload to force ExitCode to settle.
+        $rceditProc.WaitForExit()
+        # Judge by the ARTIFACT: if the exe's mtime moved, rcedit did write to it (icon applied).
+        $changed = (Get-Item $exeOut).LastWriteTimeUtc -ne $before
+        if ($changed) {
+            Write-Host '[5/7] icon applied (exe modified; rcedit ExitCode may read as empty in this invocation - artifact check is authoritative).'
+        } else {
+            Write-Warning "rcedit did not modify the exe (exit $($rceditProc.ExitCode)) - icon NOT applied; the EXE keeps the default Node icon."
+        }
     }
 } else {
     Write-Warning 'rcedit or logo.ico not found - skipping icon step'
