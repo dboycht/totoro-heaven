@@ -62,7 +62,7 @@ if ($needBuild) {
 # is newer than the client manifest, the output cannot have been built from these sources -> rebuild.
 if (-not $needBuild -and (Test-Path $manifestPath)) {
     $manifestTime = (Get-Item $manifestPath).LastWriteTimeUtc
-    $watch = @('src', 'public', 'pages', 'components', 'composables', 'layouts', 'utils', 'server', 'plugins', 'app.vue', 'nuxt.config.ts', 'package.json')
+    $watch = @('src', 'public', 'pages', 'components', 'composables', 'layouts', 'utils', 'server', 'plugins', 'assets', 'app.vue', 'app.config.ts', 'nuxt.config.ts', 'package.json')
     $newest = $null
     foreach ($rel in $watch) {
         $p = Join-Path $root $rel
@@ -112,7 +112,7 @@ function To-Comparable([string]$v) {
 $curNum = To-Comparable $ver
 $allEntries = @()
 foreach ($f in $chunkFiles) {
-    foreach ($m in (Select-String -Path $f.FullName -Pattern 'version:"(1\.[0-9]+\.[0-9]+)"' -AllMatches -ErrorAction SilentlyContinue).Matches) { $allEntries += $m.Groups[1].Value }
+    foreach ($m in (Select-String -Path $f.FullName -Pattern 'version:"((?:[0-9]+\.){2}[0-9]+)"' -AllMatches -ErrorAction SilentlyContinue).Matches) { $allEntries += $m.Groups[1].Value }
 }
 $uniqEntries = @($allEntries | Sort-Object -Unique)
 $newer = @($uniqEntries | Where-Object { (To-Comparable $_) -gt $curNum })

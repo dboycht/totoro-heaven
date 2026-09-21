@@ -1,4 +1,4 @@
-# 一键发布 totoro-heaven release（读 Windows 凭据管理器 token -> 设 GH_TOKEN -> node release.cjs）
+﻿# 一键发布 totoro-heaven release（读 Windows 凭据管理器 token -> 设 GH_TOKEN -> node release.cjs）
 # 用法：.\pack\release\publish.ps1            （默认用 package.json 的 version 作为 tag）
 #       .\pack\release\publish.ps1 -Tag 1.0.4 （覆盖 tag）
 param([string]$Tag = '')

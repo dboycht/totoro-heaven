@@ -43,7 +43,7 @@ async function looksLikeOurApp(port) {
     clearTimeout(timer)
     if (!res.ok) return false
     const html = await res.text()
-    return html.includes('龙猫天堂') || html.includes('Totoro Heaven') || html.includes('__DSH_BOOT__')
+    return html.includes('龙猫天堂') || html.includes('Totoro Heaven')
   } catch {
     return false
   }

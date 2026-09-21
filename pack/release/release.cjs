@@ -80,6 +80,15 @@ const ASSETS = [
 
 /** 正文已在上面强制校验存在（缺正文一律 exit 1，不做"兜底一行"的降级） */
 const body = fs.readFileSync(NOTES, 'utf8')
+/**
+ * ⚠️ 2026-09-21 审计修复（B6）：**只判"文件存在"不够，还要判"内容非空"**。
+ * 若生成脚本写出 0 字节（或只有空白/一个换行），空 body 会被 PATCH 上去，
+ * 把 GitHub 上原有的完整更新日志**覆盖成空白** —— 正是上面注释想避免的那件事。
+ */
+if (!body.trim()) {
+  console.error(`Release 正文是空的：${NOTES}\n  拒绝用空正文发布（会把 GitHub 上已有的更新日志覆盖成空白）。`)
+  process.exit(1)
+}
 
 /** 极简 https 请求封装（Node 内置，无第三方依赖） */
 function api(method, host, urlPath, payload, contentType = 'application/json') {
@@ -137,12 +146,19 @@ const uploadHost = 'uploads.github.com'
 async function ensureRelease() {
   const existing = await api('GET', apiHost, `/repos/${REPO}/releases/tags/${encodeURIComponent(TAG)}`)
   if (existing.status === 200 && existing.json && existing.json.id) {
-    console.log(`release ${TAG} 已存在（id=${existing.json.id}），同步说明并复用（先转草稿，附件齐了再公开）`)
+    /**
+     * ⚠️ 2026-09-21 审计修复（B5）：**已公开的 release 不能被"重跑"拉下线**。
+     * 原先无论新建还是复用都 `draft:true`，于是"给已发布版本补附件/改说明"时先把它变草稿，
+     * 中途上传失败（38MB 单次 POST，网络一抖就失败）⇒ 这个版本从公开页与 `/releases/latest` 上**消失**。
+     * 判据：**草稿态只在"本来就是草稿"时保持**；已公开的保持公开，最后由 `publishRelease()` 统一转正。
+     */
+    const wasDraft = existing.json.draft === true
+    console.log(`release ${TAG} 已存在（id=${existing.json.id}，draft=${wasDraft}），同步说明并复用`)
     const patched = await api('PATCH', apiHost, `/repos/${REPO}/releases/${existing.json.id}`, {
       name: TAG,
       body,
       prerelease: false,
-      draft: true,
+      draft: wasDraft,
     })
     if (patched.status >= 300) {
       console.error(`更新 release 失败：HTTP ${patched.status} ${patched.text.slice(0, 300)}`)
