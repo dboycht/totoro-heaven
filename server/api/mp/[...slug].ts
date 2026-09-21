@@ -40,7 +40,7 @@ const ALLOWED_UPSTREAM_SUFFIXES = ['xtotoro.com']
  * 取 20 秒：比本项目其余上游调用（15–20 秒）一致，且明显长于正常响应（实测多为 200–600 ms），
  * 只在"网络/校方接口真的卡住"时才触发，避免误杀慢响应。
  */
-const UPSTREAM_TIMEOUT_MS = 20_000
+const UPSTREAM_TIMEOUT_MS = 40_000
 
 /** 主机是否在白名单内（`xtotoro.com` 及其子域） */
 const isAllowedUpstreamHost = (hostname: string): boolean => {
@@ -113,6 +113,12 @@ export default defineEventHandler(async (event) => {
      * 而它原先**没有超时** —— 上游 TCP 卡住时 `fetch` 会一直挂着，界面表现为**无限转圈**
      * （用户只能强杀程序）。其余 4 处上游调用早就带了 15–20 秒超时，这里是漏网的一处。
      * 判据：**任何出网请求都要有上限**；超时后给出可读原因，而不是抛一个看不懂的裸 AbortError。
+     *
+     * ⚠️ **2026-09-21 调整 20s → 40s（修 issue #11 的一部分）**：这个上限**必须大于**
+     * 客户端写操作超时（`src/wrappers/MpApiWrapper.ts` 的 `MP_WRITE_TIMEOUT_MS = 30s`），
+     * 否则代理先放弃、客户端永远走不到"超时→核实是否已入库"那条路径（实测厂商 `sunRunExercises`
+     * 正常就能跑 15.4 秒，20 秒的上限余量太薄）。这里放宽到 40 秒作为**最后兜底**，
+     * 让"等待上限"由离用户最近的那一层（客户端）决定、语义单一。
      */
     res = await fetch(target, { method, headers, body, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) })
     text = await res.text()

@@ -74,6 +74,8 @@ export interface MpRequestOptions {
    */
   baseUrl?: string
   signal?: AbortSignal
+  /** 本次请求的超时（毫秒）。缺省按方法取：GET = 读口径、POST = 写口径（见 `timeoutForMethod`） */
+  timeout?: number
 }
 
 /** 一次判定的调用结果 */
@@ -82,10 +84,21 @@ export interface MpCall<T = unknown> extends MpVerdict {
   data?: T
   /** 原始信封（排错用；可能含 PII，勿入库） */
   raw?: MpResponse
+  /**
+   * 是否是**超时**导致的失败（2026-09-21 修 issue #11）。
+   * ⚠️ 语义是"**结果未知**"：请求可能已经到达服务端并写入成功，只是响应没等到
+   * ⇒ 调用方**不要**当成"确定失败"，要去核实（见 `utils/mp/writeOutcome.ts`）。
+   */
+  timedOut?: boolean
 }
 
 /** 传输层失败（非 JSON / 空响应 / 网络异常）→ 统一成 system 判定 */
-const transportFailure = (message: string): MpCall<never> => ({ ok: false, kind: 'system', message })
+const transportFailure = (message: string, timedOut = false): MpCall<never> => ({
+  ok: false,
+  kind: 'system',
+  message,
+  ...(timedOut ? { timedOut: true } : {}),
+})
 
 /** 请求选项：把 baseUrl 变成代理可识别的上游头 */
 const buildHeaders = (options: MpRequestOptions): Record<string, string> => {
@@ -102,25 +115,56 @@ async function rawRequest(
   key: MpEndpointKey,
   body: unknown,
   options: MpRequestOptions,
-): Promise<{ raw?: MpResponse; error?: string }> {
+): Promise<{ raw?: MpResponse; error?: string; timedOut?: boolean }> {
   const meta = MP_ENDPOINTS[key]
   const path = meta.path.replace(/^\//, '')
   const headers = buildHeaders(options)
+  /** 读 15 s / 写 30 s（写操作上游实测能到 15.4 s，见 `MP_WRITE_TIMEOUT_MS` 的注释） */
+  const timeout = options.timeout ?? timeoutForMethod(meta.method)
 
   try {
     const response =
       meta.method === 'GET'
-        ? await MpApiWrapper.client.get(path, { headers, signal: options.signal })
-        : await MpApiWrapper.client.post(path, { json: body ?? {}, headers, signal: options.signal })
+        ? await MpApiWrapper.client.get(path, { headers, signal: options.signal, timeout })
+        : await MpApiWrapper.client.post(path, { json: body ?? {}, headers, signal: options.signal, timeout })
 
     const text = await response.text()
     if (!text.trim()) return { error: `空响应（HTTP ${response.status}）` }
+    let parsed: MpResponse
     try {
-      return { raw: JSON.parse(text) as MpResponse }
+      parsed = JSON.parse(text) as MpResponse
     } catch {
       return { error: `响应不是 JSON（HTTP ${response.status}）` }
     }
+    /**
+     * ⚠️ **HTTP 504 也按"超时/结果未知"处理**（2026-09-21 修 issue #11 的一部分）：
+     * 504 来自①本机代理等上游等到 `UPSTREAM_TIMEOUT_MS` 后放弃，或②上游网关自己超时 ——
+     * 两种情况都只是"**我们没等到答复**"，**不等于上游没写入**。所以带上 `timedOut`，
+     * 让写操作走"去服务端核实"那条路（读操作只是提示稍后重试，不受影响）。
+     * 文案优先用对方给的可读原因（代理写的是中文），拿不到再兜底。
+     */
+    if (response.status === 504) {
+      const reason = String((parsed as { statusMessage?: unknown }).statusMessage ?? '').trim()
+      return {
+        error: reason || `上游超时（HTTP 504：${meta.method} ${meta.path}）`,
+        timedOut: true,
+      }
+    }
+    return { raw: parsed }
   } catch (err) {
+    /**
+     * ⚠️ 2026-09-21 修 issue #11：**超时要单独标出来**。
+     * 超时的语义是"**结果未知**"（请求可能已经写入服务端，只是响应没等到）——
+     * 原先它和"网络断了"共用一条 `system` 失败路径，导致 `submit.ts` 把"晚到 404 毫秒的成功"当成失败，
+     * 于是跳过轨迹明细、还诱导用户重试。文案也换成中文并把方法/端点/秒数写清楚（英文的
+     * `Request timed out: POST http://…` 对用户毫无信息量）。
+     */
+    if (isTimeoutError(err)) {
+      return {
+        error: `请求超时：${Math.round(timeout / 1000)} 秒内未收到响应（${meta.method} ${meta.path}）`,
+        timedOut: true,
+      }
+    }
     return { error: await describeTransportError(err) }
   }
 }
@@ -171,6 +215,31 @@ const SCHOOL_LIST_TTL_MS = 30 * 60 * 1000
  */
 export const MP_RETRY_CONFIG: { limit: number; methods: ['get'] } = { limit: 1, methods: ['get'] }
 
+/**
+ * 超时口径（**2026-09-21 修 GitHub issue #11**）：
+ * - **读**：15 秒 —— 上游读接口实测都在 100~300 ms 量级，足够；
+ * - **写**：30 秒 —— 实测厂商 `sunRunExercises` **正常就能跑 14.8~15.4 秒**
+ *   （09-18 我们实测「服务端处理 14.8 秒」；09-21 用户实测日志 `ms:15404`）。
+ *   原先读写共用一个 15 秒 ⇒ **余量只剩 0.2~0.4 秒**，于是必然出现"响应刚到、客户端已放弃"的假报错：
+ *   界面说失败、**轨迹明细被跳过**，而成绩其实已经入库。
+ * 判据：**写操作的超时必须大于上游最慢耗时的实测上界**（留约 2 倍余量）。
+ */
+export const MP_READ_TIMEOUT_MS = 15000
+export const MP_WRITE_TIMEOUT_MS = 30000
+export const timeoutForMethod = (method: 'GET' | 'POST'): number =>
+  method === 'GET' ? MP_READ_TIMEOUT_MS : MP_WRITE_TIMEOUT_MS
+
+/**
+ * 是不是"超时"这一类异常（ky 抛 `TimeoutError`；少数环境抛带 `ETIMEDOUT` 的错误）。
+ * 判据：**超时必须能被单独识别** —— 它的语义是"**结果未知**"而不是"失败"
+ * （见 `utils/mp/writeOutcome.ts`：超时后要去服务端核实，绝不能诱导用户重试）。
+ */
+export function isTimeoutError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const e = err as { name?: unknown; code?: unknown }
+  return e.name === 'TimeoutError' || e.code === 'ETIMEDOUT'
+}
+
 export const MpApiWrapper = {
   client: ky.create({
     prefixUrl: resolvePrefixUrl(),
@@ -178,7 +247,7 @@ export const MpApiWrapper = {
       'Content-Type': 'application/json;charset=UTF-8',
       Accept: 'application/json',
     },
-    timeout: 15000,
+    timeout: MP_READ_TIMEOUT_MS,
     retry: MP_RETRY_CONFIG,
     // HTTP 错误码也交给判定层（后端用业务码而非 HTTP 状态表达失败）
     throwHttpErrors: false,
@@ -195,8 +264,8 @@ export const MpApiWrapper = {
    */
   async call<T = unknown>(key: MpEndpointKey, data?: unknown, options: MpRequestOptions = {}): Promise<MpCall<T>> {
     const meta = MP_ENDPOINTS[key]
-    const { raw, error } = await rawRequest(key, data, options)
-    if (!raw) return transportFailure(error || '请求失败')
+    const { raw, error, timedOut } = await rawRequest(key, data, options)
+    if (!raw) return transportFailure(error || '请求失败', timedOut)
 
     const verdict = judgeMpResponse(raw, meta.payload)
     const payload = unwrapMpResponse<T>(raw, meta.payload)

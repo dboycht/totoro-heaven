@@ -22,6 +22,8 @@ import { evaluateRunGate } from '~/utils/mp/schoolGate'
 import { TOKEN_EXPIRED_HINT } from '~/utils/mp/tokenScan'
 import { looksLikeTokenExpired } from '~/src/mp/envelope'
 import { logError, logInfo, logWarn } from '../useEventLog'
+// 写操作"结果未知"的判定与措辞（2026-09-21 修 issue #11：超时 ≠ 失败，必须核实）
+import { classifyWriteOutcome, outcomeIsSuccess, writeOutcomeMessage } from '~/utils/mp/writeOutcome'
 import { useRealState, type RealSubmitResult } from './state'
 
 export function useMpRealSubmit() {
@@ -190,12 +192,43 @@ export function useMpRealSubmit() {
     // ⚠️ 自由跑必须把 runType 传进报文构造器：它决定 taskId=''、sunrunPathPointList=[]
     //    （厂商源码：自由跑不带任务号、路径点列为空数组）
     const score = await MpApiWrapper.saveScores(buildScoreRequest(context, { runType }), options)
+
+    /**
+     * ⚠️ **2026-09-21 修 GitHub issue #11（有实测日志）**：**超时 ≠ 失败**。
+     *
+     * 用户的服务端日志原文：厂商回 `{"message":"提交成功"}`、本地代理耗时 **`ms:15404`**，
+     * 而客户端超时上限是 **15000 ms** ⇒ 浏览器只比真实响应早放弃 **404 毫秒**。
+     * 结果：界面报"提交失败"、**轨迹明细被跳过**，可成绩其实已经入库（用户称"假报错"）。
+     *
+     * 判据：写操作超时后**必须去服务端核实**（`fetchVerdict` 按 `scantronId` 查归档）：
+     *   · 核实到已入库 ⇒ 按成功继续，并**补交轨迹明细**（把缺掉的那一步补上）；
+     *   · 核实不到     ⇒ 只能说"**结果未知**"并明确"**请勿立即重复提交**"
+     *     （重复提交会多录一条成绩，比缺轨迹严重得多）。
+     */
+    let landedAfterTimeout: boolean | null = null
+    if (!score.ok && score.timedOut) {
+      phaseMessage.value = '提交请求超时，正在向服务端核实是否已入库…'
+      logWarn('submit', '提交超时（结果未知），开始核实是否已入库', { scantronId, message: score.message })
+      try {
+        landedAfterTimeout = Boolean(await fetchVerdict(scantronId))
+      } catch (err) {
+        landedAfterTimeout = null
+        logWarn('submit', '超时后的核实失败（保持"未知"）', {
+          scantronId,
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+    const outcome = classifyWriteOutcome(score, landedAfterTimeout)
+    const scoreOk = outcomeIsSuccess(outcome)
+    const scoreMessage = outcome === 'ok' ? score.message || '提交成功' : writeOutcomeMessage(outcome, score.message)
+
     const out: RealSubmitResult = {
       scantronId,
       startedAt,
       submittedAt,
-      scoreOk: score.ok,
-      scoreMessage: score.message || (score.ok ? '提交成功' : '提交失败'),
+      scoreOk,
+      scoreMessage,
       // 自由跑没有线路 ⇒ 路径点列本来就是空的（厂商口径），这里如实显示 0 点
       scoreRequestMasked: {
         ...buildScoreRequest(context, { runType }),
@@ -204,8 +237,8 @@ export function useMpRealSubmit() {
       },
     }
 
-    // ④ 轨迹明细（仅当成绩成功；照源码顺序）
-    if (score.ok) {
+    // ④ 轨迹明细（**成绩成功，或"超时但已核实入库"**时都要发；照源码顺序）
+    if (scoreOk) {
       phaseMessage.value = '成绩已提交，正在提交轨迹明细（sunRunExercisesDetail）…'
       const detail = await MpApiWrapper.saveScoreDetail(buildScoreDetailRequest(context), options)
       out.detailOk = detail.ok
@@ -214,26 +247,54 @@ export function useMpRealSubmit() {
       else logWarn('submit', '轨迹明细提交失败', { message: out.detailMessage })
     } else {
       out.detailOk = undefined
-      out.detailMessage = '成绩未成功 → 按源码行为不发轨迹，也不重试'
+      out.detailMessage =
+        outcome === 'timeout-unknown'
+          ? '结果未知 → 先不发轨迹（不在未确认的成绩上乱写）；核实到已入库时会自动补交'
+          : '成绩未成功 → 按源码行为不发轨迹，也不重试'
+    }
+
+    /**
+     * ⚠️ **写回前复查（2026-09-20 审计 B2；⚠️ 更正：这条当轮只写了提交信息、代码漏了，2026-09-21 才真正落地）**：
+     * 成绩/明细两次 await 期间用户可能点了「退出登录」或「清空本机数据」⇒ `phase` 已被外部复位，
+     * 此时**不能**再把 `result`/`phase` 无条件写回去（会把已清空的状态"僵尸写回"）。
+     */
+    if (phase.value !== 'submitting' || !session.value?.token || !profile.value) {
+      logWarn('submit', '提交期间上下文被清除，本地状态不写回', { scantronId, phase: phase.value })
+      return null
     }
 
     result.value = out
-    phase.value = score.ok ? 'done' : 'error'
-    phaseMessage.value = score.ok
-      ? `提交完成：${out.scoreMessage}${out.detailOk ? '；轨迹已提交' : ''}`
-      : looksLikeTokenExpired(score.raw)
-        ? TOKEN_EXPIRED_HINT
-        : `提交失败：${out.scoreMessage}`
-    if (score.ok) {
-      logInfo('submit', '成绩提交成功', {
+    phase.value = scoreOk ? 'done' : 'error'
+    phaseMessage.value = scoreOk
+      ? `提交完成：${out.scoreMessage}${out.detailOk ? '；轨迹已提交' : '；轨迹未提交'}`
+      : // ⚠️ "结果未知"那条文案自带完整说明，**不能**再前缀"提交失败"（会自相矛盾：既说失败又说未知）
+        outcome === 'timeout-unknown'
+        ? out.scoreMessage
+        : looksLikeTokenExpired(score.raw)
+          ? TOKEN_EXPIRED_HINT
+          : `提交失败：${out.scoreMessage}`
+    if (scoreOk) {
+      logInfo('submit', outcome === 'timeout-landed' ? '提交超时，但已核实成绩入库（按成功处理）' : '成绩提交成功', {
         scantronId,
         km: Number(input.km.toFixed(2)),
         durationSeconds: planned,
         fitDegree: input.fitDegree,
         waitedSeconds: Math.round((submittedAt - startedAt) / 1000),
+        ...(outcome === 'timeout-landed' ? { note: '首次请求超时，已按 scantronId 在服务端归档中核实' } : {}),
       })
+      // 超时核实的那条：把判定读回来填进结果（先前那次核实发生在 `result` 赋值之前，判定文本要重取一次才有）
+      if (outcome === 'timeout-landed') {
+        try {
+          await fetchVerdict(scantronId)
+        } catch {
+          /* 只读补充信息：失败不影响"提交已成功"这个结论 */
+        }
+      }
     } else {
-      logError('submit', '成绩提交失败', { scantronId, message: out.scoreMessage })
+      logError('submit', outcome === 'timeout-unknown' ? '成绩提交结果未知（超时且归档暂无）' : '成绩提交失败', {
+        scantronId,
+        message: out.scoreMessage,
+      })
     }
     return out
   }
