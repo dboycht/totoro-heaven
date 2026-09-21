@@ -660,6 +660,46 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
 }
 
 // ---------- 报告 ----------
+// ---------- R13：`.ps1` 的编码纪律（2026-09-21，我亲手踩到的那次回归）----------
+/**
+ * 背景：本机只有 **PowerShell 5.1**（没有 `pwsh`），它读**无 BOM** 的 `.ps1` 时按**系统 ANSI（本机 GBK）**解码 ⇒
+ * 文件里只要有中文，多字节序列就可能把行尾的 ASCII 引号"吃掉" ⇒ **解析期直接报错、脚本一行都不跑**
+ * （E3 / E14 / E43 的老坑）。2026-09-21 的新成因值得单独记：**用编辑工具改写 `.ps1` 会静默丢掉原有的 BOM**
+ * —— `pack/release/publish.ps1` 因此从"带 BOM"变成"无 BOM + 中文"，我加的两处修复**一行都没被执行到**，
+ * 而当时任何测试都不会红（`.ps1` 不在 CI 的检查范围里）。
+ *
+ * 判据（可执行）：**凡含非 ASCII 的 `.ps1`，必须以 UTF-8 BOM 开头**；纯 ASCII 的无所谓（PS 5.1 读起来一样）。
+ * 改完 `.ps1` 后另请手工跑一次解析断言（PowerShell 的 `Parser::ParseFile` 错误数必须为 0）。
+ */
+{
+  const ps1Files = []
+  const walkPs1 = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === 'node_modules' || e.name.startsWith('.')) continue
+      const p = join(dir, e.name)
+      if (e.isDirectory()) walkPs1(p)
+      else if (e.name.endsWith('.ps1')) ps1Files.push(p)
+    }
+  }
+  for (const d of ['pack', 'scripts']) {
+    const abs = join(ROOT, d)
+    if (existsSync(abs)) walkPs1(abs)
+  }
+  for (const f of ps1Files) {
+    const bytes = readFileSync(f)
+    const hasNonAscii = bytes.some((b) => b > 127)
+    const hasBom = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
+    if (hasNonAscii && !hasBom) {
+      const rel = f.startsWith(ROOT) ? f.slice(ROOT.length + 1).replace(/\\/g, '/') : f
+      failures.push(
+        `${rel}：含非 ASCII 却没有 UTF-8 BOM —— PowerShell 5.1 会按系统 ANSI 解码，**解析失败、脚本一行都不跑**（E14）。` +
+          `修法二选一：① 把该文件写成带 BOM 的 UTF-8（注意：用编辑工具改写会**丢掉 BOM**，改完必须复查）；② 把中文改成 ASCII。` +
+          `验收：PowerShell \`[System.Management.Automation.Language.Parser]::ParseFile(路径,\$null,\$err)\` 的 $err.Count 必须为 0。`,
+      )
+    }
+  }
+}
+
 console.log('=== check-wiring：接线与契约检查（源码级）===\n')
 console.log(
   `📄 已检查：${SOURCE_FILES.length} 个源文件 + ${DETAIL_BUILDERS.length} 个明细构造点 + ${PAGE_FILES.length} 个页面` +
