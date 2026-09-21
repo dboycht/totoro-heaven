@@ -78,6 +78,12 @@ export interface DemoRunState {
   /** 结束后的提交报文预览与判定 */
   result: DemoRunResult | null
   error: string
+  /**
+   * 🆕 2026-09-21：**任务参数自相矛盾**（速度窗与时长窗无交集）时的可读说明。
+   * 计划在 `start()` 里算、结果在 `finish()` 里拼 —— 两者不在同一作用域，所以随状态带下去，
+   * 由 `finish()` 放进"自洽校验告警"里（用户要求：这种情况只做冗余提示）。
+   */
+  windowConflictDetail?: string
 }
 
 export interface DemoRunResult {

@@ -35,6 +35,14 @@ export interface RunPlan {
   overshootRatio: number
   /** 预计时长（秒）= targetKm × paceSecPerKm（只作展示/规划，实际以模拟推进为准） */
   durationSeconds: number
+  /**
+   * ⚠️ 任务参数**自相矛盾**（速度窗与时长窗无交集）时为 `true` —— 此时计划只能以速度窗为准，
+   * 结果必然违反时长窗。2026-09-21 用户决定：这种情况**基本不可能**，所以做个"冗余提示"——
+   * 如实告警并请用户把参数发给开发者，不要静默糊过去。
+   */
+  windowConflict?: boolean
+  /** 冲突时的可读说明（含两侧窗口与里程，方便用户直接发给开发者） */
+  windowConflictDetail?: string
 }
 
 /** mulberry32（与 generateRoute 同款，保证同种子可复现） */
@@ -81,17 +89,36 @@ export function planRealisticRun(input: RunPlanInput): RunPlan {
   hi = Math.min(hi, speedHi)
   const minMin = Number(input.minMinutes)
   const maxMin = Number(input.maxMinutes)
-  if (Number.isFinite(minMin) && minMin > 0 && Number.isFinite(maxMin) && maxMin > 0) {
+  const hasTimeWindow = Number.isFinite(minMin) && minMin > 0 && Number.isFinite(maxMin) && maxMin > 0
+  if (hasTimeWindow) {
     lo = Math.max(lo, (minMin * 60) / targetKm)
     hi = Math.min(hi, (maxMin * 60) / targetKm)
   }
+  let windowConflict = false
+  let windowConflictDetail: string | undefined
   if (!(hi >= lo)) {
-    // 两个窗口冲突（任务参数本身矛盾）→ 以速度窗口为准
+    /**
+     * ⚠️ 两个窗口冲突（任务参数本身矛盾）→ 以速度窗口为准。
+     * 🆕 2026-09-21（用户要求"做个冗余提示"）：**如实报出来**，不要静默——
+     * 这种任务本身不可能同时满足两个窗口，用户应当把参数发给开发者核对。
+     */
+    windowConflict = true
+    windowConflictDetail =
+      `任务参数自相矛盾：速度窗换算配速 ${Math.round(speedLo)}~${Math.round(speedHi)} 秒/公里，` +
+      `时长窗换算配速 ${Math.round((minMin * 60) / targetKm)}~${Math.round((maxMin * 60) / targetKm)} 秒/公里，` +
+      `两者无交集（里程约 ${targetKm} km）—— 本次按速度窗生成，请把这条任务参数发给开发者核对`
     lo = speedLo
     hi = speedHi
   }
   pace = Math.min(Math.max(pace, lo), hi)
   pace = Math.round(pace)
 
-  return { targetKm, paceSecPerKm: pace, overshootRatio, durationSeconds: Math.round(targetKm * pace) }
+  return {
+    targetKm,
+    paceSecPerKm: pace,
+    overshootRatio,
+    durationSeconds: Math.round(targetKm * pace),
+    // 只在真的冲突时才带这两个字段（正常任务里它们不存在，避免污染常规产物）
+    ...(windowConflict ? { windowConflict: true, windowConflictDetail } : {}),
+  }
 }

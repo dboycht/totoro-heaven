@@ -69,11 +69,18 @@ export interface RunStats {
   problems: string[]
 }
 
-/** 步数估算：约 1200 步/公里（对齐原版数据生成公式） */
-export const estimateSteps = (distanceKm: number, jitterRatio = 0.04): number => {
+/**
+ * 步数估算：约 1200 步/公里（对齐原版数据生成公式）。
+ *
+ * ⚠️ 2026-09-21 更名（诚实化）：第二个参数原叫 `jitterRatio`（"抖动比例"），但实现用的是
+ * **只与里程有关的确定性公式**（正弦哈希）—— **同一个里程永远得到同一个步数**，参数带不来任何随机性。
+ * 名字与行为不符会误导后来者，故改名 `biasRatio`（按里程的固定偏移比例）并在注释里写明。
+ * 📌 影响面：这个值**只用于界面展示** —— 真包里 `steps` 恒为空串（见 `submitPayload.ts`），从不提交。
+ */
+export const estimateSteps = (distanceKm: number, biasRatio = 0.04): number => {
   const base = distanceKm * 1200
-  // 用确定性抖动（不含随机源），保证同一输入结果稳定
-  const factor = 1 + (Math.sin(distanceKm * 12.9898) * 43758.5453) % jitterRatio
+  // 确定性偏移（不含随机源），保证同一输入结果稳定；`biasRatio` 只决定偏移幅度的上限
+  const factor = 1 + (Math.sin(distanceKm * 12.9898) * 43758.5453) % biasRatio
   return Math.max(0, Math.round(base * factor))
 }
 

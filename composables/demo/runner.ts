@@ -142,6 +142,9 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
             overshootRatio: 0,
             durationSeconds: 0,
           }
+    // ⚠️ 2026-09-21（用户要求"冗余提示"）：任务窗口冲突的说明随状态带到结算阶段 ——
+    //    `plan` 只在本函数作用域里，而结果是在 `finish()` 里拼的（两者不同作用域）。
+    run.value.windowConflictDetail = plan.windowConflictDetail
 
     try {
       // 演示用 20m 采样（点少、页面轻）；真实模式用 3m（≈1Hz GPS，与真实提交口径一致）
@@ -329,7 +332,12 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
       scoreRequest,
       detailRequest,
       check,
-      statsProblems: stats.problems,
+      // ⚠️ 2026-09-21（用户要求"冗余提示"）：任务的速度窗与时长窗互斥时，计划只能按速度窗生成、
+      // 必然违反时长窗 —— 把这条如实放进"自洽校验告警"（自检卡已渲染这一栏），并请用户把参数发给开发者。
+      // 说明文字在 `start()` 里算计划时存进状态（`plan` 不在本作用域）。
+      statsProblems: run.value.windowConflictDetail
+        ? [run.value.windowConflictDetail, ...stats.problems]
+        : stats.problems,
       estimatedSteps: Number(stats.steps) || 0,
       stepsSubmitted,
     }
