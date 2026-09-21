@@ -327,6 +327,41 @@
         <div v-if="result.verdictText" class="text-body-2 mt-1">★ 判定：{{ result.verdictText }}</div>
       </v-alert>
 
+      <!-- 提交过程清单（2026-09-21 用户要求："要能看到现在在传什么"）
+           六步逐条打点：① 门禁 → ② 建场次 → ③ 真实等待 → ④ 成绩（含线路点列）→ ⑤ 轨迹（GPS 点列）→ ⑥ 判定。
+           ⚠️ 超时那条也会显示在这里（"结果未知 → 正在核实 → 已入库/无法确认"），
+           让用户明白"超时 ≠ 失败"，也避免他以为没交上去而重复提交。 -->
+      <v-card v-if="submitProgress.length" variant="outlined" class="mt-3">
+        <v-card-title class="text-body-2 font-weight-bold py-2 d-flex align-center">
+          <v-icon size="18" class="mr-1">mdi-progress-upload</v-icon>提交过程
+          <v-spacer />
+          <span class="text-caption text-medium-emphasis">共 {{ submitProgress.length }} 步记录</span>
+        </v-card-title>
+        <v-divider />
+        <v-card-text class="py-2">
+          <div v-for="(line, i) in submitProgress" :key="i" class="d-flex align-start ga-2 mb-1">
+            <v-icon
+              size="16"
+              :color="line.kind === 'ok' ? 'success' : line.kind === 'error' ? 'error' : line.kind === 'warn' ? 'warning' : 'info'"
+              class="mt-1"
+            >
+              {{
+                line.kind === 'ok'
+                  ? 'mdi-check-circle-outline'
+                  : line.kind === 'error'
+                    ? 'mdi-close-circle-outline'
+                    : line.kind === 'warn'
+                      ? 'mdi-alert-circle-outline'
+                      : 'mdi-circle-small'
+              }}
+            </v-icon>
+            <div class="text-body-2">
+              <span class="text-medium-emphasis text-caption mr-1">{{ formatClock(line.at) }}</span>{{ line.text }}
+            </div>
+          </div>
+        </v-card-text>
+      </v-card>
+
       <RunPayloadPreview :run="run" />
     </RunSelfCheckCard>
 
@@ -408,7 +443,7 @@
 </template>
 
 <script setup lang="ts">
-import { formatDuration, formatPace } from '~/utils/mp/runData'
+import { formatClock, formatDuration, formatPace } from '~/utils/mp/runData'
 import { useMpDemo } from '~/composables/useMpDemo'
 import { useMpReal } from '~/composables/useMpReal'
 import { logError, logInfo, logWarn } from '~/composables/useEventLog'
@@ -435,6 +470,8 @@ const {
   phaseMessage,
   remainingSeconds,
   result,
+  /** ⚠️ 必须改名：`progress` 已被上面的 `useMpDemo()` 占用（那是**演示跑**的进度） */
+  progress: submitProgress,
   applyToRunner,
   submitRealRun,
   fetchVerdict,

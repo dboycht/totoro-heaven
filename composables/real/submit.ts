@@ -24,6 +24,13 @@ import { looksLikeTokenExpired } from '~/src/mp/envelope'
 import { logError, logInfo, logWarn } from '../useEventLog'
 // 写操作"结果未知"的判定与措辞（2026-09-21 修 issue #11：超时 ≠ 失败，必须核实）
 import { classifyWriteOutcome, outcomeIsSuccess, writeOutcomeMessage } from '~/utils/mp/writeOutcome'
+// 提交过程清单的文案（2026-09-21 用户要求"要能看到现在在传什么"）
+import {
+  SUBMIT_PROGRESS,
+  submitProgressLine,
+  type SubmitProgressKind,
+  type SubmitProgressLine,
+} from '~/utils/mp/submitProgress'
 import { useRealState, type RealSubmitResult } from './state'
 
 export function useMpRealSubmit() {
@@ -32,6 +39,17 @@ export function useMpRealSubmit() {
     useRealState()
 
   // ---------- 真实提交 ----------
+
+  /**
+   * **提交过程清单**（2026-09-21 用户要求："要能看到现在在传什么"）。
+   * 每步都记一行（时间 + 图标 + 文案），六步：① 门禁 → ② 建场次 → ③ 真实等待 → ④ 成绩 → ⑤ 轨迹 → ⑥ 判定。
+   * ⚠️ 超时分支（issue #11 的修复）也要**看得见**：超时 → 结果未知 → 核实 → 已入库/无法确认。
+   * 文案与格式全部来自纯函数 `utils/mp/submitProgress.ts`（有单测）。
+   */
+  const progress = ref<SubmitProgressLine[]>([])
+  const pushProgress = (kind: SubmitProgressKind, text: string) => {
+    progress.value = [...progress.value, submitProgressLine(kind, text)].slice(-40)
+  }
 
   let waitTimer: ReturnType<typeof setInterval> | null = null
   const stopWait = () => {
@@ -85,6 +103,8 @@ export function useMpRealSubmit() {
     }
 
     // ⓪ 三合一否决门禁（必须在任何写操作之前）—— 含"夜间停用 22:30~06:00"（同一纯函数，实时取时钟）
+    progress.value = []
+    pushProgress('step', SUBMIT_PROGRESS.gate())
     const gate = evaluateRunGate({
       schoolCode: profile.value.schoolCode,
       switches: switches.value,
@@ -95,20 +115,24 @@ export function useMpRealSubmit() {
       now: new Date(),
     })
     if (!gate.allow) {
+      pushProgress('error', SUBMIT_PROGRESS.gateBlocked(gate.reason))
       phase.value = 'error'
       phaseMessage.value = `已停止（未创建场次）：${gate.reason}`
       return null
     }
+    pushProgress('ok', SUBMIT_PROGRESS.gatePassed())
 
     const options = { token, baseUrl: session.value?.baseUrl }
 
     // ① 开跑：getRunBegin（写）。自由跑照厂商口径传 runType=1 且 paperId/lineId 为空串。
     phase.value = 'begin'
     phaseMessage.value = '正在创建跑步会话（getRunBegin）…'
+    pushProgress('step', SUBMIT_PROGRESS.begin(input.line?.pointName ?? '', freeRun ? '自由跑' : '阳光跑'))
     const begin = await MpApiWrapper.getRunBegin(buildRunBeginRequest({ line: input.line, runType }), options)
     const scantronId = (begin.data as { scantronId?: string } | undefined)?.scantronId
     if (!begin.ok || !scantronId) {
       phase.value = 'error'
+      pushProgress('error', SUBMIT_PROGRESS.beginFail(begin.message))
       // 若失败原因是 token 过期 → 给"退出登录并重新登录小程序"的可操作提示
       phaseMessage.value = looksLikeTokenExpired(begin.raw)
         ? TOKEN_EXPIRED_HINT
@@ -117,6 +141,7 @@ export function useMpRealSubmit() {
       return null
     }
     const startedAt = Date.now()
+    pushProgress('ok', SUBMIT_PROGRESS.beginOk(scantronId))
     logInfo('submit', '开跑会话已创建', {
       scantronId,
       runType,
@@ -132,6 +157,7 @@ export function useMpRealSubmit() {
     phase.value = 'waiting'
     remainingSeconds.value = planned
     phaseMessage.value = `会话已创建，正在「跑」：为了让时间线一致，需真实等待 ${Math.ceil(planned / 60)} 分钟`
+    pushProgress('step', SUBMIT_PROGRESS.wait(planned, input.km))
     logInfo('submit', '进入真实等待', { plannedSeconds: planned, minutes: Math.round(planned / 60) })
     await new Promise<void>((resolve) => {
       stopWait()
@@ -160,6 +186,7 @@ export function useMpRealSubmit() {
     const tokenNow = session.value?.token
     const profileNow = profile.value
     if (!tokenNow || !profileNow) {
+      pushProgress('error', '等待期间会话/档案被清除 → 本次提交中止（未发送成绩）')
       phase.value = 'error'
       phaseMessage.value =
         '等待期间会话/档案被清除（可能点了「退出登录」或「清空本机数据」）——本次提交已中止，未发送成绩。请重新读取真实数据后再试。'
@@ -170,6 +197,7 @@ export function useMpRealSubmit() {
       })
       return null
     }
+    pushProgress('ok', SUBMIT_PROGRESS.waitDone())
 
     // ③ 提交成绩（写；只发一次，失败不重试）
     const submittedAt = Date.now()
@@ -191,7 +219,11 @@ export function useMpRealSubmit() {
     phaseMessage.value = '正在提交成绩（sunRunExercises）…'
     // ⚠️ 自由跑必须把 runType 传进报文构造器：它决定 taskId=''、sunrunPathPointList=[]
     //    （厂商源码：自由跑不带任务号、路径点列为空数组）
+    const usedTimeText = `${String(Math.floor(planned / 60)).padStart(2, '0')}:${String(planned % 60).padStart(2, '0')}`
+    pushProgress('step', SUBMIT_PROGRESS.score(input.km, input.line?.pointList?.length ?? 0, usedTimeText))
+    const scoreStartedAt = Date.now()
     const score = await MpApiWrapper.saveScores(buildScoreRequest(context, { runType }), options)
+    const scoreMs = Date.now() - scoreStartedAt
 
     /**
      * ⚠️ **2026-09-21 修 GitHub issue #11（有实测日志）**：**超时 ≠ 失败**。
@@ -208,9 +240,10 @@ export function useMpRealSubmit() {
     let landedAfterTimeout: boolean | null = null
     if (!score.ok && score.timedOut) {
       phaseMessage.value = '提交请求超时，正在向服务端核实是否已入库…'
+      pushProgress('warn', SUBMIT_PROGRESS.scoreTimeout(scoreMs))
       logWarn('submit', '提交超时（结果未知），开始核实是否已入库', { scantronId, message: score.message })
       try {
-        landedAfterTimeout = Boolean(await fetchVerdict(scantronId))
+        landedAfterTimeout = Boolean(await fetchVerdict(scantronId, { quiet: true }))
       } catch (err) {
         landedAfterTimeout = null
         logWarn('submit', '超时后的核实失败（保持"未知"）', {
@@ -222,6 +255,11 @@ export function useMpRealSubmit() {
     const outcome = classifyWriteOutcome(score, landedAfterTimeout)
     const scoreOk = outcomeIsSuccess(outcome)
     const scoreMessage = outcome === 'ok' ? score.message || '提交成功' : writeOutcomeMessage(outcome, score.message)
+    // 过程清单：把这一步的结论如实打出来（**超时 ≠ 失败**，未知态要说清"别急着重试"）
+    if (outcome === 'ok') pushProgress('ok', SUBMIT_PROGRESS.scoreOk(scoreMs))
+    else if (outcome === 'timeout-landed') pushProgress('ok', SUBMIT_PROGRESS.scoreVerified())
+    else if (outcome === 'timeout-unknown') pushProgress('warn', SUBMIT_PROGRESS.scoreUnknown())
+    else pushProgress('error', SUBMIT_PROGRESS.scoreFail(scoreMessage))
 
     const out: RealSubmitResult = {
       scantronId,
@@ -240,17 +278,26 @@ export function useMpRealSubmit() {
     // ④ 轨迹明细（**成绩成功，或"超时但已核实入库"**时都要发；照源码顺序）
     if (scoreOk) {
       phaseMessage.value = '成绩已提交，正在提交轨迹明细（sunRunExercisesDetail）…'
+      pushProgress('step', SUBMIT_PROGRESS.detail(context.points.length))
+      const detailStartedAt = Date.now()
       const detail = await MpApiWrapper.saveScoreDetail(buildScoreDetailRequest(context), options)
+      const detailMs = Date.now() - detailStartedAt
       out.detailOk = detail.ok
       out.detailMessage = detail.message || (detail.ok ? '轨迹提交成功' : '轨迹提交失败')
-      if (detail.ok) logInfo('submit', '轨迹明细已提交', { detail: out.detailMessage })
-      else logWarn('submit', '轨迹明细提交失败', { message: out.detailMessage })
+      if (detail.ok) {
+        pushProgress('ok', SUBMIT_PROGRESS.detailOk(detailMs))
+        logInfo('submit', '轨迹明细已提交', { detail: out.detailMessage })
+      } else {
+        pushProgress('error', SUBMIT_PROGRESS.detailFail(out.detailMessage))
+        logWarn('submit', '轨迹明细提交失败', { message: out.detailMessage })
+      }
     } else {
       out.detailOk = undefined
       out.detailMessage =
         outcome === 'timeout-unknown'
           ? '结果未知 → 先不发轨迹（不在未确认的成绩上乱写）；核实到已入库时会自动补交'
           : '成绩未成功 → 按源码行为不发轨迹，也不重试'
+      pushProgress('warn', SUBMIT_PROGRESS.detailSkipped(out.detailMessage))
     }
 
     /**
@@ -299,12 +346,19 @@ export function useMpRealSubmit() {
     return out
   }
 
-  /** 读回判定（只读）：getSunrunArch → 按 scantronId 找这条 */
-  async function fetchVerdict(scantronId?: string): Promise<Record<string, unknown> | null> {
+  /**
+   * 读回判定（只读）：getSunrunArch → 按 scantronId 找这条。
+   * @param opts.quiet `true` = 不往"提交过程清单"里打点（超时后的自动核实用它，避免把 ⑥ 插到 ④ 前面去）
+   */
+  async function fetchVerdict(
+    scantronId?: string,
+    opts: { quiet?: boolean } = {},
+  ): Promise<Record<string, unknown> | null> {
     const token = session.value?.token
     const id = scantronId || result.value?.scantronId
     if (!token || !id || !profile.value) return null
     const options = { token, baseUrl: session.value?.baseUrl }
+    if (!opts.quiet) pushProgress('step', SUBMIT_PROGRESS.verdict())
 
     const terms = await MpApiWrapper.getTermList(options)
     const termList = (terms.data as { id?: string; isActive?: string | number }[] | undefined) ?? []
@@ -329,6 +383,7 @@ export function useMpRealSubmit() {
     const data = (arch.data as { data?: Record<string, unknown>[] } | undefined)?.data ?? []
     const mine = data.find((r) => String(r.scoreId) === String(id)) ?? null
     if (mine) {
+      if (!opts.quiet) pushProgress('ok', SUBMIT_PROGRESS.verdictOk(verdictText(mine)))
       logInfo('submit', '判定已读回', {
         scantronId: id,
         scorePassType: mine.scorePassType,
@@ -339,15 +394,12 @@ export function useMpRealSubmit() {
         usedTime: mine.usedTime,
       })
     } else {
+      if (!opts.quiet) pushProgress('warn', SUBMIT_PROGRESS.verdictNone())
       logWarn('submit', '判定暂未在归档中找到', { scantronId: id })
     }
     if (result.value) {
       result.value.record = mine
-      result.value.verdictText = mine
-        ? `scorePassType=${mine.scorePassType}（${(MP_SCORE_STATUS as Record<number, string>)[Number(mine.scorePassType)] ?? '未知'}）` +
-          (mine.scorePassRemark ? ` | 备注：${mine.scorePassRemark}` : '') +
-          ` | 里程 ${mine.mileage} | 用时 ${mine.usedTime} | 拟合度 ${mine.trajectorySimilary}`
-        : '归档里还没找到这条（可稍后再查）'
+      result.value.verdictText = mine ? verdictText(mine) : '归档里还没找到这条（可稍后再查）'
     }
     return mine
   }
@@ -357,8 +409,18 @@ export function useMpRealSubmit() {
     phaseMessage,
     remainingSeconds,
     result,
+    progress,
     submitRealRun,
     fetchVerdict,
     stopWait,
   }
+}
+
+/** 判定文案（`fetchVerdict` 里两处共用；原先内联在赋值处，2026-09-21 提到过程清单后抽出来） */
+function verdictText(record: Record<string, unknown>): string {
+  return (
+    `scorePassType=${record.scorePassType}（${(MP_SCORE_STATUS as Record<number, string>)[Number(record.scorePassType)] ?? '未知'}）` +
+    (record.scorePassRemark ? ` | 备注：${record.scorePassRemark}` : '') +
+    ` | 里程 ${record.mileage} | 用时 ${record.usedTime} | 拟合度 ${record.trajectorySimilary}`
+  )
 }

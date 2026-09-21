@@ -69,7 +69,8 @@ export function useMpReal() {
     retryCameraFlag,
   } = useMpRealData()
 
-  const { phase, phaseMessage, remainingSeconds, result, submitRealRun, fetchVerdict, stopWait } = useMpRealSubmit()
+  const { phase, phaseMessage, remainingSeconds, result, progress, submitRealRun, fetchVerdict, stopWait } =
+    useMpRealSubmit()
 
   return {
     // 状态
@@ -93,6 +94,8 @@ export function useMpReal() {
     phaseMessage,
     remainingSeconds,
     result,
+    /** 提交过程清单（2026-09-21：六步逐条打点，界面上展示"现在在传什么"） */
+    progress,
     isRealApplied,
     // 动作
     loadRealData,
