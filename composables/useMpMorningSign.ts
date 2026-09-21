@@ -2,9 +2,9 @@
  * 早操签到 —— `useMpMorningSign()`
  *
  * ## 读取侧
- * 读**任务与点位**（`getMornSignPaper`）。
- * 签到记录端点（`getMornSignArchDetail`）已在契约层与 wrapper 里登记，但**尚无消费者**
- * （页面没做"签到历史"）—— 所以别把注释写成"读了记录"（2026-09-18 审计指出过）。
+ * 读**任务与点位**（`getMornSignPaper`）+ **本月签到记录**（`getMornSignArchDetail`）。
+ * ⚠️ 2026-09-21：记录这条链路此前**读不出数据** —— wrapper 只传了 `stuNumber`（缺 `termId`/`monthId`，
+ * 服务端当"没指定学期/月份"⇒ 回空），且页面里没有展示区；现已按厂商口径补齐并加界面（本文件 `loadMornSignArch`）。
  *
  * ## ⚠️ 写入侧：`submitMornSign`（2026-09-19 新增，**用户明确要求**）
  * `morningExercises` 的入参是 RSA 加密的 `encryptParams`，其中 `qrCode` 用的是**服务端下发的期望值** ——
@@ -19,6 +19,12 @@
  */
 import { MpApiWrapper } from '~/src/wrappers/MpApiWrapper'
 import { normalizeMornSignPaper, type MornSignResult } from '~/utils/mp/morningSign'
+import {
+  buildMornSignArchParams,
+  normalizeMornSignArch,
+  twoDigitMonth,
+  type MornSignArchResult,
+} from '~/utils/mp/mornSignArch'
 import type { MornSignSubmitOutcome } from '~/utils/mp/mornSignSubmit'
 import { logInfo, logWarn } from './useEventLog'
 import { useRealState } from './real/state'
@@ -35,6 +41,82 @@ export function useMpMorningSign() {
   const error = useState('mpMornSignError', () => '')
 
   const token = () => String(session.value?.token ?? '')
+
+  /**
+   * 学号来源优先级：**真实档案（profile）→ 会话里的 userInfo.snCode**。
+   * ⚠️ 必须有这个兜底：用户可能"只抓了 token 还没点过读取真实数据"，
+   *    此时 profile 为空，但会话里往往已经有 snCode（登录时写入）——
+   *    没有兜底就会出现"明明有 token 却提示缺少学号"（2026-09-18 实测踩到）。
+   */
+  const snCodeOf = (): string =>
+    String(profile.value?.snCode ?? '') || String(session.value?.userInfo?.snCode ?? '')
+
+  // ---------- 签到记录（本月）----------
+  /** 归一化后的记录（null = 还没读过） */
+  const arch = useState<MornSignArchResult | null>('mpMornSignArch', () => null)
+  const archStatus = useState<'idle' | 'loading' | 'ready' | 'error'>('mpMornSignArchStatus', () => 'idle')
+  const archError = useState('mpMornSignArchError', () => '')
+  /** 当前查看的月份（两位，如 "09"） */
+  const archMonth = useState<string>('mpMornSignArchMonth', () => twoDigitMonth())
+
+  /**
+   * 读「本月签到记录」（只读）。
+   *
+   * ⚠️ 2026-09-21 修：此前这条链路**读不出数据** —— ① wrapper 只传了 `stuNumber`（缺 `termId`/`monthId`，
+   * 服务端当"没指定"⇒ 回空）；② 页面里根本没有展示区。
+   * 现在按厂商口径补齐入参（学期取 `getTermList` 里的当前学期；月份两位），并归一化后给界面。
+   */
+  async function loadMornSignArch(month?: string): Promise<boolean> {
+    const t = token()
+    const sn = snCodeOf()
+    if (!t || t.startsWith('demo-')) {
+      archStatus.value = 'error'
+      archError.value = '需要真实 token 才能读取签到记录（演示 token 不能查真实数据）'
+      return false
+    }
+    if (!sn) {
+      archStatus.value = 'error'
+      archError.value = '缺少学号（snCode）—— 请先在工作台「一键获取 token」或「读取真实账号与任务」'
+      return false
+    }
+    archStatus.value = 'loading'
+    archError.value = ''
+    const options = { token: t, baseUrl: session.value?.baseUrl }
+    try {
+      // ① 学期 id：与「查询判定」同口径（isActive === "1" 优先，否则取第一个）
+      const terms = await MpApiWrapper.getTermList(options)
+      const list = (terms.data as { id?: string; isActive?: string | number }[] | undefined) ?? []
+      const activeTerm = list.find((x) => String(x.isActive) === '1') ?? list[0]
+      const termId = String(activeTerm?.id ?? '')
+      if (!termId) {
+        archStatus.value = 'error'
+        archError.value = '读不到当前学期（getTermList 返回为空）—— 无法按学期查询记录'
+        return false
+      }
+      // ② 记录：月份必须是两位字符串
+      const m = month || archMonth.value
+      archMonth.value = m
+      const res = await MpApiWrapper.getMornSignArchDetail(buildMornSignArchParams({ snCode: sn, termId, month: m }), options)
+      if (!res.ok) {
+        archStatus.value = 'error'
+        archError.value = res.message || '读取签到记录失败'
+        return false
+      }
+      arch.value = normalizeMornSignArch(res.data)
+      archStatus.value = 'ready'
+      logInfo('mornsign', '已读回签到记录', {
+        month: m,
+        records: arch.value.records.length,
+        completed: arch.value.completed,
+        required: arch.value.required,
+      })
+      return true
+    } catch (err) {
+      archStatus.value = 'error'
+      archError.value = err instanceof Error ? err.message : String(err)
+      return false
+    }
+  }
 
   /** 读签到任务与点位（只读） */
   async function loadMornSignTask(): Promise<boolean> {
@@ -150,5 +232,18 @@ export function useMpMorningSign() {
     }
   }
 
-  return { task, status, error, submitting, loadMornSignTask, submitMornSign }
+  return {
+    task,
+    status,
+    error,
+    submitting,
+    loadMornSignTask,
+    submitMornSign,
+    // 🆕 2026-09-21：签到记录（本月）—— 修掉"记录读不出数据"（入参缺 termId/monthId + 页面没做展示）
+    arch,
+    archStatus,
+    archError,
+    archMonth,
+    loadMornSignArch,
+  }
 }

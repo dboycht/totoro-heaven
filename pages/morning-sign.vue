@@ -148,6 +148,60 @@
       </v-card-text>
     </v-card>
 
+    <!-- 🆕 2026-09-21：本月签到记录（修"签到记录读不出数据"：入参补齐 termId/monthId + 新增展示区）
+         ⚠️ 只读：只是查询历史，不会提交任何东西。 -->
+    <v-card class="mt-4">
+      <v-card-title class="d-flex align-center flex-wrap ga-2 text-subtitle-1">
+        <v-icon class="mr-1">mdi-calendar-check-outline</v-icon>签到记录（按月）
+        <v-spacer />
+        <v-select
+          v-model="archMonth"
+          :items="monthOptions"
+          item-title="label"
+          item-value="value"
+          density="compact"
+          hide-details
+          style="max-width: 190px"
+          @update:model-value="loadMornSignArch()"
+        />
+        <v-btn
+          size="small"
+          variant="text"
+          prepend-icon="mdi-refresh"
+          :loading="archStatus === 'loading'"
+          @click="loadMornSignArch()"
+        >
+          刷新
+        </v-btn>
+      </v-card-title>
+      <v-card-text>
+        <v-alert v-if="archStatus === 'error'" type="warning" variant="tonal" density="compact" class="mb-2">
+          {{ archError }}
+        </v-alert>
+        <template v-else-if="arch">
+          <div class="text-body-2 mb-2">
+            已签到 <b>{{ arch.completed }}</b> 次 · 未签到 <b>{{ arch.incomplete }}</b> 次 · 要求
+            <b>{{ arch.required }}</b> 次
+            <span v-if="arch.todaySigned" class="text-success ml-2">今天已签到</span>
+          </div>
+          <div v-if="arch.records.length" class="d-flex flex-column ga-1">
+            <div v-for="r in arch.records" :key="r.date" class="d-flex align-center ga-2 text-body-2">
+              <v-icon size="16" :color="r.status === 0 ? 'warning' : 'success'">
+                {{ r.status === 0 ? 'mdi-alert-circle-outline' : 'mdi-check-circle-outline' }}
+              </v-icon>
+              <span>{{ r.date }}</span>
+              <span class="text-medium-emphasis">{{ r.statusText }}</span>
+            </div>
+          </div>
+          <div v-else class="text-body-2 text-medium-emphasis">这个月还没有签到记录</div>
+          <div class="text-caption text-medium-emphasis mt-2">
+            状态语义按"0=未签到 / 1=已签到 / 2=已签到（异常或补签）"展示，属推断；数值以服务端为准。
+          </div>
+        </template>
+        <div v-else class="text-body-2 text-medium-emphasis">点「刷新」读取该月记录（只读，不会提交任何东西）</div>
+      </v-card-text>
+    </v-card>
+
     <!-- 显式确认：提交是"替你在服务端记一次到场"，必须由本人点 -->
     <v-dialog v-model="confirmOpen" max-width="520">
       <v-card>
@@ -192,8 +246,25 @@
  */
 import { distanceMeters, mornSignProgressText, type MornSignResult } from '~/utils/mp/morningSign'
 import { evaluateMornSignWindow, formatShanghaiDateTime } from '~/utils/mp/mornSignSubmit'
+// 🆕 2026-09-21 签到记录（只读）：月份选项来自纯函数（含跨年）
+import { recentMonthOptions } from '~/utils/mp/mornSignArch'
 
-const { task: state, status, error, submitting, loadMornSignTask, submitMornSign } = useMpMorningSign()
+const {
+  task: state,
+  status,
+  error,
+  submitting,
+  loadMornSignTask,
+  submitMornSign,
+  // 🆕 2026-09-21：本月签到记录（修"记录读不出数据"）
+  arch,
+  archStatus,
+  archError,
+  archMonth,
+  loadMornSignArch,
+} = useMpMorningSign()
+/** 月份下拉（最近 6 个月，最新在前） */
+const monthOptions = recentMonthOptions()
 const { profile: realProfile } = useMpReal()
 const showSnackbar = useNotice()
 
@@ -201,9 +272,11 @@ const showSnackbar = useNotice()
  * 进入本页时**自动读一次**（只读）。
  * ⚠️ 之所以放在页面里而不是导航栏：早操签到导航项是**常驻**的，若在导航栏探测就等于
  * "每次打开应用都白打一次接口"；放在这里 = 只有真正想看的人才产生这次请求。
+ * 🆕 2026-09-21：记录也一起读（同样是只读；没 token 时卡片会明确提示，不会静默空白）。
  */
 onMounted(() => {
   if (status.value === 'idle') void loadMornSignTask()
+  if (archStatus.value === 'idle') void loadMornSignArch()
 })
 
 /** 归一化结果的窄化：`kind==='ok'` 时才有 task */

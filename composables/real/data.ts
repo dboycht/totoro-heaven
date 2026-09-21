@@ -39,6 +39,9 @@ export function useMpRealData() {
     cameraFlag,
     cameraFlagLineId,
     cameraFlagError,
+    // 🆕 2026-09-21（E）：自由跑入口标灰（"本机已知该校未开通自由跑任务"）
+    freeRunUnsupported,
+    clearFreeRunUnsupported,
     cacheAt,
     cachePaperName,
     cacheHasToken,
@@ -521,6 +524,10 @@ export function useMpRealData() {
     cameraFlag,
     /** 摄像头杆开关读取失败的原因（空串=正常） */
     cameraFlagError,
+    /** 🆕 2026-09-21（E）：本机已知"该校未开通自由跑任务"（自由跑真实提交入口标灰） */
+    freeRunUnsupported,
+    /** 清除该标记（"仍要试一次"） */
+    clearFreeRunUnsupported,
     selectedLine,
     /** 开跑前三合一否决门禁状态（allow / reason / blockedBy） */
     gateStatus,

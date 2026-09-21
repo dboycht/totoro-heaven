@@ -81,10 +81,22 @@
 
             <!-- 🆕 自由跑目标距离（1.1.12 需求①）：阳光跑不显示这一块（里程由任务决定） -->
             <div v-if="isFreeRun" class="mb-3">
+              <v-alert v-if="freeRunBlocked" type="warning" variant="tonal" density="compact" class="mb-2">
+                <div class="font-weight-bold">
+                  <v-icon class="mr-1" size="18">mdi-alert-circle-outline</v-icon>本机记录：你所在学校未开通「自由跑任务」
+                </div>
+                <div class="text-body-2 mt-1">
+                  自由跑的真实提交会被服务端拒绝（原话「暂无自由跑任务,请选择阳光跑!」），所以这里已把「真实提交」标灰。
+                  自由跑仍可用于<b>本地模拟与预览</b>；阳光跑不受影响。
+                </div>
+                <v-btn size="x-small" variant="text" class="mt-1" @click="clearFreeRunUnsupported()">
+                  仍要试一次（清除此标记）
+                </v-btn>
+              </v-alert>
               <!-- ⚠️ 2026-09-21 实测提示（用户要求"把提示提前"）：自由跑的真实提交由**服务端**按学校/账号判定，
                    实测厂商回 `暂无自由跑任务,请选择阳光跑!`（已核对厂商源码：自由跑就是 runType=1 + 空线路标识，
                    并不去取什么"自由跑任务"，所以补不了 paperId）⇒ **开跑前就说清**，别让人以为是自己操作错了。 -->
-              <v-alert type="info" variant="tonal" density="compact" class="mb-2">
+              <v-alert v-else type="info" variant="tonal" density="compact" class="mb-2">
                 自由跑的真实提交需要<b>学校开通「自由跑任务」</b>（由服务端判定）。若你所在学校未开通，
                 开跑时服务端会回「暂无自由跑任务,请选择阳光跑!」——此时自由跑仍可用于<b>本地模拟与预览</b>，阳光跑不受影响。
               </v-alert>
@@ -257,7 +269,9 @@
           color="error"
           variant="flat"
           prepend-icon="mdi-cloud-upload-outline"
-          :disabled="!realReady || run.status !== 'finished' || submitInFlight || alreadySubmitted || staleSettlement || !gateStatus.allow"
+          :disabled="
+            !realReady || run.status !== 'finished' || submitInFlight || alreadySubmitted || staleSettlement || freeRunBlocked || !gateStatus.allow
+          "
           @click="confirmOpen = true"
         >
           真实提交
@@ -501,6 +515,9 @@ const {
   result,
   /** ⚠️ 必须改名：`progress` 已被上面的 `useMpDemo()` 占用（那是**演示跑**的进度） */
   progress: submitProgress,
+  /** 🆕 2026-09-21（E）：本机已知该校未开通自由跑 ⇒ 标灰真实提交入口 */
+  freeRunUnsupported,
+  clearFreeRunUnsupported,
   applyToRunner,
   submitRealRun,
   fetchVerdict,
@@ -652,6 +669,15 @@ const alreadySubmitted = computed(() => phase.value === 'done' && Boolean(result
 const staleSettlement = computed(() =>
   run.value.status === 'finished' && isStaleSettlement(Number(run.value.settledAtMs || 0), Number(realLoadedAt.value || 0)),
 )
+
+/**
+ * 🆕 2026-09-21（E：自由跑入口标灰）：**本机已知该校未开通「自由跑任务」** 时，把自由跑的真实提交入口标灰。
+ *
+ * 为什么这样设计：服务端是否开通**本地无法预先探测**（报文与官方小程序逐字一致、没有 paperId 可补），
+ * 所以退而求其次 —— 记下上一次被拒（`markFreeRunUnsupported`，持久化），下次开跑前就说明白；
+ * 同时给一个「仍要试一次」的出口把标记清掉，**不挡真的开通了的学校**。
+ */
+const freeRunBlocked = computed(() => isFreeRun && Boolean(freeRunUnsupported.value))
 
 /** 载入演示数据（按需功能，不发任何请求） */
 const doEnableDemo = () => {

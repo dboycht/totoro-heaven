@@ -50,6 +50,9 @@ export function useMpReal() {
     switches,
     cameraFlag,
     cameraFlagError,
+    // 🆕 2026-09-21（E）：自由跑入口标灰（服务端拒绝过一次就记住）
+    freeRunUnsupported,
+    clearFreeRunUnsupported,
     selectedLine,
     gateStatus,
     schoolNotice,
@@ -85,6 +88,10 @@ export function useMpReal() {
     cameraFlag,
     /** 摄像头杆开关读取失败的原因（空串=正常） */
     cameraFlagError,
+    /** 🆕 2026-09-21（E）：本机已知"该校未开通自由跑任务"（标灰自由跑的真实提交入口） */
+    freeRunUnsupported,
+    /** 清除上面那个标记（"仍要试一次"） */
+    clearFreeRunUnsupported,
     selectedLine,
     /** 开跑前三合一否决门禁状态（allow / reason / blockedBy） */
     gateStatus,

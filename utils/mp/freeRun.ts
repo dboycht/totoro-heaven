@@ -29,6 +29,19 @@ export const FREE_RUN_KM_PRESETS = [3, 5, 10, 21.1] as const
 export const FREE_RUN_KM_KEY = 'mp_free_run_km'
 
 /**
+ * 「本机已知该校未开通自由跑」的 localStorage 键（2026-09-21，用户要求"入口标灰"）。
+ *
+ * 背景（实测）：自由跑的真实提交由**服务端**按学校/账号判定；未开通时 `getRunBegin` 直接回
+ * `暂无自由跑任务,请选择阳光跑!`（报文与官方小程序逐字一致、没有 paperId 可补）。
+ * 既然**本地无法预先探测**，退而求其次：**记住上一次被拒**，下次开跑前就把入口标灰并说明原因，
+ * 同时给一个"仍要试一次（清除标记）"的出口 —— 既不挡开通了的学校，也不让未开通的人白点。
+ */
+export const FREE_RUN_UNSUPPORTED_KEY = 'mp_freerun_unsupported'
+
+/** 服务端的回复是不是"该校/该账号没有自由跑任务"（判据集中在这里，别在业务代码里散落正则） */
+export const isFreeRunUnsupportedMessage = (msg: unknown): boolean => /自由跑任务/.test(String(msg ?? ''))
+
+/**
  * 把任意输入**归一化**成合法的自由跑目标距离（唯一入口）。
  *
  * 判据（可执行）：

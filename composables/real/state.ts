@@ -9,6 +9,8 @@
  * ⚠️ 改 key 名等于改共享契约：`real/data.ts` 与 `real/submit.ts` 会立刻读/写不到同一份状态。
  */
 import type { MpSunrunTask } from '~/src/mp/types'
+// 🆕 2026-09-21（E：自由跑入口标灰）：键名与"是不是未开通"的判据都在纯逻辑层（单一来源）
+import { FREE_RUN_UNSUPPORTED_KEY } from '~/utils/mp/freeRun'
 
 /**
  * 学生档案（`GetStudentInfoByToken` 读到的本人信息）。
@@ -66,6 +68,43 @@ export function useRealState() {
   /** 读取摄像头杆开关失败/异常时的原因（界面展示；空串=无异常） */
   const cameraFlagError = useState('mpRealCameraFlagErr', () => '')
 
+  /**
+   * 🆕 2026-09-21（E：自由跑入口标灰）：**本机已知该校/该账号未开通「自由跑任务」**。
+   * 服务端拒绝过一次就记住（持久化），下次开跑前把自由跑的真实提交入口标灰并说明原因；
+   * 同时给"仍要试一次"的出口（`clearFreeRunUnsupported`）—— 不挡开通了的学校。
+   * 初值从 localStorage 读（`FREE_RUN_UNSUPPORTED_KEY`），与 `mp_free_run_km` 同一套薄壳做法。
+   */
+  const freeRunUnsupported = useState<boolean>('mpFreeRunUnsupported', () => {
+    if (import.meta.client) {
+      try {
+        return localStorage.getItem(FREE_RUN_UNSUPPORTED_KEY) === '1'
+      } catch {
+        /* ignore */
+      }
+    }
+    return false
+  })
+  const markFreeRunUnsupported = () => {
+    freeRunUnsupported.value = true
+    if (import.meta.client) {
+      try {
+        localStorage.setItem(FREE_RUN_UNSUPPORTED_KEY, '1')
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  const clearFreeRunUnsupported = () => {
+    freeRunUnsupported.value = false
+    if (import.meta.client) {
+      try {
+        localStorage.removeItem(FREE_RUN_UNSUPPORTED_KEY)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   // 「上次读取的会话」缓存的界面状态（**刷新后不再自动回填**；只作为可选的显式恢复入口）
   const cacheAt = useState('mpRealCacheAt', () => 0)
   const cachePaperName = useState('mpRealCachePaper', () => '')
@@ -98,6 +137,10 @@ export function useRealState() {
     cameraFlag,
     cameraFlagLineId,
     cameraFlagError,
+    // 🆕 2026-09-21：自由跑入口标灰（服务端拒绝过一次就记住；可清除）
+    freeRunUnsupported,
+    markFreeRunUnsupported,
+    clearFreeRunUnsupported,
     cacheAt,
     cachePaperName,
     cacheHasToken,

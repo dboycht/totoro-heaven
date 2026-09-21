@@ -31,11 +31,13 @@ import {
   type SubmitProgressKind,
   type SubmitProgressLine,
 } from '~/utils/mp/submitProgress'
+// 🆕 2026-09-21（E 自由跑入口标灰）："是不是未开通自由跑"的判据在纯逻辑层（单一来源）
+import { isFreeRunUnsupportedMessage } from '~/utils/mp/freeRun'
 import { useRealState, type RealSubmitResult } from './state'
 
 export function useMpRealSubmit() {
   const { session } = useMpSession()
-  const { profile, task, switches, cameraFlag, cameraFlagLineId, phase, phaseMessage, remainingSeconds, result } =
+  const { profile, task, switches, cameraFlag, cameraFlagLineId, phase, phaseMessage, remainingSeconds, result, markFreeRunUnsupported } =
     useRealState()
 
   // ---------- 真实提交 ----------
@@ -146,7 +148,9 @@ export function useMpRealSubmit() {
        *  与我们的报文逐字一致）⇒ **不是本机问题，也没有 paperId 可以补**。
        * 判据：**"服务器明确说没开通"这类回复要单独翻译成人话**，别让用户以为是自己的操作或本程序的 bug。
        */
-      const noFreeRunTask = freeRun && /自由跑任务/.test(begin.message)
+      const noFreeRunTask = freeRun && isFreeRunUnsupportedMessage(begin.message)
+      // 🆕 2026-09-21（E）：记住"该校未开通自由跑"，下次开跑前就把真实提交入口标灰（可手动清除再试）
+      if (noFreeRunTask) markFreeRunUnsupported()
       // 若失败原因是 token 过期 → 给"退出登录并重新登录小程序"的可操作提示
       phaseMessage.value = looksLikeTokenExpired(begin.raw)
         ? TOKEN_EXPIRED_HINT

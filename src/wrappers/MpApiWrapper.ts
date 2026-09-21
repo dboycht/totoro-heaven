@@ -387,11 +387,17 @@ export const MpApiWrapper = {
   },
 
   /**
-   * 早操签到记录（只读：`scoreList` / `completedTimes`）。
-   * ⚠️ **当前无消费者**（页面没做"签到历史"，2026-09-18 审计指出）—— 保留是为了让"早操签到"这块的
-   *    只读能力成体系（任务/点位/记录），将来要加历史页时直接可用；**它不是写端点**，无副作用。
+   * 早操签到记录（只读：`scoreList` / `completedTimes` / `requireNumber` / `ifDayHasComSign`）。
+   *
+   * ⚠️ **2026-09-21 修正入参**（此前只传 `stuNumber` ⇒ 服务端当"没指定学期/月份"⇒ 回空 ⇒ 页面读不出数据）：
+   * 照厂商小程序 `app-service.js` 的 `getMorningData`，**必须带 `termId` 与两位的 `monthId`**，
+   * 学号字段名是 **`stuNumber`**（不是 snCode），**body 里不带 token**（鉴权走 `Authorization` 头）。
+   * 参数构造与归一化在 `utils/mp/mornSignArch.ts`（纯函数 + 单测）。
    */
-  async getMornSignArchDetail(params: { stuNumber: string; token?: string }, options: MpRequestOptions = {}) {
+  async getMornSignArchDetail(
+    params: { stuNumber: string; termId: string; monthId: string; token?: string },
+    options: MpRequestOptions = {},
+  ) {
     return this.call<Record<string, unknown>>('mornSignArchDetail', { ...params }, options)
   },
 
