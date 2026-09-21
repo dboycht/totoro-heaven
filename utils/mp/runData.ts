@@ -79,8 +79,15 @@ export interface RunStats {
  */
 export const estimateSteps = (distanceKm: number, biasRatio = 0.04): number => {
   const base = distanceKm * 1200
-  // 确定性偏移（不含随机源），保证同一输入结果稳定；`biasRatio` 只决定偏移幅度的上限
-  const factor = 1 + (Math.sin(distanceKm * 12.9898) * 43758.5453) % biasRatio
+  /**
+   * ⚠️ 2026-09-21 审计修复（B5，运算符优先级）：
+   * 原式 `1 + (sin(...) * 43758.5453) % biasRatio` 里 **`%` 优先级高于 `+`** ⇒ 实际是
+   * `1 + ((sin*43758.5453) % 0.04)`，而 `x % 0.04` 的值域只有 ±0.04 ⇒ factor 恒在 0.96~1.04、
+   * 且多数里程下取整后与 `base` 完全相同 —— `biasRatio` 形同摆设（改名也没改行为）。
+   * 现在先 `% 1` 取小数部分（值域 ±1），再乘幅度 ⇒ factor ∈ 1 ± biasRatio，才是"按里程的固定偏移"的本意。
+   * 📌 影响面：该值**只进 `run.result.estimatedSteps`**，真包 `steps` 恒为空串、界面也没有读它 ⇒ 不影响提交。
+   */
+  const factor = 1 + ((Math.sin(distanceKm * 12.9898) * 43758.5453) % 1) * biasRatio
   return Math.max(0, Math.round(base * factor))
 }
 

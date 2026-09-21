@@ -242,14 +242,36 @@ export function useMpRealSubmit() {
       phaseMessage.value = '提交请求超时，正在向服务端核实是否已入库…'
       pushProgress('warn', SUBMIT_PROGRESS.scoreTimeout(scoreMs))
       logWarn('submit', '提交超时（结果未知），开始核实是否已入库', { scantronId, message: score.message })
-      try {
-        landedAfterTimeout = Boolean(await fetchVerdict(scantronId, { quiet: true }))
-      } catch (err) {
-        landedAfterTimeout = null
-        logWarn('submit', '超时后的核实失败（保持"未知"）', {
-          scantronId,
-          message: err instanceof Error ? err.message : String(err),
-        })
+      /**
+       * ⚠️ **2026-09-21 审计修复（B1，本轮最关键）**：核实**必须延时重试**。
+       *
+       * 项目自己的实测（`DEVELOPMENT.md` §27）明确写着：**提交后"立刻"读回 `getSunrunArch` 是读不到的**
+       * （回 `total=0`，要过几分钟才可见）。所以第一版"超时后立刻查一次"几乎必然查不到
+       * ⇒ 承诺的"自动补交轨迹明细"形同虚设，issue #11 的第二半（轨迹仍被跳过）实际没修好。
+       *
+       * 判据：**核实的时机要匹配"服务端可见延迟"** —— 3 s / 8 s / 20 s 三次递进重试，命中即停；
+       * 一旦外部复位了状态（清空本机数据等）就立刻放弃，不做无谓等待。
+       */
+      const delays = [3_000, 8_000, 20_000]
+      for (const waitMs of delays) {
+        await new Promise<void>((resolve) => setTimeout(resolve, waitMs))
+        if (phase.value !== 'submitting') {
+          logWarn('submit', '核实期间状态被外部复位，停止核实', { scantronId, phase: phase.value })
+          break
+        }
+        try {
+          landedAfterTimeout = Boolean(await fetchVerdict(scantronId, { quiet: true }))
+        } catch (err) {
+          landedAfterTimeout = null
+          logWarn('submit', '超时后的核实失败（保持"未知"）', {
+            scantronId,
+            message: err instanceof Error ? err.message : String(err),
+          })
+        }
+        if (landedAfterTimeout) break
+      }
+      if (!landedAfterTimeout) {
+        logWarn('submit', `超时后核实三次仍未在归档中找到（可能仍在处理）`, { scantronId, delays })
       }
     }
     const outcome = classifyWriteOutcome(score, landedAfterTimeout)
@@ -301,12 +323,26 @@ export function useMpRealSubmit() {
     }
 
     /**
-     * ⚠️ **写回前复查（2026-09-20 审计 B2；⚠️ 更正：这条当轮只写了提交信息、代码漏了，2026-09-21 才真正落地）**：
-     * 成绩/明细两次 await 期间用户可能点了「退出登录」或「清空本机数据」⇒ `phase` 已被外部复位，
-     * 此时**不能**再把 `result`/`phase` 无条件写回去（会把已清空的状态"僵尸写回"）。
+     * ⚠️ **写回前复查（2026-09-20 审计 B2；2026-09-21 审计 B2 拆开两种情形）**：
+     * 成绩/明细两次 await 期间用户可能点了「退出登录」或「清空本机数据」。
+     * ⚠️ 这两种情形**必须分开处理**（第一版混在一起 ⇒ 退出登录会把 `phase` 永久钉在 `submitting`，
+     *    「真实提交」与「重置」双双灰死到刷新页面为止，而已成功的成绩被静默丢弃）。
      */
-    if (phase.value !== 'submitting' || !session.value?.token || !profile.value) {
-      logWarn('submit', '提交期间上下文被清除，本地状态不写回', { scantronId, phase: phase.value })
+    if (phase.value !== 'submitting') {
+      // ① phase 已被外部复位（清空本机数据）⇒ 静默返回，不写回
+      logWarn('submit', '提交期间状态被外部复位，本地状态不写回', { scantronId, phase: phase.value })
+      return null
+    }
+    if (!session.value?.token || !profile.value) {
+      // ② 只是凭据/档案被清（退出登录）⇒ **必须复位 phase 并给提示**，否则按钮永久灰死
+      phase.value = 'error'
+      phaseMessage.value =
+        '提交期间会话/档案被清除（可能点了「退出登录」）——本次提交的结果不再写回界面；请重新读取真实数据后再查看记录'
+      logWarn('submit', '提交期间凭据被清除，phase 置为 error（避免按钮永久灰死）', {
+        scantronId,
+        hadToken: Boolean(session.value?.token),
+        hadProfile: Boolean(profile.value),
+      })
       return null
     }
 

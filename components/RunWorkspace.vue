@@ -250,7 +250,7 @@
           color="error"
           variant="flat"
           prepend-icon="mdi-cloud-upload-outline"
-          :disabled="!realReady || run.status !== 'finished' || phase === 'waiting' || phase === 'submitting' || !gateStatus.allow"
+          :disabled="!realReady || run.status !== 'finished' || submitInFlight || alreadySubmitted || !gateStatus.allow"
           @click="confirmOpen = true"
         >
           真实提交
@@ -325,6 +325,10 @@
           轨迹：{{ result.detailOk === undefined ? '未提交（成绩未成功，按源码不发）' : result.detailOk ? '已提交' : '失败：' + result.detailMessage }}
         </div>
         <div v-if="result.verdictText" class="text-body-2 mt-1">★ 判定：{{ result.verdictText }}</div>
+        <!-- ⚠️ 2026-09-21 审计修复（B3）：提交成功后按钮会被禁用，这里说明**为什么**，并给出正确出路 -->
+        <div v-if="alreadySubmitted" class="text-caption mt-1">
+          本次结算已经提交过，不能再重复提交（服务端会多录一条成绩）。如需再跑一次，请先点「重置」再重新开跑。
+        </div>
       </v-alert>
 
       <!-- 提交过程清单（2026-09-21 用户要求："要能看到现在在传什么"）
@@ -593,10 +597,21 @@ const isBusy = computed(() => run.value.status === 'running' || run.value.status
  * ⚠️ 2026-09-20 审计修复：原先只判 `waiting|submitting`，**漏了 `begin`** ——
  * `phase='begin'` 时正在 await `getRunBegin`（最长 15 s），那段时间按钮可点，
  * 第二次点击会让服务端**建出两个场次**（`real/submit.ts` 的入口互斥已同步补上 `begin` 兜底）。
+ * ⚠️ 2026-09-21 审计修复：**同一"在途"概念只允许一处判据** —— 工具栏那个按钮原先自己另写了一套
+ * （`phase === 'waiting' || phase === 'submitting'`），于是 `begin` 阶段它能点，再点会弹出
+ * "确认/取消**都禁用**"的点不动弹窗；现在工具栏也统一用本 computed。
  */
 const submitInFlight = computed(
   () => phase.value === 'begin' || phase.value === 'waiting' || phase.value === 'submitting',
 )
+
+/**
+ * ⚠️ 2026-09-21 审计修复（B3）：**本次结算已经提交过**就不许再点。
+ * 原先提交成功后 `phase='done'` 而 `run.status` 仍是 `finished` ⇒ 「真实提交」重新可点，
+ * 再点会新建一个 `scantronId` **再发一次 sunRunExercises** ⇒ 账号上多录一条成绩。
+ * 最容易踩的场景正是：首次提交超时、界面说"结果未知"，用户以为没交上去就再点一次。
+ */
+const alreadySubmitted = computed(() => phase.value === 'done' && Boolean(result.value?.scantronId))
 
 /** 载入演示数据（按需功能，不发任何请求） */
 const doEnableDemo = () => {

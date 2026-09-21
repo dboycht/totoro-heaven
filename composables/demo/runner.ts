@@ -142,9 +142,6 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
             overshootRatio: 0,
             durationSeconds: 0,
           }
-    // ⚠️ 2026-09-21（用户要求"冗余提示"）：任务窗口冲突的说明随状态带到结算阶段 ——
-    //    `plan` 只在本函数作用域里，而结果是在 `finish()` 里拼的（两者不同作用域）。
-    run.value.windowConflictDetail = plan.windowConflictDetail
 
     try {
       // 演示用 20m 采样（点少、页面轻）；真实模式用 3m（≈1Hz GPS，与真实提交口径一致）
@@ -200,6 +197,12 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
         lapLengthM: generated.lapLengthM,
         lapDriftM: generated.lapDriftM,
         passPoints: { all: DEMO_PASS_POINTS.length, done: 0, notPassed: DEMO_PASS_POINTS.length },
+        /**
+         * ⚠️ 2026-09-21（用户要求"冗余提示"，并修一个自伤 bug）：任务速度窗与时长窗互斥时的说明，
+         * **必须写进这个"整对象"里** —— 上面是 `run.value = { ...createRunState(), ... }` **整体替换**，
+         * 任何在替换**之前**挂到 `run.value` 上的字段都会被丢掉（本字段第一版就是这么 100% 失效的，被审计抓到）。
+         */
+        windowConflictDetail: plan.windowConflictDetail,
       }
       lastFitAt = 0
       refreshFitDegree(true)

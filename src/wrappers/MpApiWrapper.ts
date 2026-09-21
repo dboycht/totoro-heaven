@@ -129,21 +129,43 @@ async function rawRequest(
         : await MpApiWrapper.client.post(path, { json: body ?? {}, headers, signal: options.signal, timeout })
 
     const text = await response.text()
-    if (!text.trim()) return { error: `空响应（HTTP ${response.status}）` }
+    /**
+     * ⚠️ **504 必须最先判**（2026-09-21 审计 B5）：504 可能带**空体或非 JSON 体**，
+     * 若放在 JSON 解析之后，这种 504 会落进"空响应 / 非 JSON ⇒ 确定失败"，又会诱导用户重试。
+     */
+    const upstreamTimedOut = response.status === 504
+    /**
+     * ⚠️ **写操作的"空响应 / 非 JSON 响应"也是"结果未知"**（2026-09-21 审计 B4）：
+     * 上游可能**已经写入**，只是回了个空体、或回了一页 HTML（WAF / 网关错误页）。
+     * 原先这两条 return 不带 `timedOut` ⇒ 被当成"确定失败" ⇒ 跳过轨迹明细 + 诱导重试 ⇒ 可能多录一条成绩。
+     */
+    const unknownForWrite = upstreamTimedOut || meta.method !== 'GET'
+    if (!text.trim()) {
+      return {
+        error: upstreamTimedOut
+          ? `上游超时（HTTP 504：${meta.method} ${meta.path}）`
+          : `空响应（HTTP ${response.status}）`,
+        ...(unknownForWrite ? { timedOut: true } : {}),
+      }
+    }
     let parsed: MpResponse
     try {
       parsed = JSON.parse(text) as MpResponse
     } catch {
-      return { error: `响应不是 JSON（HTTP ${response.status}）` }
+      return {
+        error: upstreamTimedOut
+          ? `上游超时（HTTP 504：${meta.method} ${meta.path}）`
+          : `响应不是 JSON（HTTP ${response.status}）`,
+        ...(unknownForWrite ? { timedOut: true } : {}),
+      }
     }
     /**
-     * ⚠️ **HTTP 504 也按"超时/结果未知"处理**（2026-09-21 修 issue #11 的一部分）：
+     * ⚠️ **HTTP 504 也按"超时/结果未知"处理**（2026-09-21 修 issue #11）：
      * 504 来自①本机代理等上游等到 `UPSTREAM_TIMEOUT_MS` 后放弃，或②上游网关自己超时 ——
-     * 两种情况都只是"**我们没等到答复**"，**不等于上游没写入**。所以带上 `timedOut`，
-     * 让写操作走"去服务端核实"那条路（读操作只是提示稍后重试，不受影响）。
-     * 文案优先用对方给的可读原因（代理写的是中文），拿不到再兜底。
+     * 两种情况都只是"**我们没等到答复**"，**不等于上游没写入**。
+     * 文案优先用对方给的可读原因（代理写的是中文）。
      */
-    if (response.status === 504) {
+    if (upstreamTimedOut) {
       const reason = String((parsed as { statusMessage?: unknown }).statusMessage ?? '').trim()
       return {
         error: reason || `上游超时（HTTP 504：${meta.method} ${meta.path}）`,
