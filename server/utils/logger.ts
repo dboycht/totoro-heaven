@@ -23,6 +23,19 @@ const MAX_TOTAL_BYTES = 20 * 1024 * 1024
 const pad = (n: number) => String(n).padStart(2, '0')
 const dateTag = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 
+/**
+ * 日志文件的**日期标签**（`YYYY-MM-DD`，本地时间）。
+ *
+ * ⚠️ 2026-09-21 起**导出**给「一键诊断导出」用（`server/utils/diagLogs.ts`）：
+ * 它要按日期反推"最近 N 天该有哪些文件"，如果自己再写一份 `YYYY-MM-DD` 拼法，
+ * 一旦这里换了命名口径就会**静默取不到日志**（导出包看起来正常、但没有日志）。
+ * 导出它只新增可见性，**不改任何现有行为**（`dateTag` 本体与 `logFilePath()` 一字未动）。
+ */
+export const logDateTag = dateTag
+
+/** 日志保留天数（自动清理与「诊断导出」的"最近几天"口径必须一致） */
+export const LOG_KEEP_DAYS = KEEP_DAYS
+
 export function logFilePath(d = new Date()): string {
   return join(LOG_DIR, `app-${dateTag(d)}.log`)
 }

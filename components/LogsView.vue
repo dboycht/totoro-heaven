@@ -11,6 +11,9 @@
       </div>
     </v-alert>
 
+    <!-- ⓪ 一键诊断记录 / 导出（2026-09-21 新增；放在最上面：用户来这一页多半就是为了排障） -->
+    <DiagnosticsExportCard />
+
     <!-- ① 本机事件日志 -->
     <v-card class="mb-4">
       <v-card-title class="d-flex align-center flex-wrap ga-2">
@@ -133,6 +136,8 @@
 <script setup lang="ts">
 import { useEventLog } from '~/composables/useEventLog'
 import type { LogEntry, LogLevel } from '~/utils/mp/logFormat'
+// 「诊断记录（导出给开发者）」卡片（显式 import：与 pages/data/[tab].vue 同一写法，不依赖自动导入）
+import DiagnosticsExportCard from '~/components/DiagnosticsExportCard.vue'
 
 const logs = useEventLog()
 const showSnackbar = useNotice()
