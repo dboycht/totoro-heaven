@@ -36,6 +36,8 @@ const NEEDED = [
   'composables/demo/runner.ts',
   'pages/run.vue',
   'pages/index.vue',
+  // ⚠️ 2026-09-21（R13）：`.ps1` 编码纪律 —— 注入 16 要把它改写成"无 BOM"，副本里必须存在
+  'pack/release/publish.ps1',
   'pages/records.vue',
   // ⚠️ 2026-09-20（导航分组重构）：页面内容被抽成组件、页面变成薄页面
   //    ⇒ 检查器/注入要读的"真正内容"在组件里，副本必须带上（否则注入改不到东西、自测报"找不到"）。
@@ -336,6 +338,25 @@ try {
     if (code === 0) failures.push('本机回调地址写死回环字面量，但检查器仍然通过（R12 守卫失效）')
     else if (!out.includes('写死的')) failures.push(`报错信息不是预期的：\n${out}`)
   }
+
+  // ---------- 注入 16：`.ps1` 丢掉 UTF-8 BOM（R13，2026-09-21 我亲手踩到的那次回归）----------
+  // `publish.ps1` 含中文；把它改写成**无 BOM** 的 UTF-8（模拟"用编辑工具改写丢掉 BOM"），
+  // PowerShell 5.1 会按 ANSI 解码 ⇒ 解析失败、脚本一行都不跑 ⇒ R13 必须报错。
+  // ⚠️ 踩过一次的坑：Node 的 `readFileSync(p,'utf8')` **不会去掉 BOM**（U+FEFF 留在字符串里），
+  //    直接 `writeFileSync(text,'utf8')` 是**空操作**（BOM 原样写回）⇒ 必须显式剥掉 `\\uFEFF`。
+  {
+    const dir = copyBase()
+    const file = join(dir, 'pack/release/publish.ps1')
+    const hasBom = readFileSync(file).slice(0, 3).toString('hex') === 'efbbbf'
+    if (!hasBom) failures.push('注入 16：基线里的 publish.ps1 竟然没有 BOM（自测前提不成立，请先修好它）')
+    const text = readFileSync(file, 'utf8').replace(/^\uFEFF/, '')
+    writeFileSync(file, text, 'utf8')
+    const after = readFileSync(file).slice(0, 3).toString('hex')
+    if (after === 'efbbbf') failures.push('注入 16：没能真的把 BOM 去掉（自测自身失效）')
+    const { code, out } = run(dir)
+    if (code === 0) failures.push('`.ps1` 丢了 BOM，但检查器仍然通过（R13 守卫失效）')
+    else if (!out.includes('BOM')) failures.push(`报错信息不是预期的：\n${out}`)
+  }
 } finally {
   rmSync(sandbox, { recursive: true, force: true })
 }
@@ -347,8 +368,9 @@ if (failures.length) {
   process.exit(1)
 }
 console.log(
-  '✅ 自测通过：基线通过、15 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
+  '✅ 自测通过：基线通过、16 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
     '代理重复声明前缀 / 模板裸取可空状态 / 空 catch / 夜间限制套回「开始跑步」/ 提示退回字符串注入键 / ' +
-    'kebab 绑定丢 prop / **开始跑步不再要求已配置跑道** / **dev 少了 host** / **本机回调写死地址族**）都被抓到且退出码非 0，' +
+    'kebab 绑定丢 prop / **开始跑步不再要求已配置跑道** / **dev 少了 host** / **本机回调写死地址族** / ' +
+    '**`.ps1` 丢 BOM**）都被抓到且退出码非 0，' +
     '且"写了 v-if 守卫"的反向用例不会被误报。',
 )

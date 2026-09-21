@@ -38,7 +38,9 @@ const numOrNull = (line) => {
 async function looksLikeOurApp(port) {
   try {
     const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), 1200)
+    // ⚠️ 2026-09-21（审计）：原先 1200ms —— 冷启动时页面可能还没吐出来，会被判"不是本程序"，
+    // 进而在"3000 被自家占用"时顺延出第二个实例（共享同一解包目录 ⇒ 互相踩）。放宽到 3 秒。
+    const timer = setTimeout(() => ctrl.abort(), 3000)
     const res = await fetch(`http://127.0.0.1:${port}/`, { signal: ctrl.signal })
     clearTimeout(timer)
     if (!res.ok) return false
@@ -60,24 +62,26 @@ function isPortFree(port) {
 }
 
 async function pickPort() {
-  if (await looksLikeOurApp(PREFERRED_PORT)) {
-    console.log(`  ℹ 检测到本工具已在 http://localhost:${PREFERRED_PORT}/ 运行，直接打开浏览器（不再重复启动服务）。`)
-    console.log('  ℹ 原因：同一时间只应运行一个本程序实例（多个实例会共用同一个临时解包目录，可能互相影响）。')
-    exec(`start http://localhost:${PREFERRED_PORT}/`)
-    process.exit(0)
+  /**
+   * ⚠️ **2026-09-21 结构性修复（审计 B3）**：**探测整个候选端口段**，而不是只看首选端口。
+   *
+   * 原先只探 3000：若 3000 被别的程序占用、本程序已顺延到 3001，用户再双击一次时 3000 上不是我们的服务
+   * ⇒ 起**第二个实例**；而第二个实例启动时会清空并重解包**共享目录**（`%TEMP%\totoro-heaven-runtime`）
+   * ⇒ 正在服务的第一个实例开始偶发 500/`ERR_MODULE_NOT_FOUND`。
+   * 判据：**"本工具是否已在运行"必须在整个候选端口段上判断**（空闲端口探测失败是瞬时的，代价可忽略）。
+   */
+  for (let p = PREFERRED_PORT; p <= PREFERRED_PORT + 20; p++) {
+    if (await looksLikeOurApp(p)) {
+      console.log(`  ℹ 检测到本工具已在 http://localhost:${p}/ 运行，直接打开浏览器（不再重复启动服务）。`)
+      console.log('  ℹ 原因：同一时间只应运行一个本程序实例（多个实例会共用同一个临时解包目录，可能互相影响）。')
+      exec(`start http://localhost:${p}/`)
+      process.exit(0)
+    }
   }
   for (let p = PREFERRED_PORT; p <= PREFERRED_PORT + 20; p++) {
     if (await isPortFree(p)) {
       if (p !== PREFERRED_PORT) {
         console.log(`  ℹ 端口 ${PREFERRED_PORT} 已被其它程序占用，本次改用 ${p}。`)
-        /**
-         * ⚠️ 妥协性提示（2026-09-21 用户要求：先只提示、不做结构性修复）：
-         * 单实例探测**只看首选端口**，所以"3000 被别人占用 + 用户又双击一次"会让第二个实例
-         * 去清空并重解包共享目录 `%TEMP%\totoro-heaven-runtime\`，正在服务的那个实例就会随机报错。
-         * 真正的修法（探测整个端口段 + 解包目录按端口区分）留待后续版本，这里先把原因说清楚、别让用户莫名其妙。
-         */
-        console.log('     ⚠️ 提醒：如果此刻你其实已经开着一个本程序窗口，请只保留一个 ——')
-        console.log('        两个实例会共用同一个临时解包目录（%TEMP%\\totoro-heaven-runtime），可能互相干扰（页面偶发 500）。')
       }
       return p
     }
