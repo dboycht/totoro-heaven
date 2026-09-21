@@ -166,11 +166,36 @@ if (-not (Test-Path -LiteralPath (Join-Path $srcArt "$ver.png"))) {
     if (Test-Path $outArt) { Remove-Item $outArt -Recurse -Force }
     New-Item -ItemType Directory -Path $outArt | Out-Null
     Copy-Item -LiteralPath (Join-Path $srcArt "$ver.png") -Destination $outArt
-    $packedArt = @(Get-ChildItem $outArt -File -Filter '*.png' | ForEach-Object { $_.Name })
-    if ($packedArt.Count -ne 1 -or $packedArt[0] -ne "$ver.png") {
-        throw "[0.6] version-art assertion failed: expected exactly [$ver.png], got [$($packedArt -join ', ')]"
+    # ---- 2026-09-21 fix: also ship the artwork of the entry the version page may FALL BACK TO ----
+    # The page shows the current version's entry when it exists; in DEVELOPMENT state (package.json bumped
+    # to X+1 but its releaseArt entry is still `planned`) it falls back to the newest released entry and
+    # shows THAT version's artwork. Shipping only "<ver>.png" therefore produced a broken image + HTTP 500
+    # on /version-art/<fallback>.png (measured on the 1.2.2 dev build: 500 GET /version-art/1.2.1.png).
+    # Judgement: ship exactly the artwork the page can display = {current version} u {newest released <= ver}.
+    $fallbackVer = $null
+    $relArtPath = Join-Path $root 'src\mp\releaseArt.ts'
+    if (Test-Path $relArtPath) {
+        $relArtText = Get-Content $relArtPath -Raw
+        foreach ($b in [regex]::Matches($relArtText, "version:\s*'([0-9]+\.[0-9]+\.[0-9]+)'([\s\S]*?)(?=version:\s*'|$)")) {
+            $v = $b.Groups[1].Value
+            if ($b.Groups[2].Value -match 'planned:\s*true') { continue }
+            if ((To-Comparable $v) -gt $curNum) { continue }
+            $fallbackVer = $v
+            break
+        }
     }
-    Write-Host "[0.6] version-art OK: shipping only $ver.png (stale/future artwork excluded)."
+    if ($fallbackVer -and ($fallbackVer -ne $ver) -and (Test-Path -LiteralPath (Join-Path $srcArt "$fallbackVer.png"))) {
+        Copy-Item -LiteralPath (Join-Path $srcArt "$fallbackVer.png") -Destination $outArt
+        Write-Host "[0.6] version-art: dev state -> also shipping $fallbackVer.png (the entry the page falls back to)"
+    }
+    $expectedArt = @("$ver.png")
+    if ($fallbackVer -and ($fallbackVer -ne $ver) -and (Test-Path -LiteralPath (Join-Path $outArt "$fallbackVer.png"))) { $expectedArt += "$fallbackVer.png" }
+    $packedArt = @(Get-ChildItem $outArt -File -Filter '*.png' | ForEach-Object { $_.Name } | Sort-Object)
+    $expectedArt = @($expectedArt | Sort-Object)
+    if (($packedArt -join ',') -ne ($expectedArt -join ',')) {
+        throw "[0.6] version-art assertion failed: expected [$($expectedArt -join ', ')], got [$($packedArt -join ', ')]"
+    }
+    Write-Host "[0.6] version-art OK: shipping [$($packedArt -join ', ')] (stale/future artwork excluded)."
 }
 
 Write-Host '[1/7] bundle launcher (esbuild)...'
