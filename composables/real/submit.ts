@@ -133,11 +133,32 @@ export function useMpRealSubmit() {
     if (!begin.ok || !scantronId) {
       phase.value = 'error'
       pushProgress('error', SUBMIT_PROGRESS.beginFail(begin.message))
+      /**
+       * ⚠️ 2026-09-21 实测（自由跑真提交一笔）：厂商对自由跑回
+       * `status:"01" code:"1" msg:"暂无自由跑任务,请选择阳光跑!"` —— 这是**服务端按学校/账号的资格判定**
+       * （已核对厂商小程序源码：自由跑就是 `runType:1` + `paperId/lineId` 空串，**并不去取什么"自由跑任务"**，
+       *  与我们的报文逐字一致）⇒ **不是本机问题，也没有 paperId 可以补**。
+       * 判据：**"服务器明确说没开通"这类回复要单独翻译成人话**，别让用户以为是自己的操作或本程序的 bug。
+       */
+      const noFreeRunTask = freeRun && /自由跑任务/.test(begin.message)
       // 若失败原因是 token 过期 → 给"退出登录并重新登录小程序"的可操作提示
       phaseMessage.value = looksLikeTokenExpired(begin.raw)
         ? TOKEN_EXPIRED_HINT
-        : `开跑失败：${begin.message}`
-      logError('submit', '开跑失败（getRunBegin）', { message: begin.message, lineId: input.line?.pointId ?? '(自由跑)' })
+        : noFreeRunTask
+          ? `你所在学校/账号暂无「自由跑任务」——厂商服务端拒绝开跑（原话：${begin.message}）。` +
+            `自由跑目前只能用于本地模拟与预览，真实提交需要学校开通；阳光跑不受影响。`
+          : `开跑失败：${begin.message}`
+      if (noFreeRunTask) {
+        pushProgress(
+          'warn',
+          '② 说明：服务端未给该校/该账号开通「自由跑任务」⇒ 自由跑无法真实提交（与报文格式、本机操作无关）；阳光跑可正常提交',
+        )
+      }
+      logError('submit', '开跑失败（getRunBegin）', {
+        message: begin.message,
+        lineId: input.line?.pointId ?? '(自由跑)',
+        ...(noFreeRunTask ? { note: '服务端未开通自由跑任务（2026-09-21 实测）' } : {}),
+      })
       return null
     }
     const startedAt = Date.now()
