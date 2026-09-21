@@ -158,7 +158,16 @@ if (-not (Test-Path -LiteralPath (Join-Path $srcArt "$ver.png"))) {
     if ($newer.Count -eq 0) {
         throw "[0.6] public\version-art\$ver.png is missing - the version page would show a placeholder. Add the artwork before packaging."
     }
-    Write-Warning "[0.6] no artwork for current dev version $ver (expected during development) - shipping NO version artwork. Add public\version-art\$ver.png before the release build."
+    # 2026-09-21 user request: when a pre-release is packed without this version's artwork, SAY IT LOUDLY
+    # (the user accepted this limitation: "just tell me 'no version artwork' at pack time").
+    Write-Host ''
+    Write-Host '  ==================================================================' -ForegroundColor Yellow
+    Write-Host "  !! NO VERSION ARTWORK !!  (public\version-art\$ver.png is missing)" -ForegroundColor Yellow
+    Write-Host '  This build ships NO artwork, so the version page will show a' -ForegroundColor Yellow
+    Write-Host '  placeholder / broken image for the entry it falls back to.' -ForegroundColor Yellow
+    Write-Host "  Add public\version-art\$ver.png before a RELEASE build." -ForegroundColor Yellow
+    Write-Host '  ==================================================================' -ForegroundColor Yellow
+    Write-Host ''
     if (Test-Path $outArt) { Remove-Item $outArt -Recurse -Force }
     New-Item -ItemType Directory -Path $outArt | Out-Null
     Write-Host '[0.6] version-art: dev build, artwork intentionally not shipped.'

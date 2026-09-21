@@ -62,6 +62,7 @@ function isPortFree(port) {
 async function pickPort() {
   if (await looksLikeOurApp(PREFERRED_PORT)) {
     console.log(`  ℹ 检测到本工具已在 http://localhost:${PREFERRED_PORT}/ 运行，直接打开浏览器（不再重复启动服务）。`)
+    console.log('  ℹ 原因：同一时间只应运行一个本程序实例（多个实例会共用同一个临时解包目录，可能互相影响）。')
     exec(`start http://localhost:${PREFERRED_PORT}/`)
     process.exit(0)
   }
@@ -69,6 +70,14 @@ async function pickPort() {
     if (await isPortFree(p)) {
       if (p !== PREFERRED_PORT) {
         console.log(`  ℹ 端口 ${PREFERRED_PORT} 已被其它程序占用，本次改用 ${p}。`)
+        /**
+         * ⚠️ 妥协性提示（2026-09-21 用户要求：先只提示、不做结构性修复）：
+         * 单实例探测**只看首选端口**，所以"3000 被别人占用 + 用户又双击一次"会让第二个实例
+         * 去清空并重解包共享目录 `%TEMP%\totoro-heaven-runtime\`，正在服务的那个实例就会随机报错。
+         * 真正的修法（探测整个端口段 + 解包目录按端口区分）留待后续版本，这里先把原因说清楚、别让用户莫名其妙。
+         */
+        console.log('     ⚠️ 提醒：如果此刻你其实已经开着一个本程序窗口，请只保留一个 ——')
+        console.log('        两个实例会共用同一个临时解包目录（%TEMP%\\totoro-heaven-runtime），可能互相干扰（页面偶发 500）。')
       }
       return p
     }
