@@ -29,7 +29,6 @@ import {
   SUBMIT_PROGRESS,
   submitProgressLine,
   type SubmitProgressKind,
-  type SubmitProgressLine,
 } from '~/utils/mp/submitProgress'
 // 🆕 2026-09-21（E 自由跑入口标灰）："是不是未开通自由跑"的判据在纯逻辑层（单一来源）
 import { isFreeRunUnsupportedMessage } from '~/utils/mp/freeRun'
@@ -37,7 +36,7 @@ import { useRealState, type RealSubmitResult } from './state'
 
 export function useMpRealSubmit() {
   const { session } = useMpSession()
-  const { profile, task, switches, cameraFlag, cameraFlagLineId, phase, phaseMessage, remainingSeconds, result, markFreeRunUnsupported } =
+  const { profile, task, switches, cameraFlag, cameraFlagLineId, phase, phaseMessage, remainingSeconds, result, submitProgress, markFreeRunUnsupported } =
     useRealState()
 
   // ---------- 真实提交 ----------
@@ -47,10 +46,13 @@ export function useMpRealSubmit() {
    * 每步都记一行（时间 + 图标 + 文案），六步：① 门禁 → ② 建场次 → ③ 真实等待 → ④ 成绩 → ⑤ 轨迹 → ⑥ 判定。
    * ⚠️ 超时分支（issue #11 的修复）也要**看得见**：超时 → 结果未知 → 核实 → 已入库/无法确认。
    * 文案与格式全部来自纯函数 `utils/mp/submitProgress.ts`（有单测）。
+   *
+   * ⚠️ 2026-09-21：清单本体**不再是本文件的局部 ref**，而是 `./state` 里的 `useState` 单例
+   * （原先每个 `useMpRealSubmit()` 调用点各一份 ⇒ 换页就丢、清空本机数据也清不掉）。
+   * 这里只负责往里打点：读写在下面统一用 `submitProgress.value`。
    */
-  const progress = ref<SubmitProgressLine[]>([])
   const pushProgress = (kind: SubmitProgressKind, text: string) => {
-    progress.value = [...progress.value, submitProgressLine(kind, text)].slice(-40)
+    submitProgress.value = [...submitProgress.value, submitProgressLine(kind, text)].slice(-40)
   }
 
   let waitTimer: ReturnType<typeof setInterval> | null = null
@@ -97,7 +99,7 @@ export function useMpRealSubmit() {
      * 原先清空发生在"门禁检查"那一段、而这之前还有若干提前 `return`（缺会话/缺任务等）⇒
      * 那些分支会把**上一次的步骤**留在面板上、配一条新错误，看起来像"上次的错"。
      */
-    progress.value = []
+    submitProgress.value = []
     const token = session.value?.token
     const runType: 0 | 1 = input.runType === 1 ? 1 : 0
     const freeRun = runType === 1
@@ -111,7 +113,7 @@ export function useMpRealSubmit() {
     }
 
     // ⓪ 三合一否决门禁（必须在任何写操作之前）—— 含"夜间停用 22:30~06:00"（同一纯函数，实时取时钟）
-    // （过程清单已在入口清空，见上面的 `progress.value = []`）
+    // （过程清单已在入口清空，见上面的 `submitProgress.value = []`）
     pushProgress('step', SUBMIT_PROGRESS.gate())
     const gate = evaluateRunGate({
       schoolCode: profile.value.schoolCode,
@@ -485,7 +487,9 @@ export function useMpRealSubmit() {
     phaseMessage,
     remainingSeconds,
     result,
-    progress,
+    // ⚠️ 对外**键名保持 `progress`**：`components/RunWorkspace.vue` 按 `progress: submitProgress` 解构
+    // （值换成 ./state 的单例，调用方无需改动）
+    progress: submitProgress,
     submitRealRun,
     fetchVerdict,
     stopWait,

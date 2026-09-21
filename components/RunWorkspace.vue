@@ -285,12 +285,16 @@
           </span>
           <v-btn size="x-small" variant="text" @click="clearFreeRunUnsupported()">仍要试一次</v-btn>
         </template>
+        <!-- ⚠️ 2026-09-21：`:disabled` 里带 `submitInFlight` —— 提交流程内部自己也会调一次 `fetchVerdict`
+             （同样往过程清单里插 ⑥ 行），只锁"按钮连点"挡不住这种并发（审计指出） -->
         <v-btn
           v-if="result?.scantronId"
           variant="tonal"
           color="primary"
           prepend-icon="mdi-clipboard-check-outline"
-          @click="fetchVerdict()"
+          :loading="verdictLoading"
+          :disabled="verdictLoading || submitInFlight"
+          @click="onFetchVerdict"
         >
           查询判定
         </v-btn>
@@ -892,6 +896,20 @@ const doRealSubmit = async () => {
     const message = err instanceof Error ? err.message : String(err)
     logError('submit', '真实提交抛出未捕获异常（已兜住）', { message })
     showSnackbar(`真实提交异常（未完成）：${message}`, 'error')
+  }
+}
+
+/** 查询判定在途标记（按钮 loading/disabled 共用；仅本组件的只读查询用） */
+const verdictLoading = ref(false)
+
+/** ⚠️ 2026-09-21：查询判定会写过程清单，连点会重复插入 ⇒ 加锁（进行中禁用并转圈） */
+async function onFetchVerdict() {
+  if (verdictLoading.value) return
+  verdictLoading.value = true
+  try {
+    await fetchVerdict()
+  } finally {
+    verdictLoading.value = false
   }
 }
 </script>

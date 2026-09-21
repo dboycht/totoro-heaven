@@ -11,6 +11,8 @@
 import type { MpSunrunTask } from '~/src/mp/types'
 // 🆕 2026-09-21（E：自由跑入口标灰）：键名与"是不是未开通"的判据都在纯逻辑层（单一来源）
 import { FREE_RUN_UNSUPPORTED_KEY } from '~/utils/mp/freeRun'
+// 🆕 2026-09-21：提交过程清单的行类型（清单本体从 `real/submit.ts` 的局部 ref 提上来做单例）
+import type { SubmitProgressLine } from '~/utils/mp/submitProgress'
 
 /**
  * 学生档案（`GetStudentInfoByToken` 读到的本人信息）。
@@ -84,8 +86,7 @@ export function useRealState() {
     }
     return false
   })
-  const markFreeRunUnsupported = () => {
-    freeRunUnsupported.value = true
+  const markFreeRunUnsupported = () => {    freeRunUnsupported.value = true
     if (import.meta.client) {
       try {
         localStorage.setItem(FREE_RUN_UNSUPPORTED_KEY, '1')
@@ -119,6 +120,17 @@ export function useRealState() {
   const phaseMessage = useState('mpRealPhaseMessage', () => '')
   const remainingSeconds = useState('mpRealRemaining', () => 0)
   const result = useState<RealSubmitResult | null>('mpRealResult', () => null)
+  /**
+   * 🆕 2026-09-21：**提交过程清单**（真实提交的六步打点，界面「提交过程」面板直接渲染它）。
+   *
+   * 原先它是 `real/submit.ts` 里的**局部 `ref`** ⇒ 而导出它的 `useMpRealSubmit()` 有多个调用点，
+   * 每个调用点各拿一份**互相独立**的清单，于是：
+   *   · 换页 / 切走再回来，「提交过程」面板会**重来**（上一次的过程凭空丢失）；
+   *   · 工作台的「清空本机数据」**清不掉**它，可能残留上一次提交的过程。
+   * 提到这里用 `useState` 后：同一 key 在任何地方都是**同一个共享引用**（换页不丢），
+   * 也能被 `real/data.ts` 的 `clearAllLocalData()` 复位（清空数据能清）。
+   */
+  const submitProgress = useState<SubmitProgressLine[]>('mpRealSubmitProgress', () => [])
 
   /**
    * 时钟 tick（每 30 秒）：**只**用于让"夜间停用（22:30~06:00）"这类与时间有关的门禁自动刷新，
@@ -149,6 +161,8 @@ export function useRealState() {
     phaseMessage,
     remainingSeconds,
     result,
+    // 🆕 2026-09-21：提交过程清单（从 submit.ts 的局部 ref 提上来做单例，这样换页不丢、清空数据能清）
+    submitProgress,
     clockTick,
   }
 }

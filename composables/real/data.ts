@@ -51,6 +51,8 @@ export function useMpRealData() {
     phaseMessage,
     remainingSeconds,
     result,
+    // 🆕 2026-09-21：提交过程清单（已从 submit.ts 的局部 ref 提为 ./state 的单例；清空本机数据时必须一起复位）
+    submitProgress,
     clockTick,
   } = useRealState()
 
@@ -365,6 +367,9 @@ export function useMpRealData() {
     phaseMessage.value = ''
     remainingSeconds.value = 0
     result.value = null
+    // 🆕 2026-09-21：提交过程清单也是本机数据 —— 不一起清，界面上会残留"上一次提交的过程"
+    // （它现在是 `./state` 的单例，退出登录时**不清**：退出不必抹掉过程清单，用户可能还想回看）
+    submitProgress.value = []
   }
 
   /** 是否存在"可恢复的上次任务"（界面据此显示恢复入口） */
