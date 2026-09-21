@@ -258,20 +258,26 @@ if ($hasRcedit -and $hasIcon) {
     } else {
         # 2026-09-20 fix: the TIMED overload of WaitForExit() does NOT guarantee that the process
         # object's ExitCode is populated - reading it right away yielded an EMPTY value and produced
-        # a false "rcedit icon set failed (exit )" warning, while the icon HAD actually been embedded
-        # (verified by finding logo.ico's image block inside the EXE, i.e. evidence from the artifact,
-        # not from this log). Call the argument-less overload to force ExitCode to settle.
+        # a false "rcedit icon set failed (exit )" warning, while the icon HAD actually been embedded.
+        # Call the argument-less overload to force ExitCode to settle.
         $rceditProc.WaitForExit()
-        # Judge by the ARTIFACT: if the exe's mtime moved, rcedit did write to it (icon applied).
         $changed = (Get-Item $exeOut).LastWriteTimeUtc -ne $before
         if ($changed) {
-            Write-Host '[5/7] icon applied (exe modified; rcedit ExitCode may read as empty in this invocation - artifact check is authoritative).'
+            Write-Host '[5/7] rcedit wrote to the exe (mtime moved).'
         } else {
-            Write-Warning "rcedit did not modify the exe (exit $($rceditProc.ExitCode)) - icon NOT applied; the EXE keeps the default Node icon."
+            Write-Warning "rcedit did not modify the exe (exit $($rceditProc.ExitCode)) - icon may NOT be applied."
         }
     }
+    # ---- [5/7-b] 2026-09-21 audit fix: prove the icon FROM THE ARTIFACT (mtime/timeout are not evidence) ----
+    # Judgement: read RT_GROUP_ICON #1 out of the produced EXE and out of the original node.exe base and require
+    # them to DIFFER (node.exe ships its own icon group, so "has a group" proves nothing). Throws on any doubt --
+    # including the rcedit-timeout path above, which previously skipped the check and could ship a half-written EXE.
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'assert-icon.ps1') -Exe $exeOut -BaseNode $nodeExe
+    if ($LASTEXITCODE -ne 0) {
+        throw '[5/7] icon verification FAILED (see assert-icon.ps1 output above) - refusing to package this EXE'
+    }
 } else {
-    Write-Warning 'rcedit or logo.ico not found - skipping icon step'
+    throw 'rcedit or logo.ico not found - cannot set the EXE icon (refusing to build an icon-less release)'
 }
 
 Write-Host '[6/7] inject SEA blob (postject)...'

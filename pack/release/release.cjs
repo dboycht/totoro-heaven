@@ -201,31 +201,94 @@ async function publishRelease(releaseId) {
   return res.json
 }
 
+/**
+ * 流式上传一个附件（2026-09-21，审计建议）。
+ *
+ * 原先 `fs.readFileSync(path)` 把**整个附件读进内存**（38MB 的 zip ⇒ 峰值可达 2 倍文件大小），
+ * 附件再大就有 OOM 风险；而且慢上行时长时间**没有任何输出**，看起来像卡死。
+ * 现在：**读流直传 + 显式 Content-Length**，并按 25% 打进度；失败**自动重试一次**
+ * （上传失败最常见的原因就是网络抖动；每次重试都新建读流，避免复用已消费的流）。
+ */
+function uploadAssetStream(releaseId, spec) {
+  return new Promise((resolve) => {
+    const name = path.basename(spec.path)
+    const size = fs.statSync(spec.path).size
+    const attempt = (n) => {
+      let lastPct = 0
+      const req = https.request(
+        {
+          method: 'POST',
+          host: uploadHost,
+          path: `/repos/${REPO}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`,
+          headers: {
+            'User-Agent': 'totoro-heaven-release',
+            Authorization: `token ${TOKEN}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'Content-Type': spec.contentType,
+            'Content-Length': String(size),
+          },
+        },
+        (res) => {
+          const chunks = []
+          res.on('data', (c) => chunks.push(c))
+          res.on('end', () => {
+            const text = Buffer.concat(chunks).toString('utf8')
+            if (res.statusCode >= 300 && n < 2) {
+              console.error(`  上传失败（HTTP ${res.statusCode}）—— 重试一次…`)
+              return attempt(n + 1)
+            }
+            let json = null
+            try {
+              json = JSON.parse(text)
+            } catch {
+              /* 保留原文，下面的错误分支会打印 */
+            }
+            resolve({ status: res.statusCode, text, json })
+          })
+        },
+      )
+      req.on('error', (err) => {
+        if (n < 2) {
+          console.error(`  上传出错（${err.message}）—— 重试一次…`)
+          return attempt(n + 1)
+        }
+        resolve({ status: 0, text: String(err.message), json: null })
+      })
+      const stream = fs.createReadStream(spec.path)
+      stream.on('data', (chunk) => {
+        const pct = Math.floor(((stream.bytesRead / size) * 100) / 25) * 25
+        if (pct > lastPct) {
+          lastPct = pct
+          console.log(`  …正在上传 ${name}：${Math.min(pct, 100)}%`)
+        }
+      })
+      stream.on('error', (err) => req.destroy(err))
+      stream.pipe(req)
+    }
+    attempt(1)
+  })
+}
+
 /** 上传附件（同名先删，保证可重跑）；逐个上传 ASSETS 里的每个文件 */
 async function uploadAssets(releaseId) {
   const list = await api('GET', apiHost, `/repos/${REPO}/releases/${releaseId}/assets`)
   const uploaded = []
   for (const spec of ASSETS) {
     const name = path.basename(spec.path)
+    const sizeMb = (fs.statSync(spec.path).size / 1024 / 1024).toFixed(1)
     if (Array.isArray(list.json)) {
       for (const asset of list.json.filter((a) => a.name === name)) {
         const del = await api('DELETE', apiHost, `/repos/${REPO}/releases/assets/${asset.id}`)
         console.log(`  删除同名旧附件 ${name}（HTTP ${del.status}）`)
       }
     }
-    const bytes = fs.readFileSync(spec.path)
-    const res = await api(
-      'POST',
-      uploadHost,
-      `/repos/${REPO}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`,
-      bytes,
-      spec.contentType,
-    )
-    if (res.status >= 300) {
+    const res = await uploadAssetStream(releaseId, spec)
+    if (res.status >= 300 || !res.json) {
       console.error(`上传附件失败：${name} HTTP ${res.status} ${res.text.slice(0, 300)}`)
       process.exit(1)
     }
-    console.log(`  附件上传成功：${name}（${(bytes.length / 1024 / 1024).toFixed(1)} MB）`)
+    console.log(`  附件上传成功：${name}（${sizeMb} MB，流式直传）`)
     uploaded.push(res.json)
   }
   return uploaded
