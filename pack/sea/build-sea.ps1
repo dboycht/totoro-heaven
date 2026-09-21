@@ -269,10 +269,11 @@ if ($hasRcedit -and $hasIcon) {
         }
     }
     # ---- [5/7-b] 2026-09-21 audit fix: prove the icon FROM THE ARTIFACT (mtime/timeout are not evidence) ----
-    # Judgement: read RT_GROUP_ICON #1 out of the produced EXE and out of the original node.exe base and require
-    # them to DIFFER (node.exe ships its own icon group, so "has a group" proves nothing). Throws on any doubt --
+    # Judgement (see assert-icon.ps1): (1) logo.ico's IMAGE must be found among the EXE's RT_ICON resources
+    # (fingerprint -- the only thing that proves "ours is in there"), and (2) RT_GROUP_ICON #1 must differ from
+    # the original node.exe's group (node ships its own, so "has a group" proves nothing). Throws on any doubt --
     # including the rcedit-timeout path above, which previously skipped the check and could ship a half-written EXE.
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'assert-icon.ps1') -Exe $exeOut -BaseNode $nodeExe
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'assert-icon.ps1') -Exe $exeOut -BaseNode $nodeExe -Ico $logoIco
     if ($LASTEXITCODE -ne 0) {
         throw '[5/7] icon verification FAILED (see assert-icon.ps1 output above) - refusing to package this EXE'
     }
@@ -283,6 +284,15 @@ if ($hasRcedit -and $hasIcon) {
 Write-Host '[6/7] inject SEA blob (postject)...'
 & npx postject $exeOut NODE_SEA_BLOB (Join-Path $distSea 'sea-prep.blob') --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
 if ($LASTEXITCODE -ne 0) { throw 'postject failed' }
+
+# ---- [6/7-b] 2026-09-21 audit fix (B1): re-verify the icon on the FINAL artifact ----
+# postject rewrites the PE (appends NODE_SEA_BLOB). Today it preserves the resource section, but that is an
+# assumption about a third-party tool: if a future postject (or a Node/PE change) clobbered .rsrc, the [5/7]
+# check would still be green while the shipped EXE lost its icon. So check the real thing we ship, again.
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'assert-icon.ps1') -Exe $exeOut -BaseNode $nodeExe -Ico $logoIco
+if ($LASTEXITCODE -ne 0) {
+    throw '[6/7] icon verification FAILED on the FINAL artifact (postject may have clobbered the resource section) - refusing to package this EXE'
+}
 
 $size = [math]::Round((Get-Item $exeOut).Length / 1MB, 1)
 Write-Host "[7/7] done -> $exeOut ($size MB)"

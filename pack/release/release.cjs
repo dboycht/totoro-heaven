@@ -212,9 +212,26 @@ async function publishRelease(releaseId) {
 function uploadAssetStream(releaseId, spec) {
   return new Promise((resolve) => {
     const name = path.basename(spec.path)
-    const size = fs.statSync(spec.path).size
+    const declaredSize = fs.statSync(spec.path).size
     const attempt = (n) => {
+      /** 只落定一次（多路错误通道共用；审计 B3：req/res 两条 error 路径都要能落定） */
+      let settled = false
       let lastPct = 0
+      const done = (result) => {
+        if (settled) return
+        settled = true
+        resolve(result)
+      }
+      /** 失败：还有重试额度就换一条新读流重来；否则落定为失败 */
+      const failed = (why) => {
+        if (settled) return
+        if (n < 2) {
+          console.error(`  ${why} —— 重试一次…`)
+          settled = true
+          return attempt(n + 1)
+        }
+        done({ status: 0, text: why, json: null })
+      }
       const req = https.request(
         {
           method: 'POST',
@@ -226,44 +243,55 @@ function uploadAssetStream(releaseId, spec) {
             Accept: 'application/vnd.github+json',
             'X-GitHub-Api-Version': '2022-11-28',
             'Content-Type': spec.contentType,
-            'Content-Length': String(size),
+            'Content-Length': String(declaredSize),
           },
         },
         (res) => {
           const chunks = []
           res.on('data', (c) => chunks.push(c))
+          // ⚠️ 审计 B3：响应流自己也会报错/被中止 —— 只监听 request 的 error 会漏，导致 Promise 永不落定（脚本看着像"还在传"）
+          res.on('error', (e) => failed(`响应流出错（${e.message}）`))
+          res.on('aborted', () => failed('响应被中止（连接被对端断开）'))
           res.on('end', () => {
             const text = Buffer.concat(chunks).toString('utf8')
-            if (res.statusCode >= 300 && n < 2) {
-              console.error(`  上传失败（HTTP ${res.statusCode}）—— 重试一次…`)
-              return attempt(n + 1)
-            }
             let json = null
             try {
               json = JSON.parse(text)
             } catch {
               /* 保留原文，下面的错误分支会打印 */
             }
-            resolve({ status: res.statusCode, text, json })
+            if (res.statusCode >= 300) return failed(`上传失败（HTTP ${res.statusCode}）${text.slice(0, 200)}`)
+            if (!json) return failed('上传返回了空 / 非 JSON 响应')
+            // ⚠️ 审计 B2：以 GitHub 回显的 asset.size 为唯一真值（本地声明多少 ≠ 服务端真收到多少）
+            if (Number(json.size) !== declaredSize) {
+              console.error(
+                `  ⚠️ 附件大小不一致：本地声明 ${declaredSize} 字节、GitHub 回显 ${json.size} 字节 —— 判为失败（不重试，避免两个坏附件互相覆盖）`,
+              )
+              return done({ status: res.statusCode, text, json: null })
+            }
+            done({ status: res.statusCode, text, json })
           })
         },
       )
-      req.on('error', (err) => {
-        if (n < 2) {
-          console.error(`  上传出错（${err.message}）—— 重试一次…`)
-          return attempt(n + 1)
-        }
-        resolve({ status: 0, text: String(err.message), json: null })
-      })
+      // ⚠️ 审计 B3：整条上传的超时（无进展 120 秒即断，走重试/失败分支；原先僵连接会永久悬挂）
+      req.setTimeout(120000, () => req.destroy(new Error('上传超时（120 秒无进展）')))
+      req.on('error', (err) => failed(`上传出错（${err.message}）`))
       const stream = fs.createReadStream(spec.path)
-      stream.on('data', (chunk) => {
-        const pct = Math.floor(((stream.bytesRead / size) * 100) / 25) * 25
+      stream.on('data', () => {
+        const pct = Math.floor(((stream.bytesRead / declaredSize) * 100) / 25) * 25
         if (pct > lastPct) {
           lastPct = pct
           console.log(`  …正在上传 ${name}：${Math.min(pct, 100)}%`)
         }
       })
       stream.on('error', (err) => req.destroy(err))
+      // ⚠️ 审计 B2 短读守卫：声明了多少字节，流就必须真的读出多少
+      // （文件被并发改写/截断时，服务端收到 FIN 会照常回 201 ⇒ 不查就会把截断的坏附件当成功发出去）
+      stream.on('end', () => {
+        if (stream.bytesRead !== declaredSize) {
+          req.destroy(new Error(`文件在读取过程中变了：声明 ${declaredSize} 字节、实读 ${stream.bytesRead} 字节`))
+        }
+      })
       stream.pipe(req)
     }
     attempt(1)
