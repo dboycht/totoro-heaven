@@ -34,6 +34,22 @@ export function classifyWriteOutcome(call: { ok: boolean; timedOut?: boolean }, 
 /** 是否应当"按成功继续"（决定要不要继续提交轨迹明细） */
 export const outcomeIsSuccess = (outcome: WriteOutcome): boolean => outcome === 'ok' || outcome === 'timeout-landed'
 
+/**
+ * ⚠️ 2026-09-21（冗余加固，审计 B4）：**这笔结算是不是"上一个任务/演示数据"留下的？**
+ *
+ * 场景：`applyToRunner()` 换任务时只换 `task`/线路、**不清 `run`** ⇒ 从"演示数据跑完"切到
+ * "读取真实任务"后，旧结算还挂着且 `run.status === 'finished'` ⇒ 原判据允许把**旧轨迹**
+ * 配**当前任务的 taskId** 提交（服务端会多一条来路不明的成绩）。
+ *
+ * 判据（可执行）：**结算时刻必须晚于"本次任务读取时刻"**；任一侧缺失（0）时**不判定为陈旧**
+ * （避免误伤"任务还没读取"或"旧版本没有这个字段"的情况）。
+ */
+export function isStaleSettlement(settledAtMs: number, loadedAtMs: number): boolean {
+  const settled = Number(settledAtMs)
+  const loaded = Number(loadedAtMs)
+  return settled > 0 && loaded > 0 && settled < loaded
+}
+
 /** 结局对应的用户可见措辞（`ok` 返回空串，表示"用原来的成功文案"） */
 export function writeOutcomeMessage(outcome: WriteOutcome, rawMessage = ''): string {
   switch (outcome) {

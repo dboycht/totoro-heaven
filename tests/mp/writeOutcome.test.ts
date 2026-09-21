@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { classifyWriteOutcome, outcomeIsSuccess, writeOutcomeMessage } from '../../utils/mp/writeOutcome.ts'
+import { classifyWriteOutcome, isStaleSettlement, outcomeIsSuccess, writeOutcomeMessage } from '../../utils/mp/writeOutcome.ts'
 import { MP_READ_TIMEOUT_MS, MP_WRITE_TIMEOUT_MS, isTimeoutError, timeoutForMethod } from '../../src/wrappers/MpApiWrapper.ts'
 
 /**
@@ -58,4 +58,19 @@ test('writeOutcomeMessage：未知态必须提示"别急着重试"，且带上�
   assert.ok(unknown.includes('请求超时：30 秒内未收到响应'), unknown)
   assert.equal(writeOutcomeMessage('failed'), '提交失败', '无原始信息时给兜底文案')
   assert.equal(writeOutcomeMessage('failed', 'HTTP 500：服务器繁忙'), 'HTTP 500：服务器繁忙')
+})
+
+/**
+ * 冗余加固（2026-09-21，审计 B4）：**"上一笔结算"不许当成当前任务的成绩提交**。
+ * 判据：结算时刻必须晚于"本次任务读取时刻"；任一侧缺失（0）时不判陈旧（避免误伤）。
+ */
+test('isStaleSettlement：结算早于本次任务读取 ⇒ 陈旧（禁止提交）', () => {
+  const loaded = 1_700_000_000_000
+  assert.equal(isStaleSettlement(loaded - 60_000, loaded), true, '演示/上一任务的结算早于本次读取 ⇒ 陈旧')
+  assert.equal(isStaleSettlement(loaded + 1, loaded), false, '本次任务内跑完再结算 ⇒ 不陈旧')
+  assert.equal(isStaleSettlement(loaded, loaded), false, '同一毫秒不算陈旧（边界取"早于"）')
+  // 任一侧缺失（还没读取任务 / 旧数据没有该字段）⇒ 不判陈旧，避免误伤
+  assert.equal(isStaleSettlement(0, loaded), false)
+  assert.equal(isStaleSettlement(loaded - 60_000, 0), false)
+  assert.equal(isStaleSettlement(0, 0), false)
 })

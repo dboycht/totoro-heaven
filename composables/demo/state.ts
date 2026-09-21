@@ -84,6 +84,12 @@ export interface DemoRunState {
    * 由 `finish()` 放进"自洽校验告警"里（用户要求：这种情况只做冗余提示）。
    */
   windowConflictDetail?: string
+  /**
+   * 🆕 2026-09-21（冗余加固）：**本次结算产生的时刻**（毫秒）。
+   * 用途：防止"**上一笔结算被当成当前任务的成绩提交**"—— 换任务（或从演示数据切到真实任务）时
+   * `run.value` 会被保留；若结算时刻早于"本次任务读取时刻"，提交按钮就不允许点。
+   */
+  settledAtMs?: number
 }
 
 export interface DemoRunResult {

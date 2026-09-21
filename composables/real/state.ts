@@ -41,6 +41,12 @@ export interface RealSubmitResult {
   /** 读回的归档记录 */
   record?: Record<string, unknown> | null
   verdictText?: string
+  /**
+   * 🆕 2026-09-21（冗余加固）：这次提交的**结局**四态 —— 界面据此区分"成功 / 超时但已核实入库 /
+   * **结果未知** / 确定失败"。原先界面只能看 `scoreOk` 二分，会把"结果未知"渲染成**红色失败**并写
+   * "成绩未成功"，与文案自相矛盾（审计 B3）。
+   */
+  scoreOutcome?: 'ok' | 'timeout-landed' | 'timeout-unknown' | 'failed'
 }
 
 export const TASK_CACHE_KEY = 'mp_real_task_v1'

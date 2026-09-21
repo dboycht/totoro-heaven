@@ -257,7 +257,7 @@
           color="error"
           variant="flat"
           prepend-icon="mdi-cloud-upload-outline"
-          :disabled="!realReady || run.status !== 'finished' || submitInFlight || alreadySubmitted || !gateStatus.allow"
+          :disabled="!realReady || run.status !== 'finished' || submitInFlight || alreadySubmitted || staleSettlement || !gateStatus.allow"
           @click="confirmOpen = true"
         >
           真实提交
@@ -322,19 +322,33 @@
 
       <v-alert
         v-if="result"
-        :type="result.scoreOk ? 'success' : 'error'"
+        :type="result.scoreOk ? 'success' : result.scoreOutcome === 'timeout-unknown' ? 'warning' : 'error'"
         variant="tonal"
         class="mt-2"
       >
         <div class="font-weight-bold">提交结果：{{ result.scoreMessage }}</div>
         <div class="text-caption">
           scantronId={{ result.scantronId }} ·
-          轨迹：{{ result.detailOk === undefined ? '未提交（成绩未成功，按源码不发）' : result.detailOk ? '已提交' : '失败：' + result.detailMessage }}
+          <!-- ⚠️ 2026-09-21（冗余加固，审计 B3）：「结果未知」不能再写成"成绩未成功"（自相矛盾） -->
+          轨迹：{{
+            result.detailOk === undefined
+              ? result.scoreOutcome === 'timeout-unknown'
+                ? '未提交（结果未知，稍后可点「查询判定」核实；核实到已入库时会自动补交）'
+                : '未提交（成绩未成功，按源码不发）'
+              : result.detailOk
+                ? '已提交'
+                : '失败：' + result.detailMessage
+          }}
         </div>
         <div v-if="result.verdictText" class="text-body-2 mt-1">★ 判定：{{ result.verdictText }}</div>
         <!-- ⚠️ 2026-09-21 审计修复（B3）：提交成功后按钮会被禁用，这里说明**为什么**，并给出正确出路 -->
         <div v-if="alreadySubmitted" class="text-caption mt-1">
           本次结算已经提交过，不能再重复提交（服务端会多录一条成绩）。如需再跑一次，请先点「重置」再重新开跑。
+        </div>
+        <!-- ⚠️ 2026-09-21（冗余加固，审计 B4）：结算早于当前任务 ⇒ 已禁止提交，并说明怎么办 -->
+        <div v-if="staleSettlement" class="text-caption mt-1">
+          ⚠️ 这笔结算是<b>上一个任务/演示数据</b>留下的（早于当前任务读取时刻）——已禁止提交，避免把旧轨迹配到当前任务上。
+          请点「重置」后重新开跑，再提交。
         </div>
       </v-alert>
 
@@ -455,6 +469,8 @@
 
 <script setup lang="ts">
 import { formatClock, formatDuration, formatPace } from '~/utils/mp/runData'
+// 冗余加固（2026-09-21）：判定"这笔结算是不是上一笔/演示数据留下的"（纯函数，有单测）
+import { isStaleSettlement } from '~/utils/mp/writeOutcome'
 import { useMpDemo } from '~/composables/useMpDemo'
 import { useMpReal } from '~/composables/useMpReal'
 import { logError, logInfo, logWarn } from '~/composables/useEventLog'
@@ -477,6 +493,8 @@ const {
   task: realTask,
   status: realStatus,
   error: realError,
+  /** 本机"上次读取真实数据"的时刻（毫秒）—— 用来判定结算是不是"当前任务的" */
+  loadedAt: realLoadedAt,
   phase,
   phaseMessage,
   remainingSeconds,
@@ -619,6 +637,21 @@ const submitInFlight = computed(
  * 最容易踩的场景正是：首次提交超时、界面说"结果未知"，用户以为没交上去就再点一次。
  */
 const alreadySubmitted = computed(() => phase.value === 'done' && Boolean(result.value?.scantronId))
+
+/**
+ * ⚠️ 2026-09-21（冗余加固，审计 B4）：**"上一笔结算"不许当成本次任务的成绩提交**。
+ *
+ * 问题：换任务时 `applyToRunner()` 只换 `task`/线路，**不动 `run`** ⇒ 从"载入演示数据 → 跑完"
+ * 切到"读取真实任务"后，`run.status` 仍是 `finished`、`run.result` 还是**演示那笔**，
+ * 而按钮判据只看 `realReady && run.status === 'finished'` ⇒ 可以把**演示数据的里程/轨迹**
+ * 配上**真实任务的 taskId** 提交上去（服务端会多一条来路不明的成绩）。
+ *
+ * 判据（冗余，不改结构）：**结算时刻必须晚于"本次任务读取时刻"** —— 否则按钮禁用并说明原因。
+ * （`loadedAt` = `loadRealData()` 完成时写的 `Date.now()`；`settledAtMs` = `finish()` 结算时写的。）
+ */
+const staleSettlement = computed(() =>
+  run.value.status === 'finished' && isStaleSettlement(Number(run.value.settledAtMs || 0), Number(realLoadedAt.value || 0)),
+)
 
 /** 载入演示数据（按需功能，不发任何请求） */
 const doEnableDemo = () => {

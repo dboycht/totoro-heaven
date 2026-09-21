@@ -172,6 +172,19 @@ async function rawRequest(
         timedOut: true,
       }
     }
+    /**
+     * ⚠️ 2026-09-21（冗余加固，审计 B8）：本机代理抛错时回的是 `{statusCode, statusMessage}`（**中文原因**），
+     * 而它不是厂商信封 ⇒ 判定层只会说"无法识别的响应"，**服务端辛苦写的中文原因被丢掉**。
+     * 兜底：HTTP ≥ 400 且响应体带 `statusMessage`、又没有厂商的 `status`/`code` 轨道时，直接把原因透出。
+     * （这里**不**标 `timedOut`：代理的 4xx 一般是请求本身的问题，不是"结果未知"，不该触发核实流程。）
+     */
+    if (response.status >= 400) {
+      const p = parsed as { statusMessage?: unknown; status?: unknown; code?: unknown }
+      const reason = String(p.statusMessage ?? '').trim()
+      if (reason && p.status === undefined && p.code === undefined) {
+        return { error: reason }
+      }
+    }
     return { raw: parsed }
   } catch (err) {
     /**

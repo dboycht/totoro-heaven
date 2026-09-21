@@ -322,6 +322,8 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
         : { pass: true, problems: [], items: [] }
 
     run.value.status = 'finished'
+    // 🆕 2026-09-21（冗余加固）：记下结算时刻 —— 换任务后若"结算早于本次任务读取时刻"，提交按钮禁止点击
+    run.value.settledAtMs = Date.now()
     run.value.fitDegree = fitDegree
     run.value.distanceM = distanceKm * 1000
     run.value.result = {

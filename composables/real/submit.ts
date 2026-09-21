@@ -90,6 +90,12 @@ export function useMpRealSubmit() {
     if (phase.value === 'begin' || phase.value === 'waiting' || phase.value === 'submitting') {
       return null
     }
+    /**
+     * ⚠️ 2026-09-21（冗余加固）：**入口先把过程清单清空**。
+     * 原先清空发生在"门禁检查"那一段、而这之前还有若干提前 `return`（缺会话/缺任务等）⇒
+     * 那些分支会把**上一次的步骤**留在面板上、配一条新错误，看起来像"上次的错"。
+     */
+    progress.value = []
     const token = session.value?.token
     const runType: 0 | 1 = input.runType === 1 ? 1 : 0
     const freeRun = runType === 1
@@ -103,7 +109,7 @@ export function useMpRealSubmit() {
     }
 
     // ⓪ 三合一否决门禁（必须在任何写操作之前）—— 含"夜间停用 22:30~06:00"（同一纯函数，实时取时钟）
-    progress.value = []
+    // （过程清单已在入口清空，见上面的 `progress.value = []`）
     pushProgress('step', SUBMIT_PROGRESS.gate())
     const gate = evaluateRunGate({
       schoolCode: profile.value.schoolCode,
@@ -309,6 +315,8 @@ export function useMpRealSubmit() {
       startedAt,
       submittedAt,
       scoreOk,
+      // 🆕 2026-09-21（冗余加固）：把四态结局透给界面 —— 别让它按 scoreOk 二分成"红/绿"
+      scoreOutcome: outcome,
       scoreMessage,
       // 自由跑没有线路 ⇒ 路径点列本来就是空的（厂商口径），这里如实显示 0 点
       scoreRequestMasked: {
@@ -433,7 +441,9 @@ export function useMpRealSubmit() {
         stuNumber: profile.value.snCode,
         snCode: profile.value.snCode,
         pageNumber: 1,
-        rowNumber: 100,
+        // ⚠️ 2026-09-21（冗余加固）：原先 100 —— 归档里超过 100 条（或按别的顺序返回）时会**漏查**本笔，
+        // 进而误判成"没入库"。放宽到 1000（只读、无副作用；厂商一页给这么多）。
+        rowNumber: 1000,
       },
       options,
     )
@@ -454,7 +464,12 @@ export function useMpRealSubmit() {
       if (!opts.quiet) pushProgress('warn', SUBMIT_PROGRESS.verdictNone())
       logWarn('submit', '判定暂未在归档中找到', { scantronId: id })
     }
-    if (result.value) {
+    /**
+     * ⚠️ 2026-09-21（冗余加固，审计 B6）：**只把判定写回"属于这条 scantronId"的结果**。
+     * 超时核实走的是 `quiet` 分支，而那时 `result.value` 可能还挂着**上一次提交**的结果 ⇒
+     * 原先会把它改写成"旧 scantronId + 新判定"这种张冠李戴的内容。
+     */
+    if (result.value && String(result.value.scantronId) === String(id)) {
       result.value.record = mine
       result.value.verdictText = mine ? verdictText(mine) : '归档里还没找到这条（可稍后再查）'
     }
