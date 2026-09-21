@@ -885,7 +885,7 @@ const doRealSubmit = async () => {
     })
     if (out?.scoreOk) {
       showSnackbar('真实提交成功，正在读判定…', 'success')
-      await fetchVerdict(out.scantronId)
+      await onFetchVerdict(out.scantronId)
     } else if (out) {
       showSnackbar(`真实提交失败：${out.scoreMessage}`, 'error')
     } else {
@@ -903,11 +903,18 @@ const doRealSubmit = async () => {
 const verdictLoading = ref(false)
 
 /** ⚠️ 2026-09-21：查询判定会写过程清单，连点会重复插入 ⇒ 加锁（进行中禁用并转圈） */
-async function onFetchVerdict() {
+/**
+ * ⚠️ 2026-09-21（审计 B1）：查询判定会往过程清单里插一行「⑥ 读回判定」，**两条路径都会调它** ——
+ * ① 用户点按钮；② 提交流程 `doRealSubmit` 自己那次（`await onFetchVerdict(out.scantronId)`）。
+ * 原先只锁了按钮自己发起的那一次，而 `phase` 在提交流程调 `fetchVerdict` **之前**就已落定 `'done'`
+ * ⇒ `submitInFlight` 变 false、按钮此刻可点 ⇒ 两边并发各插一行 ⑥。
+ * 现在**两条路径共用同一把锁**（`id` 可选：按钮传 undefined，提交流程传 scantronId）。
+ */
+async function onFetchVerdict(id?: string) {
   if (verdictLoading.value) return
   verdictLoading.value = true
   try {
-    await fetchVerdict()
+    await fetchVerdict(id)
   } finally {
     verdictLoading.value = false
   }

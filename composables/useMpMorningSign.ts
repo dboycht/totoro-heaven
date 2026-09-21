@@ -62,8 +62,12 @@ export function useMpMorningSign() {
   /**
    * 请求代序（2026-09-21 审计修复 B1）：连点「刷新」或连续切月时，**先发的慢响应不许覆盖后发的结果**
    * （否则界面会出现"8 月的标签 + 9 月的数据"这种张冠李戴）。每次请求取一个自增号，回来先比号。
+   *
+   * ⚠️ 2026-09-21 审计修复（S1）：它必须是**单例**（`useState`），不能是 composable 闭包变量 ——
+   * `arch` 等状态是跨实例共享的，而闭包计数器每次调用都从 0 起；组件卸载再挂载时新旧请求可能拿到**相同**的号，
+   * 旧实例的慢响应就会覆盖新月份的数据（判据失效）。
    */
-  let archReqSeq = 0
+  const archReqSeq = useState('mpMornSignArchReqSeq', () => 0)
 
   /**
    * 读「本月签到记录」（只读）。
@@ -91,7 +95,7 @@ export function useMpMorningSign() {
       return false
     }
     // ④ 请求代序：只有"最后一次发起的请求"才有资格写状态
-    const seq = ++archReqSeq
+    const seq = ++archReqSeq.value
     archStatus.value = 'loading'
     archError.value = ''
     const options = { token: t, baseUrl: session.value?.baseUrl }
@@ -102,7 +106,7 @@ export function useMpMorningSign() {
       const activeTerm = list.find((x) => String(x.isActive) === '1') ?? list[0]
       const termId = String(activeTerm?.id ?? '')
       if (!termId) {
-        if (seq !== archReqSeq) return false
+        if (seq !== archReqSeq.value) return false
         archStatus.value = 'error'
         archError.value = '读不到当前学期（getTermList 返回为空）—— 无法按学期查询记录'
         return false
@@ -111,7 +115,7 @@ export function useMpMorningSign() {
       const m = month || archMonth.value
       archMonth.value = m
       const res = await MpApiWrapper.getMornSignArchDetail(buildMornSignArchParams({ snCode: sn, termId, month: m }), options)
-      if (seq !== archReqSeq) return false // 已被更晚的请求取代，丢弃本次结果
+      if (seq !== archReqSeq.value) return false // 已被更晚的请求取代，丢弃本次结果
       if (!res.ok) {
         /**
          * ⚠️ 审计修复：`kind === 'empty'` = **信封正常但服务端没下发业务字段** —— 对"该月没有记录"这种情况，
@@ -138,7 +142,7 @@ export function useMpMorningSign() {
       })
       return true
     } catch (err) {
-      if (seq !== archReqSeq) return false
+      if (seq !== archReqSeq.value) return false
       archStatus.value = 'error'
       archError.value = err instanceof Error ? err.message : String(err)
       return false

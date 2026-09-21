@@ -86,7 +86,8 @@ export function useRealState() {
     }
     return false
   })
-  const markFreeRunUnsupported = () => {    freeRunUnsupported.value = true
+  const markFreeRunUnsupported = () => {
+    freeRunUnsupported.value = true
     if (import.meta.client) {
       try {
         localStorage.setItem(FREE_RUN_UNSUPPORTED_KEY, '1')
