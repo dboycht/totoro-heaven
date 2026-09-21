@@ -276,6 +276,15 @@
         >
           真实提交
         </v-btn>
+        <!-- ⚠️ 2026-09-21 审计修复（B3）：**按钮为什么灰，必须就在按钮旁边说**。
+             原先解释只在上方「开跑设置」卡里（几百像素之外），而结果卡是 `v-if="result"` ——
+             自由跑被拒时根本不产生 result ⇒ 用户滚到这里只会看到一个灰按钮、附近一个字都没有。 -->
+        <template v-if="freeRunBlocked">
+          <span class="text-caption text-warning">
+            已标灰：本机记录显示你所在学校未开通「自由跑任务」（服务端会拒绝真实提交）
+          </span>
+          <v-btn size="x-small" variant="text" @click="clearFreeRunUnsupported()">仍要试一次</v-btn>
+        </template>
         <v-btn
           v-if="result?.scantronId"
           variant="tonal"

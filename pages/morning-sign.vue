@@ -185,12 +185,16 @@
             <span v-if="arch.todaySigned" class="text-success ml-2">今天已签到</span>
           </div>
           <div v-if="arch.records.length" class="d-flex flex-column ga-1">
-            <div v-for="r in arch.records" :key="r.date" class="d-flex align-center ga-2 text-body-2">
+            <div v-for="r in arch.records.slice(0, 60)" :key="r.date" class="d-flex align-center ga-2 text-body-2">
               <v-icon size="16" :color="r.status === 0 ? 'warning' : 'success'">
                 {{ r.status === 0 ? 'mdi-alert-circle-outline' : 'mdi-check-circle-outline' }}
               </v-icon>
               <span>{{ r.date }}</span>
               <span class="text-medium-emphasis">{{ r.statusText }}</span>
+            </div>
+            <!-- ⚠️ 2026-09-21 审计修复（B4）：服务端整月一次给、没有分页字段 ⇒ 前端截断，避免卡片被撑爆 -->
+            <div v-if="arch.records.length > 60" class="text-caption text-medium-emphasis">
+              共 {{ arch.records.length }} 条，只列出最近 60 条。
             </div>
           </div>
           <div v-else class="text-body-2 text-medium-emphasis">这个月还没有签到记录</div>

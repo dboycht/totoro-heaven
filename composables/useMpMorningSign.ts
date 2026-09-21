@@ -60,15 +60,26 @@ export function useMpMorningSign() {
   const archMonth = useState<string>('mpMornSignArchMonth', () => twoDigitMonth())
 
   /**
+   * 请求代序（2026-09-21 审计修复 B1）：连点「刷新」或连续切月时，**先发的慢响应不许覆盖后发的结果**
+   * （否则界面会出现"8 月的标签 + 9 月的数据"这种张冠李戴）。每次请求取一个自增号，回来先比号。
+   */
+  let archReqSeq = 0
+
+  /**
    * 读「本月签到记录」（只读）。
    *
    * ⚠️ 2026-09-21 修：此前这条链路**读不出数据** —— ① wrapper 只传了 `stuNumber`（缺 `termId`/`monthId`，
    * 服务端当"没指定"⇒ 回空）；② 页面里根本没有展示区。
    * 现在按厂商口径补齐入参（学期取 `getTermList` 里的当前学期；月份两位），并归一化后给界面。
+   *
+   * ⚠️ 2026-09-21 审计修复：③ **进函数先清空上一条结果**（否则读失败时会把"上个月的数据"配新月份的标签显示）；
+   * ④ **请求代序**（连点/连续切月时，先发的慢响应不许覆盖后发的结果）。
    */
   async function loadMornSignArch(month?: string): Promise<boolean> {
     const t = token()
     const sn = snCodeOf()
+    // ③ 清空：失败/竞态时宁可显示"暂无"，也不许拿旧月份的数据冒充新月份
+    arch.value = null
     if (!t || t.startsWith('demo-')) {
       archStatus.value = 'error'
       archError.value = '需要真实 token 才能读取签到记录（演示 token 不能查真实数据）'
@@ -79,6 +90,8 @@ export function useMpMorningSign() {
       archError.value = '缺少学号（snCode）—— 请先在工作台「一键获取 token」或「读取真实账号与任务」'
       return false
     }
+    // ④ 请求代序：只有"最后一次发起的请求"才有资格写状态
+    const seq = ++archReqSeq
     archStatus.value = 'loading'
     archError.value = ''
     const options = { token: t, baseUrl: session.value?.baseUrl }
@@ -89,6 +102,7 @@ export function useMpMorningSign() {
       const activeTerm = list.find((x) => String(x.isActive) === '1') ?? list[0]
       const termId = String(activeTerm?.id ?? '')
       if (!termId) {
+        if (seq !== archReqSeq) return false
         archStatus.value = 'error'
         archError.value = '读不到当前学期（getTermList 返回为空）—— 无法按学期查询记录'
         return false
@@ -97,7 +111,19 @@ export function useMpMorningSign() {
       const m = month || archMonth.value
       archMonth.value = m
       const res = await MpApiWrapper.getMornSignArchDetail(buildMornSignArchParams({ snCode: sn, termId, month: m }), options)
+      if (seq !== archReqSeq) return false // 已被更晚的请求取代，丢弃本次结果
       if (!res.ok) {
+        /**
+         * ⚠️ 审计修复：`kind === 'empty'` = **信封正常但服务端没下发业务字段** —— 对"该月没有记录"这种情况，
+         * 它不是错误（厂商对空月可能就只回一个成功信封）⇒ 按"该月无记录"处理，而不是弹一条看不懂的失败提示。
+         */
+        if (res.kind === 'empty') {
+          arch.value = normalizeMornSignArch({})
+          archStatus.value = 'ready'
+          archError.value = ''
+          logInfo('mornsign', '该月签到记录为空（服务端未下发业务字段）', { month: m })
+          return true
+        }
         archStatus.value = 'error'
         archError.value = res.message || '读取签到记录失败'
         return false
@@ -112,6 +138,7 @@ export function useMpMorningSign() {
       })
       return true
     } catch (err) {
+      if (seq !== archReqSeq) return false
       archStatus.value = 'error'
       archError.value = err instanceof Error ? err.message : String(err)
       return false

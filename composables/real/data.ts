@@ -336,6 +336,9 @@ export function useMpRealData() {
     error.value = ''
     // ⚠️ 任务/线路也要从跑步机侧清掉，否则阳光跑页还留着上一次的线路
     clearLocalData()
+    // 🆕 2026-09-21 审计修复（B2）："该校未开通自由跑"的标记也属于本机缓存 ——
+    // 退出登录/换账号后必须一起清掉，否则换了学校还会被标灰（`useState` 单例在 SPA 内也不会自己复位）
+    clearFreeRunUnsupported()
     logInfo('real', '已退出登录并清除本机缓存（含缓存中的 token）')
   }
 
@@ -347,6 +350,8 @@ export function useMpRealData() {
     clearSession()
     clearLocalData() // useMpDemo：任务/线路/开关/记录/跑步机 + 退出演示
     clearCachedTask()
+    // 🆕 2026-09-21 审计修复（B2）：一并清掉"该校未开通自由跑"的标记（见 logoutAndClearSession 的说明）
+    clearFreeRunUnsupported()
     profile.value = null
     task.value = null
     status.value = 'idle'
