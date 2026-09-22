@@ -17,6 +17,8 @@
  *     并另给一张**局部放大图**（1 m 的圈间差在整图尺度下只有 ~1.7 px，放大才看得清）。
  */
 import { laneLoop, laneRatioFor, pointAtArcM, type TrackRings } from '~/utils/mp/trackEditor'
+// 🆕 2026-09-22（审计 B3 连带）：带 freeShape 的条目画它自己的形状（内外圈只是占位几何，不能当车道线画）
+import { freePathPoints, type FreePathShape } from '~/utils/mp/pathShape'
 
 /** 本机路线库里的一条（只取画面要用的字段，避免组件依赖整个 TrackRouteEntry） */
 type TrackEntryLike = {
@@ -25,6 +27,8 @@ type TrackEntryLike = {
   inner: { latitude: string | number; longitude: string | number }[]
   laneNo?: number
   laneCount?: number
+  /** 🆕 非官方路径形状（2026-09-22）：有它时画面以它为准，不画内外圈/车道线 */
+  freeShape?: FreePathShape
   /**
    * 🆕 **起跑点设置**（2026-09-20，1.1.12 需求②）：画一个红点标出"轨迹从哪儿起跑"。
    * 只读不写；缺省时预览与旧版完全一致（不画红点）。
@@ -93,10 +97,23 @@ const entry = computed(() => {
   return (props.trackEntries ?? []).find((e) => String(e.lineId) === id)
 })
 
-/** 内外圈 + 所选车道线（纯函数，与跑道编辑页/真实提交用同一套算法） */
+/**
+ * 内外圈 + 所选车道线（纯函数，与跑道编辑页/真实提交用同一套算法）。
+ *
+ * 🆕 2026-09-22（审计 B3 的连带影响）：**带 `freeShape`（非官方路径）的条目画它自己的形状**，
+ *    不画内外圈/车道线 —— 那种条目的内外圈只是"给旧版本看的占位几何"，
+ *    拿它 `laneLoop` 出来的"车道线"是一条毫无意义的假线（会盖住真正要看的东西）。
+ *    ⚠️ 这条分支只在"条目带形状"时命中 ⇒ 双圈条目的画法与旧版**逐笔相同**。
+ */
 const track = computed(() => {
   const e = entry.value
   if (!e) return null
+  const shape = freePathPoints(e.freeShape)
+  if (shape.length >= 2) {
+    const laneCount = e.laneCount && e.laneCount > 0 ? e.laneCount : 6
+    const laneNo = e.laneNo && e.laneNo > 0 ? e.laneNo : Math.max(1, Math.round((laneCount + 1) / 2))
+    return { outer: [], inner: [], lane: [], laneNo, laneCount, startPoint: null, shape: finite(shape.map(toP)) }
+  }
   const outer = finite((e.outer ?? []).map(toP))
   const inner = finite((e.inner ?? []).map(toP))
   if (outer.length < 3 || inner.length < 3) return null
@@ -112,7 +129,7 @@ const track = computed(() => {
   const offsetM = Number(e.start?.offsetM ?? 0)
   const startPoint =
     stored ?? (lanePts.length >= 3 && e.start && offsetM > 0 ? asPoint(pointAtArcM(lanePts, offsetM)) : null)
-  return { outer, inner, lane: lanePts.length >= 3 ? lanePts : [], laneNo, laneCount, startPoint }
+  return { outer, inner, lane: lanePts.length >= 3 ? lanePts : [], laneNo, laneCount, startPoint, shape: [] as P[] }
 })
 
 /** 单点相对路线的最大允许偏离（米）—— 仅供文案提示，不上报 */
@@ -162,7 +179,7 @@ const view = computed(() => {
   const pts = segs.flatMap((s) => s.pts)
   const rt = finite((props.route ?? []).map(toP))
   if (pts.length < 2) return null
-  const all = [...pts, ...rt, ...(tr ? [...tr.outer, ...tr.inner, ...tr.lane] : [])]
+  const all = [...pts, ...rt, ...(tr ? [...tr.outer, ...tr.inner, ...tr.lane, ...tr.shape] : [])]
   const minLat = Math.min(...all.map((p) => p.latitude))
   const maxLat = Math.max(...all.map((p) => p.latitude))
   const minLng = Math.min(...all.map((p) => p.longitude))
@@ -227,6 +244,8 @@ const view = computed(() => {
     outerPath: tr ? d(tr.outer, true) : '',
     innerPath: tr ? d(tr.inner, true) : '',
     lanePath: tr && tr.lane.length >= 3 ? d(tr.lane, true) : '',
+    /** 🆕 非官方路径（2026-09-22）：这条条目画的是它自己的形状（圈型闭合 / 直线 A→B） */
+    shapePath: tr && tr.shape.length >= 2 ? d(tr.shape, tr.shape.length > 2) : '',
     laneNo: tr?.laneNo ?? 0,
     start: { x: x(pts[0]!), y: y(pts[0]!) },
     /** 🆕 起跑点标记（红点）：没设起跑点时为 null（不画） */
@@ -314,6 +333,8 @@ const focus = computed(() => {
     outerPath: tr ? d(win(tr.outer)) : '',
     innerPath: tr ? d(win(tr.inner)) : '',
     lanePath: tr && tr.lane.length >= 3 ? d(win(tr.lane)) : '',
+    /** 🆕 非官方路径（2026-09-22）：局部放大图里同样只画形状本身 */
+    shapePath: tr && tr.shape.length >= 2 ? d(win(tr.shape)) : '',
     routePath: (props.route ?? []).length > 1 ? d(win(finite((props.route ?? []).map(toP)))) : '',
     lapPaths: segs.map((s) => ({
       lap: s.lap + 1,
@@ -350,6 +371,8 @@ const focus = computed(() => {
               <path v-if="view.outerPath" :d="view.outerPath" fill="none" stroke="#38bdf8" stroke-width="1.4" opacity="0.9" />
               <path v-if="view.innerPath" :d="view.innerPath" fill="none" stroke="#a78bfa" stroke-width="1.4" opacity="0.9" />
               <path v-if="view.lanePath" :d="view.lanePath" fill="none" stroke="#22c55e" stroke-width="1" opacity="0.7" />
+              <!-- 🆕 非官方路径（2026-09-22）：洋红 = 你画的形状（圈型闭合曲线 / 直线 A→B），与跑道编辑页同一个颜色 -->
+              <path v-if="view.shapePath" :d="view.shapePath" fill="none" stroke="#e879f9" stroke-width="1.6" opacity="0.9" />
               <path v-if="view.routePath" :d="view.routePath" fill="none" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="5 4" />
               <!-- 每圈一色、**细线**（多圈同色 + 粗描边会糊成一条粗带） -->
               <path
@@ -385,6 +408,8 @@ const focus = computed(() => {
               <path v-if="focus.outerPath" :d="focus.outerPath" fill="none" stroke="#38bdf8" stroke-width="1.4" opacity="0.9" />
               <path v-if="focus.innerPath" :d="focus.innerPath" fill="none" stroke="#a78bfa" stroke-width="1.4" opacity="0.9" />
               <path v-if="focus.lanePath" :d="focus.lanePath" fill="none" stroke="#22c55e" stroke-width="1" opacity="0.7" />
+              <!-- 🆕 非官方路径：局部放大图里也画出你画的形状 -->
+              <path v-if="focus.shapePath" :d="focus.shapePath" fill="none" stroke="#e879f9" stroke-width="1.4" opacity="0.9" />
               <path
                 v-if="focus.routePath"
                 :d="focus.routePath"

@@ -37,15 +37,17 @@ import {
 } from '~/utils/mp/trackLibrary'
 import {
   curveLengthM,
-  expandFreePathTrajectory,
+  freePathPoints,
   freePathShapeText,
+  freeShapePlaceholderRing,
   lineLengthM,
   normalizeFreePathTrips,
   planFreePathTrips,
-  polylineLengthM,
   usableFreePathShape,
   type FreePathShape,
 } from '~/utils/mp/pathShape'
+// 🆕 2026-09-22（审计 B1/B2）：几何装配与跑步页**共用同一个纯函数入口**（否则"预览 ≠ 真跑"）
+import { resolveFreePathGeometry } from '~/utils/mp/freePathGeometry'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import { distanceMeters, type LatLng } from '~/utils/mp/routeSimilarity'
 import type { MpRunLine } from '~/src/mp/types'
@@ -260,8 +262,12 @@ const draftLineFrom = ref<N | null>(null)
 const draftLineTo = ref<N | null>(null)
 /** 目标里程（km，用于"自动算趟数"）—— 默认 3.2，与既有轨迹预览的口径一致 */
 const freeTargetKm = ref(3.2)
-/** 用户手填的趟数（空串/0/非法 = 回落到自动算，判据在 `normalizeFreePathTrips`） */
-const freeTripsInput = ref<number | null>(null)
+/**
+ * 用户手填的趟数。
+ * ⚠️ 类型故意放宽到 `string`：`v-model.number` 在**输入框被清空**时会把 `''` 写进来
+ *    （不是 `null`）—— 声明成 `number | null` 只是骗自己，`normalizeFreePathTrips` 本来就收 `unknown`。
+ */
+const freeTripsInput = ref<number | string | null>(null)
 
 /** 当前草稿构成的形状（`null` = 还没画够） */
 const draftFreeShape = computed<FreePathShape | null>(() => {
@@ -279,19 +285,37 @@ const draftFreeShape = computed<FreePathShape | null>(() => {
 })
 /** 草稿是否**可用**（长度 > 0）—— 保存按钮的判据 */
 const draftFreeUsable = computed(() => usableFreePathShape(draftFreeShape.value))
+/**
+ * 草稿**是不是空的**（一个点都没有）—— 「撤销上一个点」的禁用判据（审计 B6）。
+ *
+ * ⚠️ 不能拿 `draftFreeShape` 当判据：圈型要 2 个点才构成形状 ⇒ 只点了 1 个点时按钮是灰的，
+ *    用户**撤不掉自己刚点错的那一笔**（"撤销"恰恰是那时最需要按的按钮）。
+ */
+const freeDraftEmpty = computed(() => {
+  if (freeMode.value === 'curve') return draftFreePoints.value.length === 0
+  if (freeMode.value === 'line') return !draftLineFrom.value && !draftLineTo.value
+  return true
+})
 /** 趟数计划（自动/手填都在这里算，界面只渲染它的结果） */
 const freePlan = computed(() => planFreePathTrips(draftFreeShape.value, freeTargetKm.value, freeTripsInput.value))
-/** 手填的趟数是否非法（非法时界面要说明"已按自动算"） */
-const freeTripsManualInvalid = computed(
-  () => freeTripsInput.value !== null && freeTripsInput.value !== undefined && normalizeFreePathTrips(freeTripsInput.value) === null,
-)
+/**
+ * 手填的趟数是否**填错了**（审计 B7）。
+ * ⚠️ **清空输入框（`''`）＝ "没填"**，不是"填错" —— 输入框标签写的就是"留空＝按目标里程自动算"，
+ *    所以这里必须把空白排除掉，否则用户一清空就看到"不是有效正数"的自相矛盾提示。
+ */
+const freeTripsManualInvalid = computed(() => {
+  const raw = freeTripsInput.value
+  const blank = raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')
+  return !blank && normalizeFreePathTrips(raw) === null
+})
 
 /** 当前画到哪儿了（给用户的实时反馈；**纯文本，不带 markdown 标记**——模板里是原样渲染的） */
 const freeStatusText = computed(() => {
   if (freeMode.value === 'curve') {
     const n = draftFreePoints.value.length
-    if (n === 0) return '还没开始：在地图上依次点出边缘的几个点（至少 3 个），算法会自动把首尾闭合起来'
-    if (n < 3) return `已点 ${n} 个点，还不够闭合成曲线（至少 3 个点）`
+    if (n === 0) return '还没开始：在地图上依次点出边缘的几个点（至少 2 个；点满 3 个才是真正的圈），算法会自动把首尾闭合起来'
+    if (n === 1) return '已点 1 个点：再点至少 1 个点才能成为一条路径（只有 2 个点 = 一条往返线）'
+    if (n === 2) return '已点 2 个点：已闭合成一条"往返线"（等于直线型折返）。想画圈就再点几个点'
     return `已点 ${n} 个点，已闭合成曲线（算法自动补上"最后一点 → 第一点"这一段）`
   }
   if (freeMode.value === 'line') {
@@ -311,22 +335,27 @@ const freeShapePath = computed<N[]>(() => {
 
 /**
  * 非官方路径的**最终轨迹预览**（橙色那条线）。
- * 与跑步页**同一套算法**：`expandFreePathTrajectory` 出几何 → `generateCorridorRoute` 出带抖动的轨迹。
- * 这样"预览里看到的形状"就是"开跑后跑出来的形状"（所见即所跑）。
+ *
+ * ⚠️ 2026-09-22（审计 B1）：预览与跑步页**必须走同一个入口** `resolveFreePathGeometry()` ——
+ *   此前预览直接用 `expandFreePathTrajectory`（**没套起跑点变换**），而跑步页套了 `applyStartToLoop`
+ *   ⇒ 只要那条记录带 `start.offsetM > 0`，"预览的形状"与"真跑的形状"就是两条不同的线（所见非所跑）。
+ *   现在两处同源：同一趟数（1 趟，审计 B2）、同一个圆角开关（关）、同一个保点旋转。
  */
 const freeTrajectory = computed<N[]>(() => {
-  if (!draftFreeUsable.value || !draftFreeShape.value) return []
-  const trips = Math.max(1, Math.min(8, freePlan.value.trips || 1))
-  const geom = expandFreePathTrajectory(draftFreeShape.value, trips)
-  if (geom.length < 2) return []
+  if (!draftFreeUsable.value) return []
+  const resolved = resolveFreePathGeometry(
+    draftFreeShape.value,
+    hasStart.value ? { offsetM: draftStartOffsetM.value, direction: draftStartDirection.value } : null,
+  )
+  if (!resolved) return []
   try {
-    /**
-     * ⚠️ `smoothRoute: 0` **必须**：生成器默认的 2 轮 Chaikin 圆角会在**折返点（180°）**把几何毁掉
-     *   —— 实测一条 313.7 m 的直线（展开 2510 m）圆角后总长只剩 725 m，轨迹根本到不了终点。
-     *   跑步页那边也做了同一件事（`composables/demo/runner.ts` 的 `resolveTrackGeometry`）——
-     *   两处必须一致，否则"预览的形状"与"真跑的形状"会对不上。
-     */
-    const g = generateCorridorRoute(geom, { targetKm: 1.5, stepM: 5, drift: true, seed: seed.value, smoothRoute: 0 })
+    const g = generateCorridorRoute(resolved.geometry, {
+      targetKm: 1.5,
+      stepM: 5,
+      drift: true,
+      seed: seed.value,
+      smoothRoute: resolved.smooth ? 2 : 0,
+    })
     return g.points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
   } catch {
     // 预览失败不影响保存（保存只需要形状本身）；不弹错、不让页面炸
@@ -372,6 +401,39 @@ const clearFreeShape = () => {
   draftLineFrom.value = null
   draftLineTo.value = null
   showSnackbar('已清空非官方路径，可以重新画')
+}
+
+/**
+ * **定位**（用户原话："点击定位按钮，相关的地图移动到定位位置"）—— 审计 B10。
+ *
+ * 用户说这句话时手上可能**还什么都没画**，而原来的实现只认"当前草稿/已描的圈"，
+ * 那种情况下只弹一句提示、**地图一动不动**。现在给一条**逐级兜底**的定位链，
+ * 并**如实说明这次用的是哪个来源**（不猜、不装作定位成功）：
+ *   ① 你正在画的非官方路径 → ② 你描的内外圈 → ③ 这条线路的官方路线 → ④ 本机路线库里已保存的几何。
+ * 四级都空（全新状态）⇒ 明确告诉用户"先画一笔"，并说明这时确实没有可定位的位置。
+ */
+const freeLocateCandidates = computed<{ pts: N[]; label: string }[]>(() => {
+  const out: { pts: N[]; label: string }[] = []
+  if (freeShapePath.value.length >= 2) out.push({ pts: [...freeShapePath.value], label: '你正在画的非官方路径' })
+  if (outer.value.length >= 3) out.push({ pts: [...outer.value, ...inner.value], label: '你描的内外圈' })
+  if (official.value.length >= 2) out.push({ pts: official.value, label: '这条线路的官方路线' })
+  const libPts: N[] = []
+  for (const e of libEntries.value) {
+    libPts.push(...freePathPoints(e.freeShape).map(num))
+    libPts.push(...(e.outer ?? []).map(num))
+  }
+  if (libPts.length >= 2) out.push({ pts: libPts, label: '本机路线库里已保存的几何' })
+  return out
+})
+const locateForFreePath = () => {
+  const cands = freeLocateCandidates.value
+  if (!cands.length) {
+    showSnackbar('还没有任何可定位的几何：请先在地图上画出这条非官方路径（画之前确实没有"该定位到哪里"这个位置）', 'warning')
+    return
+  }
+  const hit = cands[0]!
+  focusOn(hit.pts)
+  showSnackbar(`已定位到${hit.label}`)
 }
 /** 地图点击（**只在 `freeMode` 非空时被调用**）—— 用户原话里的"直接在地图上点出路径" */
 const onFreeMapClick = (p: N) => {
@@ -423,21 +485,27 @@ const loadFreeDraft = (raw: FreePathShape | null | undefined) => {
  * **【测试】非官方路径的保存**（唯一入口）。
  *
  * 沿既有保存/落盘提示链路（`lib.upsert` + `persisted` 如实提示），区别只有两点：
- *   ① 形状是权威（`freeShape`），`outer`/`inner` 只是给旧版本看的**占位几何**（至少各 3 点）；
+ *   ① 形状是权威（`freeShape`），`outer`/`inner` 是**给旧版本应用看的占位几何**；
  *   ② 校验走 `draftFreeUsable`（形状长度 > 0），**不要求内外圈合法** —— 自由路径本来就没有双圈。
+ *
+ * ⚠️ 2026-09-22（审计 B3）：占位几何**必须 ≥3 点**（`freeShapePlaceholderRing`）。
+ *    1.2.4 及更早的版本按"内外圈各 ≥3 点"判合法 ⇒ 只放 2 点时旧版会认为这条记录不合法、
+ *    列表里看不到它，而旧版**任何一次写操作**都会把"不含它"的整份 `entries` 写回 localStorage
+ *    ⇒ **把用户画的非官方路径永久删掉**。补到 3 点（直线型是 A/中点/B）就能让旧版收下这条记录。
  */
 const saveFreeShape = () => {
   const shape = draftFreeShape.value
   if (!usableFreePathShape(shape)) {
-    showSnackbar('还存不了非官方路径：圈型至少 3 个点且不能重合，直线型要选好起点和终点（两点不能重合）', 'warning')
+    showSnackbar('还存不了非官方路径：至少 2 个不重合的点（圈型 3 点以上才是真正的圈），直线型要选好起点和终点', 'warning')
     return
   }
-  const placeholderInner = shape!.kind === 'curve' ? shape!.points : [shape!.from, shape!.to]
+  const placeholder = freeShapePlaceholderRing(shape).map(num)
   const saved = lib.upsert({
     lineId: LOCAL_FREE_LINE_ID,
     lineName: String(currentLine.value?.pointName ?? '本机跑道（本任务未下发线路）'),
-    outer: shape!.kind === 'curve' ? shape!.points.map(num) : [num(shape!.from), num(shape!.to)],
-    inner: placeholderInner.map(num),
+    // 占位几何（≥3 点，见函数头注释）；跑图**不看它**，只认 freeShape
+    outer: placeholder,
+    inner: placeholder,
     laneNo: laneNo.value,
     laneCount: laneCount.value,
     freeShape: shape,
@@ -449,6 +517,42 @@ const saveFreeShape = () => {
   const { entry, persisted } = saved
   const detail = `本机跑道 · 第 ${entry.editCount ?? 1} 次保存 · ${freePathShapeText(entry.freeShape) ?? '形状未存上'}`
   showSnackbar(`【测试】非官方路径已存入本机路线库（${detail}）${persisted ? '' : '（但本机存储写入失败，刷新后可能丢失）'}`, persisted ? undefined : 'warning')
+}
+
+/**
+ * **改回内外双圈**（删除这条记录上的非官方路径形状）—— 审计 B4 的显式入口。
+ *
+ * 为什么必须有它：保存内外圈的那条路（`save()`）现在会**显式清掉** `freeShape`（避免"新描的两圈被
+ * 旧形状无声压住"），但用户也可能只想"把形状删掉、保留双圈"。这里就干这一件事：
+ *   · 当前编辑器里的内外圈**合法** ⇒ 存双圈 + 清掉形状；
+ *   · 不合法 ⇒ **拒绝**并说清下一步（直接清掉会让这条记录变成"没有任何可用几何"的垃圾条目）。
+ */
+const clearFreeShapeOnEntry = () => {
+  if (!ringCheck.value.ok) {
+    showSnackbar('要改回内外双圈，请先在「外圈/内圈」里描好合法的两圈再点这个按钮（现在清掉形状会让这条记录没有任何可用几何）', 'warning')
+    return
+  }
+  const saved = lib.upsert({
+    lineId: LOCAL_FREE_LINE_ID,
+    lineName: String(currentLine.value?.pointName ?? '本机跑道（本任务未下发线路）'),
+    outer: outer.value,
+    inner: inner.value,
+    laneNo: laneNo.value,
+    laneCount: laneCount.value,
+    freeShape: null,
+  })
+  if (!saved) {
+    showSnackbar('删除被拒：内外圈不合法（各需至少 3 点）', 'error')
+    return
+  }
+  freeMode.value = 'off'
+  draftFreePoints.value = []
+  draftLineFrom.value = null
+  draftLineTo.value = null
+  showSnackbar(
+    `已删除「【测试】非官方路径」形状，这条记录改回内外双圈几何${saved.persisted ? '' : '（但本机存储写入失败，刷新后可能丢失）'}`,
+    saved.persisted ? undefined : 'warning',
+  )
 }
 
 /**
@@ -539,7 +643,15 @@ const onDown = (e: MouseEvent) => {
   dragging = true
   moved = false
   dragFrom = { x: e.offsetX, y: e.offsetY }
-  pointDragIndex = nearestPointIndex(e.offsetX, e.offsetY)
+  /**
+   * 🆕 2026-09-22（审计 B8）：**画非官方路径时不做"抓点"判定**。
+   *
+   * 病因：`nearestPointIndex` 走的是 `editingPts`（当前**圈**草稿）。画非官方路径时地图上
+   * 根本没画那些圈点，但落在它们 12 px 内的点击仍会被判成"抓住了一个点"⇒ `onUp` 里
+   * `idx >= 0` 直接 `return`，**这一点被静默吞掉**（用户只看到"点了没反应"）。
+   * 判据：**屏幕上看得见的点才允许被抓住** —— 看不见就不参与命中判定。
+   */
+  pointDragIndex = freeMode.value !== 'off' ? -1 : nearestPointIndex(e.offsetX, e.offsetY)
 }
 const nearestPointIndex = (x: number, y: number) => {
   let best = -1
@@ -771,6 +883,8 @@ const save = () => {
     showSnackbar(`内外圈不合法，无法保存：${ringCheck.value.problems.join('；')}`, 'error')
     return
   }
+  /** 🆕 审计 B4：这次保存会清掉一条已存在的非官方路径形状 ⇒ 提示里要如实说（见下面的 `freeShape: null`） */
+  const hadFreeShapeAtSave = Boolean(lib.get(lineId.value)?.freeShape)
   const saved = lib.upsert({
     lineId: lineId.value,
     lineName: String(currentLine.value?.pointName ?? lineId.value),
@@ -792,6 +906,15 @@ const save = () => {
             : {}),
         }
       : null,
+    /**
+     * 🆕 **明确清掉非官方路径形状**（2026-09-22 审计 B4）。
+     *
+     * 病因：`freeShape` 的"不传 = 沿用旧值"是给老调用方留的，但**保存内外圈**这个动作本身
+     * 就是在选择"用双圈几何跑" ⇒ 若还留着上一次存的形状，跑步页（有形状就优先用它）会**继续跑旧形状**，
+     * 而用户刚描的两圈被**无声忽略** —— 界面还提示"已存入本机路线库"，属于最坏的一类静默错误。
+     * 所以这里**永远传明确值 `null`**：存双圈 = 同时声明"不用非官方路径了"。
+     */
+    freeShape: null,
   })
   if (!saved) {
     showSnackbar('保存被拒绝：内外圈点数不足（各需至少 3 点）', 'error')
@@ -808,7 +931,15 @@ const save = () => {
    */
   const localSaving = String(lineId.value) === LOCAL_FREE_LINE_ID
   const detail = `${localSaving ? '本机跑道 · ' : ''}第 ${entry.editCount ?? 1} 次保存 · ${entry.updatedAppVersion ? `v${entry.updatedAppVersion}` : '版本未知'} · 起跑点${hasStart.value ? '已设' : '未设'}`
-  showSnackbar(`已存入本机路线库（${detail}）${persisted ? '' : '（但本机存储写入失败，刷新后可能丢失）'}`, persisted ? undefined : 'warning')
+  /**
+   * 🆕 审计 B4：这次保存**确实清掉了一条已存在的非官方路径形状**时要如实说 ——
+   * 否则用户会以为"存了双圈、形状还在"（实际跑步页已经改走双圈几何）。
+   */
+  const clearedShape = hadFreeShapeAtSave ? '（原先的【测试】非官方路径形状已清除，这条记录改回内外双圈）' : ''
+  showSnackbar(
+    `已存入本机路线库（${detail}）${clearedShape}${persisted ? '' : '（但本机存储写入失败，刷新后可能丢失）'}`,
+    persisted ? undefined : 'warning',
+  )
 }
 const reset = () => {
   setRing('outer', [])
@@ -1077,18 +1208,25 @@ const lineOptions = computed(() =>
               </div>
             </v-alert>
 
-            <!-- ① 定位（复用既有的「快速定位」能力，不另造一套定位体系） -->
+            <!--
+              ① 定位（用户原话："点击**定位**按钮，相关的地图**移动到定位位置**"）
+              ⚠️ 审计 B10：用户点它时可能**还什么都没画** ⇒ 这里走逐级兜底链（见 `locateForFreePath`），
+                 并且**如实告诉用户这次用的是哪个来源**，不再出现"点了没反应"。
+            -->
             <v-btn
               block
               size="small"
               color="secondary"
               variant="tonal"
-              class="mb-3"
+              class="mb-1"
               prepend-icon="mdi-crosshairs-gps"
-              @click="focusOn()"
+              @click="locateForFreePath"
             >
-              定位（把地图移到这条路径）
+              定位
             </v-btn>
+            <div class="text-caption text-medium-emphasis mb-3">
+              定位顺序：你正在画的路径 → 你描的内外圈 → 官方路线 → 本机路线库里已保存的几何（会在提示里说明用了哪个）。
+            </div>
 
             <!-- ② 形状选择：圈型 / 直线型（再点一次已选中的那个 = 退出绘制） -->
             <div class="text-caption text-medium-emphasis mb-1">选择形状（再点一次 = 退出绘制）：</div>
@@ -1100,6 +1238,8 @@ const lineOptions = computed(() =>
             <template v-if="freeMode === 'off'">
               <div class="text-caption text-medium-emphasis mb-2">
                 上面两个按钮选一个形状后，<b>在地图上依次点出路径</b>即可；选了形状之后这个按钮才会变为可用。
+                <br />⚠️ 反过来：用下面的「<b>保存（本机）</b>」存内外双圈时，这条记录上的非官方路径形状会<b>被清掉</b>
+                （避免"新描的两圈被旧形状无声压住"）—— 提示里会写明。
               </div>
               <v-btn block size="small" color="primary" prepend-icon="mdi-content-save-outline" disabled>保存到本机路线库（先选形状）</v-btn>
             </template>
@@ -1117,8 +1257,13 @@ const lineOptions = computed(() =>
                   预计长度：单程 <b>{{ draftFreeUsable ? lineLengthM(draftFreeShape).toFixed(1) + ' m' : '—' }}</b>
                   <template v-if="draftFreeUsable">　·　一来一回 <b>{{ (lineLengthM(draftFreeShape) * 2).toFixed(1) }} m</b></template>
                 </template>
+                <!--
+                  🆕 审计 B1：圈型**保留起跑点/绕向**，且用的是"保点旋转"（只插一个点、保留你点的每个折角，
+                  几何总长与形状都不变）；直线型没有"沿弧长旋转"的语义，如实忽略起跑点。
+                -->
+                <br />{{ freeMode === 'curve' ? '圈型会保留你设的起跑点/绕向（用保点旋转，不会改掉你画的形状）' : '直线型忽略起跑点设置（一条线段没有弧长可旋转）' }}
               </div>
-              <v-btn block size="small" variant="tonal" class="mb-2" prepend-icon="mdi-undo" :disabled="!draftFreeShape" @click="undoSelfFreePoint">
+              <v-btn block size="small" variant="tonal" class="mb-2" prepend-icon="mdi-undo" :disabled="freeDraftEmpty" @click="undoSelfFreePoint">
                 撤销上一个点（非官方路径）
               </v-btn>
               <v-btn block size="small" variant="tonal" color="error" class="mb-3" prepend-icon="mdi-delete-outline" @click="clearFreeShape">
@@ -1148,16 +1293,17 @@ const lineOptions = computed(() =>
                 hide-details="auto"
                 class="mb-1"
               />
-              <div class="text-caption mb-1">
-                共 <b>{{ freePlan.trips || 0 }}</b> {{ freeMode === 'curve' ? '圈' : '趟' }} · 合计约
-                <b>{{ (freePlan.totalM / 1000).toFixed(2) }} km</b>
-                <span class="text-medium-emphasis">（{{ freePlan.note }}）</span>
-              </div>
+              <!--
+                ⚠️ 审计 B7：**只渲染 `freePlan.note` 这一句**。
+                note 本身已经带了"共 N 圈 · 合计约 X km（依据；一圈多长）" ⇒ 原先外面又拼一遍 head，
+                整句会**打印两遍**（"共 3 圈 · 合计约 1.25 km（共 3 圈 · 合计约 1.25 km（…））"）。
+              -->
+              <div class="text-caption mb-1">{{ freePlan.note }}</div>
               <div v-if="freeTripsManualInvalid" class="text-caption text-warning mb-1">
                 ⚠️ 手填的趟数不是有效正数，已按目标里程自动算（口径：<b>宁可多跑，绝不少跑</b>）。
               </div>
               <v-alert v-if="!draftFreeUsable" type="warning" variant="tonal" density="compact" class="mb-2">
-                还不能跑：{{ freeMode === 'curve' ? '圈型至少 3 个点（且不能都重合）' : '直线型要选好起点与终点（两点不能重合）' }}。
+                还不能跑：{{ freeMode === 'curve' ? '圈型至少 2 个不重合的点（3 点以上才是真正的圈）' : '直线型要选好起点与终点（两点不能重合）' }}。
               </v-alert>
               <v-btn
                 block
@@ -1173,6 +1319,22 @@ const lineOptions = computed(() =>
               <div class="text-caption text-medium-emphasis">
                 保存后回「跑步」页：本任务未下发线路 ⇒ 轨迹就用你刚画的这条几何生成（地图上橙色那条就是预览）。
               </div>
+              <!--
+                🆕 审计 B4 的显式出口：把这条记录上的非官方路径形状**删掉**、改回内外双圈。
+                ⚠️ 另一种"清掉形状"的方式是直接用「保存（本机）」存双圈 —— 那条路会自动清掉形状（并在提示里说明）。
+              -->
+              <v-btn
+                v-if="lib.get(LOCAL_FREE_LINE_ID)?.freeShape"
+                block
+                size="small"
+                variant="text"
+                color="error"
+                class="mt-2"
+                prepend-icon="mdi-vector-polyline-remove"
+                @click="clearFreeShapeOnEntry"
+              >
+                改回内外双圈（删除本机记录上的【测试】形状）
+              </v-btn>
             </template>
           </v-card-text>
         </v-card>

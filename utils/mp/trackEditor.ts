@@ -459,11 +459,90 @@ export function rotateLoop(loop: LatLng[], offsetM: number): LatLng[] {
 /**
  * **把起跑点与绕向落到几何上**（唯一入口，跑步引擎与跑道编辑页预览都必须走它）：
  * 先按 `offsetM` 旋转，再在 `reverse` 时把起点留在第 0 位、其余倒序。
+ *
+ * ⚠️ 2026-09-22（审计 B1）：**它只适合 240 点的车道线**（点密，重采样无损）。
+ *    用户手点出来的"非官方路径"圈型请用下面的 `applyStartToLoopKeepingVertices`。
  */
 export function applyStartToLoop(loop: LatLng[], start?: TrackStartInput | null): LatLng[] {
   const rotated = rotateLoop(loop, Number(start?.offsetM) || 0)
   if (start?.direction !== 'reverse' || rotated.length < 2) return rotated
   return [rotated[0]!, ...rotated.slice(1).reverse()]
+}
+
+/**
+ * 🆕 **保点旋转**（2026-09-22 审计 B1 修复）：让第 0 点落到 `offsetM` 处，**但不重采样**。
+ *
+ * ## 为什么必须再有一个旋转函数（老 `rotateLoop` 会毁掉手画的几何）
+ * `rotateLoop` 的做法是"按弧长**均匀重采样成同样点数**"（`pointAtArcM(pts, start + total*k/n)`）。
+ * 它只对**240 点的车道线**无害（点密到重采样看不出来）；但**用户手点出来的 3~8 点几何**
+ * （「非官方路径绘制」的圈型）一旦套上它，弦切会把折角抹平：
+ * 实测一个 3 点、周长 900.3 m 的三角形，`offsetM = 25` 时——
+ *   · 几何总长从 **1800.7 m（2 趟）掉到 1096.7 m**；
+ *   · 相对"用户画的圈"的最大偏离 **48.07 m**（完全不是同一条路线了）。
+ *
+ * ## 本函数的做法（**保顶点**）
+ * 只**插入一个点**（弧长 `offsetM` 处），其余顶点**原样保留顺序**，末尾补回首点保持闭合：
+ *   `[x, ring[i+1], ring[i+2], …, ring[i], x]`
+ * ⇒ 输出点列**全部落在原几何上**（最大偏离 = 0），且**总长不变**（插入点把某一段一分为二，
+ *   两段之和 = 原段长）。函数内部还有一道**保长断言**：万一总长变了（数值异常/退化几何），
+ *   直接**退回原几何**（宁可不起跑点，也绝不能悄悄换掉用户画的形状）。
+ *
+ * ⚠️ 语义与 `rotateLoop` 一致：**输入按闭合环处理**（首尾之间那一段也算）；
+ *    输入首尾同点时会先去重末尾那个重复点（否则输出里会多出一段 0 m）。
+ * ⚠️ **老函数 `rotateLoop` 一个字都不改** —— 双圈车道线（240 点、等弧长）仍走它。
+ */
+export function rotateLoopKeepingVertices(loop: LatLng[], offsetM: number): LatLng[] {
+  const pts = norm(loop)
+  const copy = () => pts.map((p) => ({ ...p }))
+  if (pts.length < 3) return copy()
+  const off = Number(offsetM)
+  if (!(off > 0)) return copy()
+  // 去掉"末尾重复的收盘点"（闭合几何首尾常同点；留着会多出一段 0 m）
+  const first = pts[0]!
+  const last = pts[pts.length - 1]!
+  const ring = first.latitude === last.latitude && first.longitude === last.longitude ? pts.slice(0, -1) : pts
+  const n = ring.length
+  if (n < 3) return copy()
+  const { cum, total } = cumulative(ring)
+  if (!(total > 0)) return copy()
+  const start = ((off % total) + total) % total
+  /** 找 `start` 落在哪一段（`cum[i] <= start` 一路推进 ⇒ 恰好落在顶点上时归**后一段**，避免输出里出现重复点） */
+  let i = 1
+  while (i < cum.length - 1 && cum[i]! <= start) i++
+  const segIdx = i - 1
+  const head = pointAtArcM(ring, start)
+  if (!head) return copy()
+  const out: LatLng[] = [{ latitude: Number(head.latitude), longitude: Number(head.longitude) }]
+  for (let k = 1; k <= n; k++) {
+    const p = ring[(segIdx + k) % n]!
+    out.push({ ...p })
+  }
+  out.push({ latitude: Number(head.latitude), longitude: Number(head.longitude) })
+  // 保长断言：保点旋转**必须**不改变总长；变了就退回原几何（绝不用一条被改短的几何去跑）
+  const after = ringLengthM(out)
+  if (Math.abs(after - total) > Math.max(1e-6, total * 1e-6)) return copy()
+  return out
+}
+
+/**
+ * **保点版 `applyStartToLoop`**（2026-09-22 审计 B1）：非官方路径的圈型用它，
+ * 双圈车道线仍用 `applyStartToLoop`（`rotateLoop` 的语义与结果都不变）。
+ *
+ * ⚠️ **闭合数组的反向要单独处理**：非官方路径的圈型展开后是**首尾同点**的闭合数组
+ * （`[p0, …, p_{n-1}, p0]`）。若照老写法 `[r0, ...r.slice(1).reverse()]` 反过来，会得到
+ * `[p0, p0, …, p1]` —— 既多出一段 0 m、又**丢掉收尾那一段**（几何总长凭空少一截）。
+ * 正确写法是把"重复的那个收尾点"先去掉再倒序、末尾补回：`[p0, p_{n-2}, …, p1, p0]`
+ * （同一条闭合环、反向绕行、总长不变）。老 `applyStartToLoop` 的输入是 240 点车道线
+ * （首尾**不**同点），走不到这条分支，所以那边一个字都不用改。
+ */
+export function applyStartToLoopKeepingVertices(loop: LatLng[], start?: TrackStartInput | null): LatLng[] {
+  const rotated = rotateLoopKeepingVertices(loop, Number(start?.offsetM) || 0)
+  if (start?.direction !== 'reverse' || rotated.length < 2) return rotated
+  const first = rotated[0]!
+  const last = rotated[rotated.length - 1]!
+  const isClosed = first.latitude === last.latitude && first.longitude === last.longitude
+  const tail = isClosed ? rotated.slice(1, -1).reverse() : rotated.slice(1).reverse()
+  return [first, ...tail, ...(isClosed ? [{ latitude: first.latitude, longitude: first.longitude }] : [])]
 }
 
 /**

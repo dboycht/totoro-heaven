@@ -388,12 +388,13 @@ export function entryDetailRows(e: TrackRouteEntry): { label: string; value: str
     { label: '最近保存时间', value: e.updatedAt ? formatLocalDateTime(e.updatedAt) : '未记录（旧数据）' },
     { label: '最近保存版本', value: versionText(e.updatedAppVersion) },
     { label: '编辑次数', value: e.editCount ? `${e.editCount} 次` : '未记录（旧数据）' },
-    // 🆕 非官方路径（2026-09-22）：没有这个形状时如实写"双圈模式（旧口径）"，
-    //    有就写清是圈型还是直线型（跑图以它为准，内外圈只是占位几何）
-    {
-      label: '非官方路径【测试】',
-      value: freePathShapeText(e.freeShape) ?? '没有（用内外双圈生成，老条目即此）',
-    },
+    /**
+     * 🆕 非官方路径（2026-09-22）：**只有这条记录真的有形状时才多出这一行**。
+     * ⚠️ 审计 B9：原先无条件加 ⇒ 没带形状的条目（含全部老条目、以及有线路任务的条目）详情表
+     *    会凭空多一行 `非官方路径【测试】`，违反"有线路任务的所有既有行为一字不变"。
+     *    判据：**行数由数据决定**，不由版本决定。
+     */
+    ...(freePathShapeText(e.freeShape) ? [{ label: '非官方路径【测试】', value: String(freePathShapeText(e.freeShape)) }] : []),
     { label: '内外圈点数', value: `外圈 ${e.outer.length} 点 · 内圈 ${e.inner.length} 点` },
     { label: '外圈周长', value: e.outer.length >= 3 ? `${Math.round(ringLengthM(e.outer))} m` : '—' },
     {

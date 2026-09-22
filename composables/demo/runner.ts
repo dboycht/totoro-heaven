@@ -19,8 +19,8 @@ import { buildScoreDetailRequest, buildScoreRequest } from '~/utils/mp/submitPay
 import { evaluateRunAgainstTask, type TaskCheckResult } from '~/utils/mp/taskRules'
 // 🆕 2026-09-22（issue #12）：判"任务到底有没有下发线路"（纯函数，与门禁/自检/诊断同源）
 import { routeRequirementOf } from '~/utils/mp/taskShape'
-// 🆕 2026-09-22「非官方路径绘制」：本机条目带 freeShape 时，几何改用它的展开结果
-import { expandFreePathTrajectory, planFreePathTrips, usableFreePathShape } from '~/utils/mp/pathShape'
+// 🆕 2026-09-22「非官方路径绘制」：本机条目带 freeShape 时，几何用它展开（纯模块，与跑道编辑页预览同源）
+import { resolveFreePathGeometry } from '~/utils/mp/freePathGeometry'
 import { resolveEntryName, type TrackRouteEntry } from '~/utils/mp/trackLibrary'
 import { newRunSeed, planRealisticRun, type RunPlan } from '~/utils/mp/realism'
 import { toSubmitRunType, type MpRunLine, type MpScoreDetailRequest, type MpScoreRequest } from '~/src/mp/types'
@@ -56,50 +56,19 @@ function localTrackLines(entries: TrackRouteEntry[], taskId: string): MpRunLine[
 }
 
 /**
- * 🆕 2026-09-22「非官方路径绘制」：几何最多展开几圈/几趟。
+ * 🆕 2026-09-22「非官方路径绘制」的几何装配**已搬到纯模块** `utils/mp/freePathGeometry.ts`。
  *
- * 为什么要有上限：`expandFreePathTrajectory` 展开的是**路径点列**（不是逐点轨迹），
- * 生成器内部本来就会按弧长**反复走这条几何**直到跑满目标里程 ⇒ 展开太多遍只是白白变长
- * （3.2 km / 一圈 300 m ≈ 11 遍，重复点对生成结果没有贡献，却会让 payload / 预览变重）。
- * 取 8：足够让生成器的"圈号"在前 8 圈内与用户看到的一致，也不会让几何膨胀。
- */
-const FREE_PATH_GEOMETRY_MAX_TRIPS = 8
-
-/**
- * 本机条目 → **生成器用的几何** ＋ "要不要给生成器做圆角"（唯一入口）。
- *
- * 两种模式（**老条目必须零变化**）：
- *   · **有 `freeShape`**（非官方路径，2026-09-22 新功能）：几何 = `expandFreePathTrajectory()` 的结果
- *     —— 圈型是闭合曲线（首尾同点 ⇒ 生成器判定闭合、取模绕圈）、直线型是 A→B→A…（生成器走折返）。
- *     圈型仍然套用**起跑点/绕向**（`applyStartToLoop`，与双圈模式同一个函数）；直线型的"起跑点"
- *     没有意义（一条线段没有弧长可旋转），如实忽略。
- *     ⚠️ **必须关掉生成器的圆角**（`smoothRoute: 0`），理由见下面 `smooth` 字段的说明。
- *   · **没有 `freeShape`**（老条目、以及用「外圈/内圈」描的跑道）：逐字保持原行为
- *     —— 内外圈插值出所选车道线 + 起跑点变换 + **生成器默认圆角**（车道线是 240 点、本来就圆滑，
- *     圆角只是把模板的折角削平，既有轨迹逐点不变的前提就在这）。
- *
- * ⚠️ 拿不到几何（形状坏了 / 双圈点数不够）时返回 `null`，由调用方决定兜底且**绝不静默回落到官方模板**。
+ * 搬家的原因（审计 B1/B2）：
+ *   · 这里原来只服务跑步引擎 ⇒ 跑道编辑页的预览**没套同一层变换**（所见非所跑）；
+ *   · 原先把几何展开 8 趟 ⇒ 生成器算出的 `lapLengthM` 是"画的圈 × 8"，跑步页圈数报小了倍数。
+ * 现在两处都调 `resolveFreePathGeometry()`（趟数恒为 1、圆角关闭、圈型用**保点旋转**），
+ * 并且这一段逻辑有离线单测（`tests/mp/freePathGeometry.test.ts`）。
  */
 function resolveTrackGeometry(entry: TrackRouteEntry): { geometry: LatLng[]; smooth: boolean } | null {
-  const shape = entry.freeShape
-  if (usableFreePathShape(shape)) {
-    // 趟数只用来决定"展开几遍路径"，本身不影响总里程（生成器会一直走到目标里程）
-    const trips = Math.min(FREE_PATH_GEOMETRY_MAX_TRIPS, Math.max(1, planFreePathTrips(shape, 1).trips))
-    const expanded = expandFreePathTrajectory(shape, trips)
-    if (expanded.length >= 2) {
-      // 直线型（首尾不同点）没有"沿弧长旋转"的语义 ⇒ 只对闭合曲线套起跑点/绕向
-      const geometry = shape?.kind === 'curve' ? applyStartToLoop(expanded, entry.start ?? null) : expanded
-      /**
-       * ⚠️ **非官方路径必须 `smoothRoute: 0`**（2026-09-22 实测踩到的坑）：
-       *    `generateCorridorRoute` 默认对几何做 2 轮 Chaikin 圆角，而圆角**在 180° 折返点上会把几何毁掉** ——
-       *    直线型展开成 A→B→A→…（A、B 两侧都是原路折返）时，圆角把"折返"抹成一个极小的回环：
-       *    实测一条 313.7 m 的直线（展开总长 2510 m）被圆角后总长只剩 **725 m**，
-       *    轨迹最远只走到单程的 75%（**根本到不了终点 B**）。
-       *    画出来的形状是用户一笔一笔点的（本来就该原样照跑），**没有理由再做圆角**。
-       */
-      return { geometry, smooth: false }
-    }
-  }
+  /** ① 非官方路径（2026-09-22 新功能）：形状是权威几何来源 */
+  const shapeGeometry = resolveFreePathGeometry(entry.freeShape, entry.start ?? null)
+  if (shapeGeometry) return { geometry: shapeGeometry.geometry, smooth: shapeGeometry.smooth }
+  /** ② 老口径（内外双圈）：逐字保持原行为 */
   if (entry.outer.length >= 3 && entry.inner.length >= 3) {
     // ⚠️ **按这条本地路线里存的"所选道次"**生成 —— 不再随机、不再换道
     //    （2026-09-17 用户确认："缓慢换道"就是车道线看着乱的根因，已删除该功能）

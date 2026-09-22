@@ -65,7 +65,16 @@ test('normalizeLibrary：**老条目（没有 freeShape）零变化** —— 不
   assert.equal(hasValidRings(out[0]!), true, '双圈条目仍按老口径合法')
   // 老条目（双圈）的摘要/详情不许被新功能改写措辞
   assert.match(entrySummaryText(out[0]!), /^外圈 5 点 · 内圈 5 点 · /)
-  assert.equal(entryDetailRows(out[0]!).find((r) => r.label.includes('非官方路径'))?.value, '没有（用内外双圈生成，老条目即此）')
+  /**
+   * ⚠️ 2026-09-22 审计 B9：**详情表不许凭空多一行**。
+   * 原先无条件加 `非官方路径【测试】` ⇒ "有线路任务的所有既有行为一字不变"被破坏
+   * （那种任务永远不会有 freeShape）。判据：行数由数据决定。
+   */
+  assert.equal(
+    entryDetailRows(out[0]!).some((r) => r.label.includes('非官方路径')),
+    false,
+    '没有 freeShape 的条目，详情表里不许出现"非官方路径"那一行',
+  )
 })
 
 test('normalizeLibrary：读到**不认识的形状** ⇒ 安全降级为"没有形状"（不抛、不留坏数据）', () => {

@@ -533,6 +533,8 @@ import { groupRoutesByCampus, toSelectItems, warnForSelection } from '~/utils/mp
 // 🆕 2026-09-22（issue #12）：判"任务到底有没有下发线路"（纯函数，与门禁/自检/诊断同源）
 import { fitRequirementOf, routeRequirementOf } from '~/utils/mp/taskShape'
 import { laneLoop, laneRatioFor, ringLengthM } from '~/utils/mp/trackEditor'
+// 🆕 2026-09-22（审计 B2）：非官方路径的"一圈" = 画的圈（与跑步页 lapLengthM 同一基准）
+import { freePathLapLengthM } from '~/utils/mp/freePathGeometry'
 import {
   FREE_RUN_KM_MAX,
   FREE_RUN_KM_MIN,
@@ -866,10 +868,20 @@ const applyFreeKm = (raw: unknown) => {
   const km = setFreeRunKm(raw)
   freeKmText.value = formatFreeRunKm(km)
 }
-/** 所选跑道"一圈多长"（米）：没描过/几何不足时为 0（界面据此不显示"约几圈"） */
+/**
+ * 所选跑道"一圈多长"（米）：没描过/几何不足时为 0（界面据此不显示"约几圈"）。
+ *
+ * 🆕 2026-09-22（审计 B2）：**带 `freeShape`（非官方路径）的条目，一圈 = 画的圈**
+ *    —— 它的内外圈只是"给旧版本看的占位几何"，若拿占位几何去 `laneLoop` 插值，
+ *    算出来的"一圈"既不是用户画的圈、也和跑步页用的 `lapLengthM` 对不上（圈数会互相打架）。
+ *    ⚠️ 判据：**"一圈多长"只允许有一个来源**，与 `run.lapLengthM` 同一基准（`freePathLapLengthM`）。
+ */
 const selectedLaneLengthM = computed(() => {
   const e = libEntries.value.find((x) => String(x.lineId) === String(run.value.lineId))
-  if (!e || e.outer.length < 3 || e.inner.length < 3) return 0
+  if (!e) return 0
+  const freeLap = freePathLapLengthM(e.freeShape)
+  if (freeLap > 0) return freeLap
+  if (e.outer.length < 3 || e.inner.length < 3) return 0
   const loop = laneLoop({ outer: e.outer, inner: e.inner }, laneRatioFor(e.laneNo ?? 3, e.laneCount ?? 6), 240)
   return loop.length >= 3 ? ringLengthM(loop) : 0
 })

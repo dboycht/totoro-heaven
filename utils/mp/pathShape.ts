@@ -158,12 +158,23 @@ function normalizeTargetKm(raw: unknown): number | null {
   return Math.min(FREE_PATH_MAX_TARGET_KM, n)
 }
 
-/** 手填趟数归一化：`null` = 非法（提示用户），合法值 = 夹到 [1, FREE_PATH_MAX_TRIPS] 的整数 */
+/** 手填趟数归一化：`null` = 非法/没填（提示用户），合法值 = 夹到 [1, FREE_PATH_MAX_TRIPS] 的整数 */
 export function normalizeFreePathTrips(raw: unknown): number | null {
-  if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) return null
+  if (isBlankOverride(raw)) return null
   const n = Number(raw)
   if (!Number.isFinite(n) || n <= 0) return null
   return Math.min(FREE_PATH_MAX_TRIPS, Math.max(1, Math.round(n)))
+}
+
+/**
+ * **"用户没填"** 还是 **"用户填错了"**（2026-09-22 审计 B7 修）。
+ *
+ * `''` / 纯空白 / `undefined` / `null` = **没填**（输入框标签写着"留空＝按目标里程自动算"）；
+ * 其余（`0`、`-1`、`'abc'`）才是**填错**。两者必须分开，否则用户把趟数清空时会看到
+ * "手填的趟数不是有效正数"这种自相矛盾的提示。
+ */
+function isBlankOverride(raw: unknown): boolean {
+  return raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')
 }
 
 /**
@@ -188,7 +199,12 @@ function ceilNear(ratio: number): number {
 
 /** 计划结果（界面直接显示 `共 X 趟 · 合计约 Y km`） */
 export interface FreePathTripPlan {
-  /** 绕几圈（curve）/ 折返几趟（line）；**恒为 ≥ 1 的整数**，且 guarantees `totalM >= 目标` */
+  /**
+   * 绕几圈（curve）/ 折返几趟（line）；**恒为 ≥ 1 的整数**。
+   * ⚠️ `totalM` 与目标的关系**不是**严格的 `>=`：`ceilNear` 允许 ≤ **1e-5 相对量**的
+   *    "恰好整除"容差（用来吞掉 km↔米 的换算噪声）⇒ 极端情况下可能比目标少几毫米。
+   *    这个量级与"少跑一趟"（几十米起）差好几个数量级，不影响"宁可多跑"的口径。
+   */
   trips: number
   /**
    * 一趟的长度（米）：
@@ -197,11 +213,11 @@ export interface FreePathTripPlan {
    * `perTripM × trips = totalM`（展开后几何的弧长，正是生成器要跑的距离量级）。
    */
   perTripM: number
-  /** 合计长度（米）= `perTripM × trips`；正常情况 ≥ 目标里程 */
+  /** 合计长度（米）= `perTripM × trips`；正常情况 ≥ 目标里程（误差 ≤ 1e-5 相对量，见 `trips`） */
   totalM: number
   /** 目标里程（米，已归一化；目标非法时用**默认 3 km** 兜底并如实说明，见 `note`） */
   targetM: number
-  /** 该给用户看的一句话（界面直接渲染，避免各处各写一套说法） */
+  /** 该给用户看的一句话（界面**直接渲染这一句**即可，不要在外面再拼一遍 head） */
   note: string
 }
 
@@ -211,8 +227,9 @@ export interface FreePathTripPlan {
  * 规则（**取整方向是硬要求**）：
  *   · `trips = ceil(目标 / 一趟)` ⇒ **宁可多跑一两米，绝不少跑**（少跑 ⇒ 结算里程不达标）；
  *   · `trips` 至少 1（哪怕目标比一圈还短，也至少跑一趟）；
- *   · `override` 是用户手填的趟数：合法就**用它**（并如实标注"你手填的"），
- *     非法（0 / 负数 / 非数字 / 空）⇒ **忽略它、回落到自动算**，且 `note` 里说明回落原因。
+ *   · `override` 是用户手填的趟数：合法就**用它**（并如实标注"你手填的"）；
+ *     **填错**（0 / 负数 / 非数字）⇒ 忽略它、回落到自动算，且 `note` 里说明回落原因；
+ *     **没填**（空串/空白/undefined）⇒ 静默按自动算（**不报"填错了"** —— 标签写的就是"留空＝自动算"）。
  *
  * 退化情形（**不抛异常**）：形状不可用 / 长度为 0 ⇒ `trips = 0`、`totalM = 0`，
  * `note` 说明"这个形状还跑不了"。调用方按 `trips > 0` 判断能不能保存/开跑。
@@ -229,7 +246,7 @@ export function planFreePathTrips(
   const targetM = (targetM0 ?? 3) * 1000
 
   if (!(perTripM > 0)) {
-    return { trips: 0, perTripM: 0, totalM: 0, targetM, note: '这个形状还不能跑：点数不够或长度为 0（圈型至少 3 个不同的点、直线型两点不能重合）' }
+    return { trips: 0, perTripM: 0, totalM: 0, targetM, note: '这个形状还不能跑：点数不够或长度为 0（至少 2 个不重合的点）' }
   }
 
   const auto = Math.max(1, Math.min(FREE_PATH_MAX_TRIPS, ceilNear(targetM / perTripM)))
@@ -240,10 +257,8 @@ export function planFreePathTrips(
   const unit = shape!.kind === 'curve' ? '圈' : '趟'
   const head = `共 ${trips} ${unit} · 合计约 ${(totalM / 1000).toFixed(2)} km`
   const which = manual === null ? '按目标里程自动算' : '你手填的趟数'
-  const back =
-    override !== undefined && override !== null && manual === null
-      ? '（手填的趟数不是有效正数，已按目标里程自动算）'
-      : ''
+  /** ⚠️ 只有"**填错了**"才加回落说明；"没填"（空串）走静默自动（审计 B7） */
+  const back = !isBlankOverride(override) && manual === null ? '（手填的趟数不是有效正数，已按目标里程自动算）' : ''
   const tgt = fellBackTarget ? '（没给有效目标里程，按默认 3 km 算）' : ''
   const unitLen = shape!.kind === 'curve' ? `一圈 ${perTripM.toFixed(1)} m` : `一来一回 ${perTripM.toFixed(1)} m（单程 ${(perTripM / 2).toFixed(1)} m）`
   return { trips, perTripM, totalM, targetM, note: `${head}（${which}${back}${tgt}；${unitLen}）` }
@@ -345,4 +360,43 @@ export function parseFreePathShape(raw: unknown): FreePathShape | undefined {
     return usableFreePathShape(shape) ? shape : undefined
   }
   return undefined
+}
+
+/**
+ * 形状上的**顶点**（供界面画线、定位取范围、给库里的形状取点用）：
+ * curve ⇒ 用户点出的那些点（不补收盘点）；line ⇒ `[from, to]`；不可用 ⇒ `[]`。
+ */
+export function freePathPoints(shape: FreePathShape | null | undefined): { latitude: number; longitude: number }[] {
+  if (!usableFreePathShape(shape)) return []
+  if (shape!.kind === 'curve') return dedupeAdjacent(shape!.points.map(toN))
+  return [toN(shape!.from), toN(shape!.to)]
+}
+
+/**
+ * 🆕 **给旧版本应用看的"占位几何"**（2026-09-22 审计 B3 修）：**至少 3 个点**的坐标数组。
+ *
+ * ## 为什么需要它（数据安全）
+ * 非官方路径**不需要内外圈**，所以带上形状保存的条目，内外圈只放"占位几何"。
+ * 但 1.2.4 及更早的版本用 `hasValidRings`（**内外圈各 ≥3 点**）判一条记录合不合法：
+ *   · 占位几何只有 2 点时，**旧版会认为这条记录不合法** ⇒ 列表里看不到它；
+ *   · 更糟的是旧版**任何一次写操作**（`upsert`/`rename`/`remove`）都会把"不含它"的
+ *     `entries` 整体写回 localStorage ⇒ **连同 `freeShape` 一起被永久删掉**。
+ * 补到 ≥3 点就能让旧版**收下**这条记录（哪怕它画出来的是一条粗糙的线，也好过丢掉用户画的路径）。
+ *
+ * 判据（可执行）：返回数组长度 **≥ 3**，且**每个点都落在原形状上**（line 就是 A、中点、B；
+ * curve 少于 3 点时补中间点），坐标一律 `number`。形状不可用 ⇒ `[]`（调用方如实报错）。
+ */
+export function freeShapePlaceholderRing(shape: FreePathShape | null | undefined): { latitude: number; longitude: number }[] {
+  if (!usableFreePathShape(shape)) return []
+  if (shape!.kind === 'line') {
+    const a = toN(shape!.from)
+    const b = toN(shape!.to)
+    return [a, { latitude: (a.latitude + b.latitude) / 2, longitude: (a.longitude + b.longitude) / 2 }, b]
+  }
+  const ring = dedupeAdjacent(shape!.points.map(toN))
+  if (ring.length >= 3) return ring
+  /** 2 点（= 一条往返线）：中间补一个点凑够 3 个 */
+  const a = ring[0]!
+  const b = ring[ring.length - 1]!
+  return [a, { latitude: (a.latitude + b.latitude) / 2, longitude: (a.longitude + b.longitude) / 2 }, b]
 }
