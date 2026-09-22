@@ -96,6 +96,9 @@ export function useTrackLibrary() {
    *   · 每次保存都写 `updatedAt` / `updatedAppVersion` / `editCount` 并**压一条编辑历史**；
    *   · ⚠️ `appVersion` 的语义**从此固定为"创建时版本"**：原先每次保存都会把它刷成当前版本，
    *     与字段注释（"创建时的软件版本"）自相矛盾 —— 现在"最近保存版本"由 `updatedAppVersion` 承担。
+   *
+   * 返回值：`undefined` = 被拒（内外圈不合法）；否则 `{ entry, persisted }`
+   * （`persisted === false` = 只写进了内存、**没落盘**，调用方必须如实提示）。
    */
   const upsert = (input: {
     lineId: string
@@ -144,8 +147,13 @@ export function useTrackLibrary() {
       }),
     }
     entries.value = [entry, ...entries.value.filter((e) => String(e.lineId) !== String(input.lineId))]
-    persist()
-    return entry
+    /**
+     * 🆕 2026-09-22（issue #12）：**把"是否真的落盘"传回调用方**（与 `remove` / `rename` 同一纪律）。
+     * 原先这里把 `persist()` 的返回值丢掉 ⇒ 配额满 / 隐私模式下"内存里存了、磁盘上没有"，
+     * 界面照样提示"已存入本机路线库"，而**刷新后跑道就没了**——自由路线任务正是靠这条记录
+     * 才有一条几何可用（跑步页读的就是它），所以落盘失败必须如实说，不能只报成功。
+     */
+    return { entry, persisted: persist() }
   }
 
   /**

@@ -9,6 +9,8 @@
  */
 import type { LatLng } from './routeSimilarity'
 import { ringLengthM, startDirectionLabel, type LoopDirection } from './trackEditor'
+// 「任务到底有没有下发线路」的判据只允许有一个来源（纯函数，见 `utils/mp/taskShape.ts`）
+import { routeRequirementOf } from './taskShape'
 
 export const TRACK_LIBRARY_KEY = 'mp_track_library_v1'
 /** 旧格式的键（迁移用；旧版是 `{ [lineId]: {outer, inner} }`） */
@@ -133,6 +135,47 @@ export function sanitizeLineName(raw: unknown): string {
  */
 export function resolveEntryName(e: Pick<TrackRouteEntry, 'lineId' | 'lineName' | 'customName'>): string {
   return sanitizeLineName(e.customName) || String(e.lineName ?? '').trim() || String(e.lineId ?? '')
+}
+
+/**
+ * **任务未下发线路时，编辑器里那条「本机跑道」的固定键名**（issue #12，2026-09-22）。
+ *
+ * ## 为什么需要它（用户实测的真 bug）
+ * 「研途健行」这类任务的 `runPointList` 为空（`routeRequirementOf(task).kind === 'free'`），
+ * 于是跑道编辑器的线路下拉**必然没有可选线路**，用户描完点一点「保存」就被拒
+ * ——「需要选择一条路线」。但本版口径是"轨迹必须基于用户自己描的跑道几何"，
+ * 自由路线任务**也必须**能描一条本机跑道，否则**永远没有几何可用、永远跑不了**。
+ *
+ * ## 口径（避免后人误改）
+ *   ① 它是一个**本机条目**，`lineId` 是我们自己定的固定键名（**不是服务端线路标识**）⇒
+ *      只进本机路线库 `mp_track_library_v1`、只当"本地几何的来源"，**绝不许进提交报文**
+ *      （自由路线任务提交时 `lineId` 为空串、任务号走 `paperId` 兜底，见 `RunWorkspace.vue`）；
+ *   ② 键名**固定**（不随任务变化）：一个"没有线路的任务"只需要一条本机跑道，
+ *      重复保存就是覆盖同一条（用户仍可改名/删除），不至于每描一次就多一条垃圾条目；
+ *   ③ 文案只能说「**本任务未下发线路**」（客观事实），不许写成"服务端不判路线"。
+ */
+export const LOCAL_FREE_LINE_ID = 'local:free'
+
+/** 本机跑道在路线库里的名字快照（任务确实存在、只是没下发线路） */
+export const LOCAL_FREE_LINE_NAME = '本机跑道（本任务未下发线路）'
+/** 连任务都还没读就描的情况：如实说"还没读取任务"，不冒充"本任务未下发线路" */
+export const LOCAL_FREE_LINE_NAME_NO_TASK = '本机跑道（还没读取任务）'
+
+/**
+ * 当前任务在编辑器里**该不该出现那条「本机跑道」**，出现时它叫什么（纯函数，唯一判据）。
+ *
+ * 判据（可执行）：
+ *   · `routeRequirementOf(task).kind === 'line'`（服务端下发了线路）⇒ 返回 `null`
+ *     —— **有线路的任务零回归**：下拉里只有服务端线路，保存仍按线路 `pointId` 落库；
+ *   · `kind === 'free'` ⇒ 返回固定键名 `local:free` + 如实名字（有任务 / 没任务两种措辞）。
+ */
+export function localFreeTrackLine(task: unknown): { lineId: string; lineName: string } | null {
+  if (routeRequirementOf(task).kind !== 'free') return null
+  const hasTask = Boolean(task) && typeof task === 'object'
+  return {
+    lineId: LOCAL_FREE_LINE_ID,
+    lineName: hasTask ? LOCAL_FREE_LINE_NAME : LOCAL_FREE_LINE_NAME_NO_TASK,
+  }
 }
 
 /** 坐标是否可解析成一对有限数（**不要求是数字类型**：契约层允许字符串坐标） */

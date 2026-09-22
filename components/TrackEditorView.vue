@@ -26,15 +26,20 @@ import {
   type TrackRings,
 } from '~/utils/mp/trackEditor'
 import {
+  LOCAL_FREE_LINE_ID,
   TRACK_HISTORY_MAX,
   entryDetailRows,
   entrySummaryText,
   historyLogText,
+  localFreeTrackLine,
   resolveEntryName,
   startSummaryText,
 } from '~/utils/mp/trackLibrary'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
+import type { MpRunLine } from '~/src/mp/types'
+// 🆕 2026-09-22（issue #12）：判"任务到底有没有下发线路"（纯函数，与跑步页/门禁同源）
+import { routeRequirementOf } from '~/utils/mp/taskShape'
 
 /** 契约层坐标（latitude/longitude 可能是字符串） */
 type P = LatLng
@@ -46,7 +51,22 @@ const num = (p: LatLng): N => ({ latitude: Number(p.latitude), longitude: Number
 const { profile: realProfile, status: realStatus, task: realTask } = useMpReal()
 const { task: demoTask } = useMpDemo()
 const activeTask = computed(() => realTask.value ?? demoTask.value)
+/** 服务端下发的线路（**原样**，不加任何本机条目） */
 const activeLines = computed(() => activeTask.value?.runPointList ?? [])
+/**
+ * 🆕 2026-09-22（issue #12，用户实测 bug）：**本任务有没有下发线路**。
+ * 唯一判据来源是纯函数 `routeRequirementOf`（`utils/mp/taskShape.ts`）——与跑步页/门禁同源，
+ * 不许在这里另写一套"线路为空"的判断。
+ *
+ * `routeIsFree === true` = 服务端未下发线路（如「研途健行」）⇒ 下拉里**不会**有官方线路，
+ * 但用户**必须**能描一条本机跑道（本版口径：轨迹基于用户自己描的几何），否则永远跑不了。
+ */
+const routeIsFree = computed(() => routeRequirementOf(activeTask.value).kind === 'free')
+/**
+ * 任务未下发线路时，编辑器里那条**固定标识的「本机跑道」条目**（`lineId = 'local:free'`）；
+ * 任务下发了线路时恒为 `null` ⇒ **有线路的任务行为零变化**（见 `localFreeTrackLine` 的说明）。
+ */
+const localFreeLine = computed(() => localFreeTrackLine(activeTask.value))
 const showSnackbar = useNotice()
 
 // ---------- 地图（Web Mercator 滑溜地图：瓦片 + SVG 叠加）----------
@@ -137,7 +157,19 @@ const overlayTiles = computed(() =>
 )
 
 // ---------- 本地路线库（含创建日期/版本）+ 正在编辑的草稿 ----------
-const lines = computed(() => activeLines.value ?? [])
+/**
+ * 下拉里可选的东西 = **服务端线路** ＋（仅当任务未下发线路时）那条**本机跑道**。
+ *
+ * ⚠️ 本机跑道是"伪装成线路"的 `MpRunLine`：`pointList: []`（本任务没有官方模板点列，
+ *    如实留空 ⇒ 地图上那条白虚线不会画出来、"用官方路线打底"对它无效），
+ *    但 `pointId` 就是本机路线库的**键名** ⇒ 保存/载入/改名/删除全走既有的路线库路径。
+ */
+const lines = computed<MpRunLine[]>(() => {
+  const vendor = activeLines.value ?? []
+  const local = localFreeLine.value
+  if (!local) return vendor
+  return [...vendor, { pointId: local.lineId, pointName: local.lineName, pointList: [] }]
+})
 const lineId = ref<string>('')
 const lib = useTrackLibrary()
 /** 模板里要用的 ref 需要拿出来（嵌套在对象里的 ref 模板不会自动解包） */
@@ -222,6 +254,16 @@ const focusOn = (ptsIn?: N[]) => {
 watch(
   lines,
   (ls) => {
+    /**
+     * 🆕 2026-09-22（issue #12）：任务从"没下发线路"换成"下发了线路"时，
+     * 若下拉里还停在 `local:free` 上，必须切回服务端线路 —— 否则会把几何**存到 `local:free`
+     * 这个跟当前任务无关的键**上（脏数据；而且有线路的任务本该按线路 `pointId` 落库）。
+     * 判据收得很窄：**只**重置这一个固定键，其它情况一律保持原行为（零回归）。
+     */
+    if (ls.length && String(lineId.value) === LOCAL_FREE_LINE_ID && !ls.some((l) => String(l.pointId) === LOCAL_FREE_LINE_ID)) {
+      lineId.value = String(ls[0]!.pointId)
+      return
+    }
     if (!lineId.value && ls.length) lineId.value = String(ls[0]!.pointId)
   },
   { immediate: true },
@@ -461,8 +503,13 @@ const pathOf = (pts: P[], close = false) => {
  */
 
 const save = () => {
+  /**
+   * ⚠️ 2026-09-22（issue #12）：这条提示是用户实测到的那一句（"需要选择一条路线"）。
+   * 现在**任务未下发线路时下拉里必有那条「本机跑道」**（`local:free`）⇒ 正常路径走不到这里；
+   * 只有"任务下发了线路、而线路还没载入"这种真异常才会出现，所以提示里要给出下一步。
+   */
   if (!lineId.value) {
-    showSnackbar('先选一条线路', 'warning')
+    showSnackbar('现在没有可保存的对象：请先在下拉里选一条线路（任务未下发线路时会有一条「本机跑道」）', 'warning')
     return
   }
   /**
@@ -475,7 +522,7 @@ const save = () => {
     showSnackbar(`内外圈不合法，无法保存：${ringCheck.value.problems.join('；')}`, 'error')
     return
   }
-  const e = lib.upsert({
+  const saved = lib.upsert({
     lineId: lineId.value,
     lineName: String(currentLine.value?.pointName ?? lineId.value),
     outer: outer.value,
@@ -497,13 +544,22 @@ const save = () => {
         }
       : null,
   })
-  if (!e) {
+  if (!saved) {
     showSnackbar('保存被拒绝：内外圈点数不足（各需至少 3 点）', 'error')
     return
   }
-  showSnackbar(
-    `已存入本机路线库（第 ${e.editCount ?? 1} 次保存 · ${e.updatedAppVersion ? `v${e.updatedAppVersion}` : '版本未知'} · 起跑点${hasStart.value ? '已设' : '未设'}）`,
-  )
+  const { entry, persisted } = saved
+  /**
+   * ⚠️ **落盘是否成功必须如实说**（2026-09-22，issue #12）：
+   *   `lib.upsert` 现在把 `persist()` 的结果一起返回（原先丢掉了）—— 否则配额满 / 隐私模式下
+   *   "内存里存了、磁盘上没有"，界面却报成功；而**刷新后这条跑道就没了**，
+   *   自由路线任务恰恰只有它这一条几何来源（跑步页读的就是它）。
+   * 另外把"存的是哪一条"写清楚：本机跑道（本任务未下发线路）与"服务端线路"是两回事，
+   *   混在一起用户会以为存成了官方路线。
+   */
+  const localSaving = String(lineId.value) === LOCAL_FREE_LINE_ID
+  const detail = `${localSaving ? '本机跑道 · ' : ''}第 ${entry.editCount ?? 1} 次保存 · ${entry.updatedAppVersion ? `v${entry.updatedAppVersion}` : '版本未知'} · 起跑点${hasStart.value ? '已设' : '未设'}`
+  showSnackbar(`已存入本机路线库（${detail}）${persisted ? '' : '（但本机存储写入失败，刷新后可能丢失）'}`, persisted ? undefined : 'warning')
 }
 const reset = () => {
   setRing('outer', [])
@@ -597,6 +653,22 @@ const lineOptions = computed(() =>
   <v-container fluid>
     <v-alert v-if="realStatus !== 'ready'" type="info" variant="tonal" density="compact" class="mb-3">
       还没读取真实任务：回「工作台」点「一键获取 token」后这里才有线路可选（也可先用演示数据试手感）。
+    </v-alert>
+
+    <!--
+      🆕 2026-09-22（issue #12，用户实测：任务没线路时"无法新建路线"）：
+      任务未下发线路（runPointList 为空）时说清"你在描的是本机跑道"，避免用户以为存成了官方路线。
+      ⚠️ 只在**确实读到了任务**时显示这条（连任务都没有时，上面那条提示已经说明该去做什么）。
+    -->
+    <v-alert v-if="localFreeLine && activeTask" type="info" variant="tonal" density="comfortable" class="mb-3">
+      <div class="font-weight-bold">
+        <v-icon class="mr-1">mdi-map-marker-path</v-icon>本任务「服务端未下发线路」—— 你在这页描的是<b>本机跑道</b>，不是官方路线
+      </div>
+      <div class="text-body-2 mt-1">
+        该任务的 <b>runPointList 为空</b>（服务端没有下发可选线路），所以下拉里不会出现官方线路。
+        你在下拉里选那条「<b>本机跑道</b>」→ 描好内外圈 → 点「<b>保存（本机）</b>」以后，
+        <b>跑步页就会用你描的这条几何生成轨迹</b>。它只存在这台电脑的本机路线库里，不会、也不能当作官方线路标识提交。
+      </div>
     </v-alert>
 
     <!-- ⚠️ 用户 2026-09-18 明确要求加的提示（置顶、常驻）：官方路线只能当"大致位置"参考 -->
@@ -704,6 +776,11 @@ const lineOptions = computed(() =>
               hide-details
               class="mb-3"
             />
+            <!-- 🆕 2026-09-22（issue #12）：任务未下发线路时，把"这是本机跑道"说在选项正下方 -->
+            <div v-if="localFreeLine" class="text-caption text-medium-emphasis mb-3">
+              本任务未下发线路 —— 上面这条「<b>本机跑道</b>」是本机的条目：在它上面描好内外圈并保存，
+              跑步页就会用你描的这条生成轨迹（<b>不是官方路线</b>，只存在这台电脑上）。
+            </div>
             <v-btn-toggle v-model="editing" mandatory density="compact" class="mb-3">
               <v-btn value="outer" size="small">外圈</v-btn>
               <v-btn value="inner" size="small">内圈</v-btn>
@@ -728,9 +805,25 @@ const lineOptions = computed(() =>
                 当前{{ editing === 'outer' ? '外圈' : '内圈' }}：<b>{{ editingPts.length }}</b> 点
                 <span v-if="editingPts.length > 2">· 周长 {{ ringLengthM(editingPts).toFixed(0) }} m</span>
               </div>
-              <v-btn block size="small" variant="tonal" class="mb-2" prepend-icon="mdi-map-marker-path" @click="useOfficialAsRing">
+              <!--
+                🆕 2026-09-22（issue #12）：**本机跑道没有官方点列**（`pointList: []`）⇒ 这个按钮
+                对它是无效的。原先点了会**静默什么都不做**（函数里 `return`），容易被当成"按钮坏了"；
+                现在无官方点列时直接标灰，并在下面说明原因。
+              -->
+              <v-btn
+                block
+                size="small"
+                variant="tonal"
+                class="mb-2"
+                prepend-icon="mdi-map-marker-path"
+                :disabled="!official.length"
+                @click="useOfficialAsRing"
+              >
                 用官方路线打底（再微调）
               </v-btn>
+              <div v-if="!official.length" class="text-caption text-medium-emphasis mb-2">
+                {{ localFreeLine ? '本机跑道没有官方路线点列（服务端未下发线路），所以直接从卫星图描起。' : '这条线路服务端没有下发点列，所以没有可打底的官方路线。' }}
+              </div>
               <v-btn block size="small" variant="tonal" class="mb-2" prepend-icon="mdi-undo" @click="undo">撤销上一个点</v-btn>
               <v-btn block size="small" variant="tonal" color="info" class="mb-2" prepend-icon="mdi-auto-fix" @click="smoothRing">
                 把这一圈平滑一下（描的点难免有折角）
