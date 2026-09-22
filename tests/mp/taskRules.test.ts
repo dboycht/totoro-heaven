@@ -112,18 +112,27 @@ test('拟合度：阈值 0 / 非数字 / 空串 同样按"未下发"处理（只
   }
 })
 
-test('拟合度：服务端**下发了**阈值 ⇒ 行为与旧版逐字一致（照阈值判 hard）', () => {
+test('拟合度：服务端下发了阈值，但"低于阈值"只作提示、不判负（2026-09-22 issue #12 实测修正）', () => {
+  /**
+   * 依据：issue #12 的用户实测 —— 任务卡片显示拟合度要求 0.60，但他在官方小程序里
+   * **拟合度 0 仍被判通过** ⇒ "下发了阈值"不等于"服务端一定强制"。
+   * 所以低于阈值时：不进 `problems`、不拉低 `pass`，只用 `inferred`（只提示不阻断）如实标注。
+   */
   const low = evaluateRunAgainstTask({
     task: makeTask({ fitDegree: 0.6 }),
     km: 3.05,
     durationSeconds: 1100,
     fitDegree: 0.42,
   })
-  assert.equal(low.pass, false)
-  assert.equal(itemOf(low, 'fitDegree').ok, false)
-  assert.equal(itemOf(low, 'fitDegree').skipped, undefined, '有阈值时不得带 skipped 标记')
-  assert.equal(itemOf(low, 'fitDegree').confidence, 'hard')
+  assert.equal(itemOf(low, 'fitDegree').ok, true, '不得因拟合度低于阈值判失败')
+  assert.equal(itemOf(low, 'fitDegree').confidence, 'inferred', '应按"服务端是否强校验未验证"处理')
+  assert.equal(itemOf(low, 'fitDegree').skipped, undefined, '这不是"服务端没下发"，别复用 skipped 语义')
   assert.match(itemOf(low, 'fitDegree').detail, /0\.42 \/ 阈值 0\.6/)
+  assert.match(itemOf(low, 'fitDegree').detail, /低于阈值/)
+  assert.ok(
+    !low.problems.some((p) => /拟合度/.test(p)),
+    '不得把"我们预判不合格"写进 problems（那是替服务端下结论）',
+  )
 
   const ok = evaluateRunAgainstTask({
     task: makeTask({ fitDegree: 0.6 }),
@@ -133,7 +142,7 @@ test('拟合度：服务端**下发了**阈值 ⇒ 行为与旧版逐字一致�
   })
   assert.equal(ok.pass, true)
   assert.equal(itemOf(ok, 'fitDegree').ok, true)
-  assert.equal(itemOf(ok, 'fitDegree').confidence, 'hard')
+  assert.equal(itemOf(ok, 'fitDegree').confidence, 'hard', '达标时仍是硬性项（照阈值判通过）')
 })
 
 test('推断项（配速/时长/时段）不阻断 pass —— 单位未实测前只提示', () => {

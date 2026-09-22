@@ -157,15 +157,33 @@ export function evaluateRunAgainstTask(input: TaskCheckInput): TaskCheckResult {
   } else {
     const threshold = fit.threshold as number
     const fitOk = fitDegree >= threshold
-    items.push({
-      key: 'fitDegree',
-      label: '拟合度达标',
-      ok: fitOk,
-      detail: `${fitDegree.toFixed(2)} / 阈值 ${threshold}`,
-      confidence: 'hard',
-      note: '阈值取自服务端下发的 fitDegree（服务端执行）；客户端自算仅作预判',
-    })
-    if (!fitOk) problems.push(`拟合度不足：${fitDegree.toFixed(2)} < ${threshold}`)
+    if (fitOk) {
+      items.push({
+        key: 'fitDegree',
+        label: '拟合度达标',
+        ok: true,
+        detail: `${fitDegree.toFixed(2)} / 阈值 ${threshold}`,
+        confidence: 'hard',
+        note: '阈值取自服务端下发的 fitDegree（服务端执行）；客户端自算仅作预判',
+      })
+    } else {
+      /**
+       * ⚠️ 2026-09-22 依据 issue #12 的实测反馈修正：**低于阈值不再判成"硬性不合格"**。
+       * 用户实测（研究生院「研途健行」）：任务卡片显示拟合度要求 0.60，但他在官方小程序里
+       * **拟合度 0 仍然被判通过** —— 即"服务端下发了阈值"不等于"服务端一定强制"。
+       * 因此本项改用本项目自己的 `inferred` 语义（文件头定义：**"服务端是否强校验"未验证的项，只提示、不阻断**），
+       * 且**不再进 `problems`**（那等于我们替服务端判了它不合格）。
+       * 提交本身从不因拟合度被阻断（禁用判据里没有这一项），这里只是把"预判"如实标成预判。
+       */
+      items.push({
+        key: 'fitDegree',
+        label: '拟合度达标',
+        ok: true,
+        detail: `${fitDegree.toFixed(2)} / 阈值 ${threshold}（低于阈值；服务端是否强制未实测）`,
+        confidence: 'inferred',
+        note: '服务端下发了阈值，但已有学校实测放过拟合度 0 的成绩（issue #12 反馈）⇒ 客户端只提示，不判负；是否有效以服务端判定为准',
+      })
+    }
   }
 
   // 3) 配速区间（inferred：单位未实测）
