@@ -17,7 +17,7 @@ import { join } from 'node:path'
 const sandbox = mkdtempSync(join(tmpdir(), 'totoro-diaglogs-'))
 process.env.TOTORO_LOG_DIR = sandbox
 
-const { recentLogFiles, partitionLogsByRedline } = await import('../../server/utils/diagLogs.ts')
+const { recentLogFiles, partitionLogsByRedline, diagLogsLinesInWindow, summarizeDiagLineAccount } = await import('../../server/utils/diagLogs.ts')
 const { LOG_DIR, logDateTag } = await import('../../server/utils/logger.ts')
 
 /** 造一个日期标签（本地时间的 N 天前） */
@@ -109,4 +109,109 @@ test('partitionLogsByRedline：全部干净 ⇒ 不排除任何文件（正常�
   const { safe, excluded } = partitionLogsByRedline(logs)
   assert.equal(safe.length, 2)
   assert.equal(excluded.length, 0, '掩码后的长度/头尾字样不得被误判成凭证')
+})
+
+/**
+ * 🆕 2026-09-22：**按记录窗口筛日志行**（`diagLogsLinesInWindow`）。
+ *
+ * 这是"导出只取这一次记录那一段"的**唯一取数判据**，也是唯一会**逐行 JSON.parse** 的地方 ——
+ * 它的失败方式是"静默少给/整包挂掉"，所以两个方向都要钉住：
+ *   · 窗口外的行必须被剔除并**计数**（不能悄悄少给）；
+ *   · 坏行（半截写入 / 被字节截断切在中间 / 老日志没有 `t`）**只跳这一行**，绝不让整个导出失败。
+ */
+test('diagLogsLinesInWindow：只留 `t` 落在窗口内的行，窗口外与无时间戳的分开计数', () => {
+  const start = Date.parse('2026-09-22T10:00:00.000Z')
+  const end = Date.parse('2026-09-22T10:05:00.000Z')
+  const line = (t: string, msg: string) => JSON.stringify({ t, level: 'info', cat: 'proxy', msg })
+  const text = [
+    line('2026-09-22T09:59:59.000Z', '窗口前'),
+    line('2026-09-22T10:00:00.000Z', '正好开始'),
+    '{"msg":"这一行被字节截断切坏了', // 半截 JSON：必须只跳它
+    JSON.stringify({ level: 'info', cat: 'proxy', msg: '没有 t 字段（老日志）' }),
+    line('2026-09-22T10:04:59.000Z', '窗口内'),
+    line('2026-09-22T10:05:00.001Z', '窗口后'),
+  ].join('\n')
+  const r = diagLogsLinesInWindow(text, { startedAtMs: start, endedAtMs: end })
+  assert.equal(r.total, 6, '非空行共 6 条：窗口前 / 正好开始 / 半截 JSON / 没有 t 字段 / 窗口内 / 窗口后')
+  assert.equal(r.kept, 2, '只有正好开始与 10:04:59 两条在窗口内')
+  assert.equal(r.outOfWindow, 2, '窗口前那条与窗口后那条都算"明确在窗口外"')
+  assert.equal(r.unparsable, 2, '半截 JSON + 没有 t 字段 ⇒ 都算"解析不出时间"（无法证明它在窗口内）')
+  assert.equal(r.kept + r.outOfWindow + r.unparsable, r.total, '三类的和必须等于总数（账要对得上，不能有"既没留也没计数"的行）')
+  assert.match(r.text, /正好开始/)
+  assert.match(r.text, /窗口内/)
+  assert.ok(!r.text.includes('窗口前') && !r.text.includes('窗口后'), '窗口外的行一个字都不能进包')
+  // 保留的行**原样拼回**（不重新序列化）：导出包里的日志要与磁盘上一字不差
+  assert.equal(r.text.split('\n')[0], line('2026-09-22T10:00:00.000Z', '正好开始'))
+})
+
+test('diagLogsLinesInWindow：window=null ⇒ 原样全收（退回"最近 N 天全量"的兜底路径）', () => {
+  const text = '{"t":"2026-01-01T00:00:00.000Z","msg":"a"}\n坏行\n{"msg":"没有时间戳"}\n\n'
+  const r = diagLogsLinesInWindow(text, null)
+  assert.equal(r.total, 3, '只按"非空行"计数')
+  assert.equal(r.kept, 3, '不过滤 ⇒ 一行都不丢（连坏行也照给，那是用户的原始日志）')
+  assert.equal(r.outOfWindow, 0)
+  assert.equal(r.unparsable, 0, '不过滤时不去解析，也就不该报"解析不出"')
+  assert.ok(r.text.includes('坏行'))
+  assert.deepEqual(diagLogsLinesInWindow('', null), { text: '', total: 0, kept: 0, outOfWindow: 0, unparsable: 0 })
+})
+
+test('diagLogsLinesInWindow：未结束的窗口（endedAtMs=0）⇒ 右边界取"无穷"（此刻之后的行也先留着）', () => {
+  const start = Date.parse('2026-09-22T10:00:00.000Z')
+  const text = [
+    JSON.stringify({ t: '2026-09-22T09:00:00.000Z', msg: '窗口前' }),
+    JSON.stringify({ t: '2099-01-01T00:00:00.000Z', msg: '很晚（仍在记录时不该被右边界挡掉）' }),
+  ].join('\n')
+  const r = diagLogsLinesInWindow(text, { startedAtMs: start, endedAtMs: 0 })
+  assert.equal(r.kept, 1)
+  assert.match(r.text, /很晚/)
+  assert.equal(r.outOfWindow, 1)
+})
+
+/**
+ * 🆕 2026-09-22（独立审计 B1）：manifest 的行数账必须**只算真正进包的文件**。
+ *
+ * 故障：`export.post.ts` 原先在**全部** scoped 文件上聚合 kept/dropped，而"命中凭证样式被剔除"
+ * 发生在聚合**之后** ⇒ manifest 写"保留 12 行"，包里其实少了被剔那个文件的若干行。
+ * 诊断包最忌讳的就是"账与内容不自洽"（维护者据此判断日志齐不齐）。
+ * 判据：把"3 个文件、其中 1 个被红线剔除"这组喂给 `summarizeDiagLineAccount()`，逐项对账。
+ */
+test('summarizeDiagLineAccount：账只算进包文件，被红线剔除的那份单独计数（审计 B1）', () => {
+  const win = { startedAtMs: Date.parse('2026-09-22T10:00:00.000Z'), endedAtMs: Date.parse('2026-09-22T10:05:00.000Z') }
+  const line = (t: string, msg: string) => JSON.stringify({ t, level: 'info', cat: 'proxy', msg })
+  const mk = (name: string, inWindow: number, outWindow: number, bytes: number, truncated = false) => {
+    const text = [
+      ...Array.from({ length: inWindow }, (_, i) => line(new Date(win.startedAtMs + i * 1000).toISOString(), `${name}-in${i}`)),
+      ...Array.from({ length: outWindow }, (_, i) => line(new Date(win.endedAtMs + 60_000 + i * 1000).toISOString(), `${name}-out${i}`)),
+    ].join('\n')
+    return { name, bytes, truncated, scope: diagLogsLinesInWindow(text, win) }
+  }
+  const all = [mk('app-2026-09-20.log', 2, 3, 500), mk('app-2026-09-21.log', 5, 1, 9000, true), mk('app-2026-09-22.log', 4, 0, 700)]
+  // 红线只剔掉中间那个（它的 5 行**不能**出现在账里）
+  const safeNames = ['app-2026-09-20.log', 'app-2026-09-22.log']
+  const acc = summarizeDiagLineAccount(all, safeNames)
+  assert.deepEqual(acc, {
+    files: 2,
+    bytes: 1200, // 500 + 700，**不含**被剔那份的 9000
+    keptLines: 6, // 2 + 4，**不含**被剔那份的 5
+    droppedLines: 3, // 只有进包文件里"窗口外"的那些
+    unparsableLines: 0,
+    truncatedFiles: 0, // 被截断的正是被剔那份 ⇒ 不该算进去
+    excluded: { files: 1, lines: 5 },
+  })
+
+  // 没有文件被剔时：账 = 全部
+  const accAll = summarizeDiagLineAccount(all, all.map((f) => f.name))
+  assert.equal(accAll.files, 3)
+  assert.equal(accAll.bytes, 10200)
+  assert.equal(accAll.keptLines, 11)
+  assert.equal(accAll.droppedLines, 4)
+  assert.equal(accAll.truncatedFiles, 1)
+  assert.deepEqual(accAll.excluded, { files: 0, lines: 0 })
+
+  // 全部被剔时：账必须清零（zip 里只有 manifest + snapshot），被剔行数仍要看得出来
+  const accNone = summarizeDiagLineAccount(all, [])
+  assert.equal(accNone.files, 0)
+  assert.equal(accNone.bytes, 0)
+  assert.equal(accNone.keptLines, 0)
+  assert.deepEqual(accNone.excluded, { files: 3, lines: 11 })
 })

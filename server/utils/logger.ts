@@ -16,7 +16,17 @@ import { join } from 'node:path'
 import type { LogEntry, LogLevel } from '../../utils/mp/logFormat'
 import { maskTokenLike, redactObject } from '../../utils/mp/logFormat'
 
-export const LOG_DIR = process.env.TOTORO_LOG_DIR?.trim() || join(tmpdir(), 'totoro-heaven-runtime', 'logs')
+/**
+ * 运行目录（`%TEMP%\totoro-heaven-runtime`）—— **本机运行时数据的总根**。
+ *
+ * ⚠️ 2026-09-22 新增导出（口径单一来源）：记录窗口要落在"与日志同级"的地方
+ * （`server/utils/diagSession.ts` 用 `RUNTIME_DIR/diagnostics/session.json`），
+ * 如果那边自己再拼一次 `tmpdir()/totoro-heaven-runtime`，一旦这里换了目录口径就会**静默分叉**
+ * （日志写在这儿、窗口写在那儿，导出时读不到窗口，表现为"刷新又丢了"）。
+ * 所以运行目录只有这一份实现，日志目录由它派生。
+ */
+export const RUNTIME_DIR = join(tmpdir(), 'totoro-heaven-runtime')
+export const LOG_DIR = process.env.TOTORO_LOG_DIR?.trim() || join(RUNTIME_DIR, 'logs')
 const KEEP_DAYS = 7
 const MAX_TOTAL_BYTES = 20 * 1024 * 1024
 

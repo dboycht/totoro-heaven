@@ -35,8 +35,19 @@ import {
   resolveEntryName,
   startSummaryText,
 } from '~/utils/mp/trackLibrary'
+import {
+  curveLengthM,
+  expandFreePathTrajectory,
+  freePathShapeText,
+  lineLengthM,
+  normalizeFreePathTrips,
+  planFreePathTrips,
+  polylineLengthM,
+  usableFreePathShape,
+  type FreePathShape,
+} from '~/utils/mp/pathShape'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
-import type { LatLng } from '~/utils/mp/routeSimilarity'
+import { distanceMeters, type LatLng } from '~/utils/mp/routeSimilarity'
 import type { MpRunLine } from '~/src/mp/types'
 // 🆕 2026-09-22（issue #12）：判"任务到底有没有下发线路"（纯函数，与跑步页/门禁同源）
 import { routeRequirementOf } from '~/utils/mp/taskShape'
@@ -193,6 +204,8 @@ const loadDraft = (id: string) => {
   draftStartOffsetM.value = Number(e?.start?.offsetM ?? 0)
   draftStartPoint.value = e?.start?.point ? num(e.start.point) : null
   draftStartDirection.value = e?.start?.direction === 'reverse' ? 'reverse' : 'forward'
+  // 🆕 2026-09-22：把这条记录存的**非官方路径形状**也一起载入（没有它 ⇒ 退回双圈模式）
+  loadFreeDraft(e?.freeShape)
 }
 onMounted(() => {
   lib.load()
@@ -225,12 +238,231 @@ const setRing = (which: 'outer' | 'inner', pts: N[]) => {
 /** 切换线路 ⇒ 自动载入那条线路已保存的草稿（没保存过就是空的） */
 watch(lineId, (id) => loadDraft(String(id ?? '')))
 
+// ---------------------------------------------------------------- 【测试】非官方路径绘制（2026-09-22）
+
+/**
+ * ## 这是什么（用户原话）
+ * > "主要的功能是绘制**非官方性路径**……点击**定位**按钮，相关的地图移动到定位位置，
+ * >  用户可以选择**圈型**，或者**直线型**【直线型又有**折返性**】，然后绘制那些路径"
+ *
+ * ## 交互口径（为什么这么定）
+ *   · **只在"任务未下发线路"时出现**（`localFreeLine` 非空）—— 有线路的任务**零变化**：
+ *     它有自己的官方路线与双圈几何，硬塞一条"非官方路径"只会让人分不清在存什么；
+ *   · 它与既有的「外圈/内圈/起跑点」编辑**互斥**：`freeMode` 非空时，地图点击一律走
+ *     `onFreeMapClick`，不再往圈里加点（避免"我以为在画曲线、其实在上一个圈上加了个点"）；
+ *   · 几何与趟数的算法全部在 `utils/mp/pathShape.ts`（纯函数、有单测），**界面不自己算**。
+ */
+const freeMode = ref<'off' | 'curve' | 'line'>('off')
+/** 圈型草稿点（**不重复存收盘点** —— 闭合由算法统一补，界面只负责"点了几笔"） */
+const draftFreePoints = ref<N[]>([])
+/** 直线型草稿的两端（`lineFrom` = 起点，点第二下就是终点） */
+const draftLineFrom = ref<N | null>(null)
+const draftLineTo = ref<N | null>(null)
+/** 目标里程（km，用于"自动算趟数"）—— 默认 3.2，与既有轨迹预览的口径一致 */
+const freeTargetKm = ref(3.2)
+/** 用户手填的趟数（空串/0/非法 = 回落到自动算，判据在 `normalizeFreePathTrips`） */
+const freeTripsInput = ref<number | null>(null)
+
+/** 当前草稿构成的形状（`null` = 还没画够） */
+const draftFreeShape = computed<FreePathShape | null>(() => {
+  if (freeMode.value === 'curve') {
+    return draftFreePoints.value.length >= 2 ? { kind: 'curve', points: draftFreePoints.value.map((p) => ({ ...p })) } : null
+  }
+  if (freeMode.value === 'line' && draftLineFrom.value && draftLineTo.value) {
+    return {
+      kind: 'line',
+      from: { latitude: draftLineFrom.value.latitude, longitude: draftLineFrom.value.longitude },
+      to: { latitude: draftLineTo.value.latitude, longitude: draftLineTo.value.longitude },
+    }
+  }
+  return null
+})
+/** 草稿是否**可用**（长度 > 0）—— 保存按钮的判据 */
+const draftFreeUsable = computed(() => usableFreePathShape(draftFreeShape.value))
+/** 趟数计划（自动/手填都在这里算，界面只渲染它的结果） */
+const freePlan = computed(() => planFreePathTrips(draftFreeShape.value, freeTargetKm.value, freeTripsInput.value))
+/** 手填的趟数是否非法（非法时界面要说明"已按自动算"） */
+const freeTripsManualInvalid = computed(
+  () => freeTripsInput.value !== null && freeTripsInput.value !== undefined && normalizeFreePathTrips(freeTripsInput.value) === null,
+)
+
+/** 当前画到哪儿了（给用户的实时反馈；**纯文本，不带 markdown 标记**——模板里是原样渲染的） */
+const freeStatusText = computed(() => {
+  if (freeMode.value === 'curve') {
+    const n = draftFreePoints.value.length
+    if (n === 0) return '还没开始：在地图上依次点出边缘的几个点（至少 3 个），算法会自动把首尾闭合起来'
+    if (n < 3) return `已点 ${n} 个点，还不够闭合成曲线（至少 3 个点）`
+    return `已点 ${n} 个点，已闭合成曲线（算法自动补上"最后一点 → 第一点"这一段）`
+  }
+  if (freeMode.value === 'line') {
+    if (!draftLineFrom.value) return '还没开始：在地图上点出这条直路的起点'
+    if (!draftLineTo.value) return '已选起点：再点一下终点（A→B，之后按折返跑）'
+    return '已选好起点与终点（A→B，来回跑）'
+  }
+  return ''
+})
+
+/** 地图上要画的非官方路径（闭合曲线按闭合画，直线型就是一条线段） */
+const freeShapePath = computed<N[]>(() => {
+  if (freeMode.value === 'curve') return draftFreePoints.value
+  if (freeMode.value === 'line' && draftLineFrom.value && draftLineTo.value) return [draftLineFrom.value, draftLineTo.value]
+  return []
+})
+
+/**
+ * 非官方路径的**最终轨迹预览**（橙色那条线）。
+ * 与跑步页**同一套算法**：`expandFreePathTrajectory` 出几何 → `generateCorridorRoute` 出带抖动的轨迹。
+ * 这样"预览里看到的形状"就是"开跑后跑出来的形状"（所见即所跑）。
+ */
+const freeTrajectory = computed<N[]>(() => {
+  if (!draftFreeUsable.value || !draftFreeShape.value) return []
+  const trips = Math.max(1, Math.min(8, freePlan.value.trips || 1))
+  const geom = expandFreePathTrajectory(draftFreeShape.value, trips)
+  if (geom.length < 2) return []
+  try {
+    /**
+     * ⚠️ `smoothRoute: 0` **必须**：生成器默认的 2 轮 Chaikin 圆角会在**折返点（180°）**把几何毁掉
+     *   —— 实测一条 313.7 m 的直线（展开 2510 m）圆角后总长只剩 725 m，轨迹根本到不了终点。
+     *   跑步页那边也做了同一件事（`composables/demo/runner.ts` 的 `resolveTrackGeometry`）——
+     *   两处必须一致，否则"预览的形状"与"真跑的形状"会对不上。
+     */
+    const g = generateCorridorRoute(geom, { targetKm: 1.5, stepM: 5, drift: true, seed: seed.value, smoothRoute: 0 })
+    return g.points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
+  } catch {
+    // 预览失败不影响保存（保存只需要形状本身）；不弹错、不让页面炸
+    return []
+  }
+})
+
+/** 切到/切出某个形状（`off` = 回到既有的双圈编辑） */
+const setFreeMode = (m: 'off' | 'curve' | 'line') => {
+  freeMode.value = m
+  if (m === 'off') return
+  // 切到非官方路径时把"当前编辑对象"收回外圈：避免地图上同时存在两套编辑语义
+  editing.value = 'outer'
+}
+/**
+ * 形状选择控件的**选中态**（`v-btn-toggle` 的 model）。
+ *
+ * 为什么不直接绑 `freeMode`：
+ *   · 点**已选中**的按钮时，Vuetify 会把它置成 `null`（取消选中）⇒ 直接绑会把 `null` 写进
+ *     `freeMode`，类型与逻辑都对不上；
+ *   · `'off'`（没在画）不属于任何按钮 ⇒ 两个按钮都显示未选中，正是我们要的。
+ * 这里统一收口：`null` / `'off'` 都是"退出非官方路径绘制"。
+ */
+const freeModeToggle = computed<'curve' | 'line' | null>({
+  get: () => (freeMode.value === 'off' ? null : freeMode.value),
+  set: (v) => setFreeMode(v === 'curve' || v === 'line' ? v : 'off'),
+})
+/** 撤销上一个点（圈型 = 弹掉最后一笔；直线型 = 先清终点、再清起点） */
+const undoSelfFreePoint = () => {
+  if (freeMode.value === 'curve') {
+    draftFreePoints.value = draftFreePoints.value.slice(0, -1)
+    return
+  }
+  if (draftLineTo.value) {
+    draftLineTo.value = null
+    return
+  }
+  draftLineFrom.value = null
+}
+/** 清空重画 */
+const clearFreeShape = () => {
+  draftFreePoints.value = []
+  draftLineFrom.value = null
+  draftLineTo.value = null
+  showSnackbar('已清空非官方路径，可以重新画')
+}
+/** 地图点击（**只在 `freeMode` 非空时被调用**）—— 用户原话里的"直接在地图上点出路径" */
+const onFreeMapClick = (p: N) => {
+  if (freeMode.value === 'curve') {
+    draftFreePoints.value = [...draftFreePoints.value, p]
+    return
+  }
+  if (freeMode.value !== 'line') return
+  if (!draftLineFrom.value) {
+    draftLineFrom.value = p
+    return
+  }
+  if (!draftLineTo.value) {
+    if (distanceMeters(draftLineFrom.value.latitude, draftLineFrom.value.longitude, p.latitude, p.longitude) < 1) {
+      showSnackbar('起点与终点太近了（不足 1 m），请在地图上离起点远一些的地方点终点', 'warning')
+      return
+    }
+    draftLineTo.value = p
+    return
+  }
+  // 两端都已选：再点一下就改**离点击处更近的那一端**（和大多数地图工具的直觉一致）
+  const dFrom = distanceMeters(draftLineFrom.value.latitude, draftLineFrom.value.longitude, p.latitude, p.longitude)
+  const dTo = distanceMeters(draftLineTo.value.latitude, draftLineTo.value.longitude, p.latitude, p.longitude)
+  if (dFrom <= dTo) draftLineFrom.value = p
+  else draftLineTo.value = p
+}
+
+/** 从库里载入某条记录时，同时把它的非官方形状填进草稿（没有就清空草稿） */
+const loadFreeDraft = (raw: FreePathShape | null | undefined) => {
+  const shape = usableFreePathShape(raw) ? (raw as FreePathShape) : null
+  draftFreePoints.value = []
+  draftLineFrom.value = null
+  draftLineTo.value = null
+  freeTripsInput.value = null
+  if (!shape) {
+    freeMode.value = 'off'
+    return
+  }
+  if (shape.kind === 'curve') {
+    freeMode.value = 'curve'
+    draftFreePoints.value = shape.points.map(num)
+  } else {
+    freeMode.value = 'line'
+    draftLineFrom.value = num(shape.from)
+    draftLineTo.value = num(shape.to)
+  }
+}
+/**
+ * **【测试】非官方路径的保存**（唯一入口）。
+ *
+ * 沿既有保存/落盘提示链路（`lib.upsert` + `persisted` 如实提示），区别只有两点：
+ *   ① 形状是权威（`freeShape`），`outer`/`inner` 只是给旧版本看的**占位几何**（至少各 3 点）；
+ *   ② 校验走 `draftFreeUsable`（形状长度 > 0），**不要求内外圈合法** —— 自由路径本来就没有双圈。
+ */
+const saveFreeShape = () => {
+  const shape = draftFreeShape.value
+  if (!usableFreePathShape(shape)) {
+    showSnackbar('还存不了非官方路径：圈型至少 3 个点且不能重合，直线型要选好起点和终点（两点不能重合）', 'warning')
+    return
+  }
+  const placeholderInner = shape!.kind === 'curve' ? shape!.points : [shape!.from, shape!.to]
+  const saved = lib.upsert({
+    lineId: LOCAL_FREE_LINE_ID,
+    lineName: String(currentLine.value?.pointName ?? '本机跑道（本任务未下发线路）'),
+    outer: shape!.kind === 'curve' ? shape!.points.map(num) : [num(shape!.from), num(shape!.to)],
+    inner: placeholderInner.map(num),
+    laneNo: laneNo.value,
+    laneCount: laneCount.value,
+    freeShape: shape,
+  })
+  if (!saved) {
+    showSnackbar('保存被拒：这条记录既没有合法的内外圈、也没有可用的非官方路径形状', 'error')
+    return
+  }
+  const { entry, persisted } = saved
+  const detail = `本机跑道 · 第 ${entry.editCount ?? 1} 次保存 · ${freePathShapeText(entry.freeShape) ?? '形状未存上'}`
+  showSnackbar(`【测试】非官方路径已存入本机路线库（${detail}）${persisted ? '' : '（但本机存储写入失败，刷新后可能丢失）'}`, persisted ? undefined : 'warning')
+}
+
 /**
  * **快速定位**（用户要求）：把地图移到给定点集的范围，并挑一个刚好装得下的缩放级。
  * 不传参数时：优先用"已描的圈"，否则用官方路线。
  */
 const focusOn = (ptsIn?: N[]) => {
-  const pts = ptsIn ?? (outer.value.length >= 3 ? [...outer.value, ...inner.value] : official.value.map(num))
+  const pts =
+    ptsIn ??
+    (freeShapePath.value.length >= 2
+      ? [...freeShapePath.value]
+      : outer.value.length >= 3
+        ? [...outer.value, ...inner.value]
+        : official.value.map(num))
   if (pts.length < 2) {
     showSnackbar('这条线路还没有可定位的点', 'warning')
     return
@@ -349,7 +581,16 @@ const onUp = (e: MouseEvent) => {
   dragging = false
   pointDragIndex = -1
   if (!wasDragging || moved || idx >= 0) return
-  // 单击（没拖动、也没抓点）：🆕 起跑点模式下 = **点选起跑点**；否则在点击处加一个圈点
+  /**
+   * 单击（没拖动、也没抓点）的三种含义（**互斥，顺序即优先级**）：
+   *   ① 🆕 `freeMode` 非空 = **画非官方路径**（圈型点点 / 直线型点起点与终点）—— 2026-09-22；
+   *   ② `editing === 'start'` = 点选起跑点（1.1.12）；
+   *   ③ 其余 = 在点击处给"当前圈"（外圈/内圈）加一个点（老行为）。
+   */
+  if (freeMode.value !== 'off') {
+    onFreeMapClick(toLatLng(e.offsetX, e.offsetY))
+    return
+  }
   if (editing.value === 'start') {
     setStartFromMap(toLatLng(e.offsetX, e.offsetY))
     return
@@ -504,6 +745,14 @@ const pathOf = (pts: P[], close = false) => {
 
 const save = () => {
   /**
+   * 🆕 2026-09-22「非官方路径绘制」：在画非官方路径时，走**另一条保存入口**（形状是权威，
+   * 不要求内外圈合法）。有线路的任务走不到这里（那时 `freeMode` 恒为 `off`）。
+   */
+  if (freeMode.value !== 'off') {
+    saveFreeShape()
+    return
+  }
+  /**
    * ⚠️ 2026-09-22（issue #12）：这条提示是用户实测到的那一句（"需要选择一条路线"）。
    * 现在**任务未下发线路时下拉里必有那条「本机跑道」**（`local:free`）⇒ 正常路径走不到这里；
    * 只有"任务下发了线路、而线路还没载入"这种真异常才会出现，所以提示里要给出下一步。
@@ -564,6 +813,11 @@ const save = () => {
 const reset = () => {
   setRing('outer', [])
   setRing('inner', [])
+  // 🆕 2026-09-22：非官方路径草稿也一起清掉（"清空这条线路的内外圈"按钮顺手把形状也清了，
+  // 否则会出现"圈空了、但形状还在、一保存又把形状写回去"的怪状态）
+  draftFreePoints.value = []
+  draftLineFrom.value = null
+  draftLineTo.value = null
 }
 /** 本地路线管理：载入到编辑器（顺带定位过去） */
 const loadEntry = (id: string) => {
@@ -692,6 +946,8 @@ const lineOptions = computed(() =>
             <v-chip size="small" variant="tonal" color="success">绿=车道线</v-chip>
             <v-chip size="small" variant="tonal" color="warning">橙=最终轨迹</v-chip>
             <v-chip size="small" variant="tonal" color="error">红点=起跑点</v-chip>
+            <!-- 🆕 非官方路径（2026-09-22）：只在这一块 UI 出现时才加这个图例（有线路的任务一个字都不多） -->
+            <v-chip v-if="localFreeLine" size="small" variant="tonal" color="warning">【测试】洋红=非官方路径</v-chip>
             <v-spacer />
             <v-btn-toggle v-model="mapStyle" mandatory density="compact" class="mr-2">
               <v-btn value="road" size="small">街道图</v-btn>
@@ -732,8 +988,35 @@ const lineOptions = computed(() =>
                 <path v-if="inner.length > 1" :d="pathOf(inner, inner.length > 2)" fill="none" stroke="#a78bfa" stroke-width="2" />
                 <path v-if="lane.length > 1" :d="pathOf(lane, true)" fill="none" stroke="#22c55e" stroke-width="2.4" />
                 <path v-if="trajectory.length > 1" :d="pathOf(trajectory)" fill="none" stroke="#f59e0b" stroke-width="1.6" opacity="0.95" />
+                <!--
+                  🆕 非官方路径（2026-09-22）：**洋红 = 你画的那条形状本身**（圈型闭合曲线 / 直线 A→B）
+                  ⚠️ 圈型用 `pathOf(..., true)` 闭合画 —— 用户点完最后一个点就该看到"已经连上了"，
+                     而不是等保存后才发现自己画的其实是条开口折线。
+                -->
+                <template v-if="freeMode !== 'off'">
+                  <path
+                    v-if="freeShapePath.length > 1"
+                    :d="pathOf(freeShapePath, freeMode === 'curve' && freeShapePath.length > 2)"
+                    fill="none"
+                    stroke="#e879f9"
+                    stroke-width="3"
+                    opacity="0.95"
+                  />
+                  <circle
+                    v-for="(p, i) in freeShapePath"
+                    :key="`free-${i}`"
+                    :cx="toPx(p).x"
+                    :cy="toPx(p).y"
+                    r="4"
+                    fill="#e879f9"
+                    stroke="#fff"
+                    stroke-width="1.2"
+                  />
+                  <!-- 非官方路径的轨迹预览（与跑步页同一套算法：展开 → 生成） -->
+                  <path v-if="freeTrajectory.length > 1" :d="pathOf(freeTrajectory)" fill="none" stroke="#f59e0b" stroke-width="1.4" opacity="0.85" />
+                </template>
                 <circle
-                  v-for="(p, i) in editingPts"
+                  v-for="(p, i) in (freeMode !== 'off' ? [] : editingPts)"
                   :key="`${editing}-${i}`"
                   :cx="toPx(p).x"
                   :cy="toPx(p).y"
@@ -759,12 +1042,141 @@ const lineOptions = computed(() =>
             </div>
           </v-card-text>
           <v-card-text class="text-caption text-medium-emphasis">
-            拖动=平移地图　单击=<b>{{ editing === 'start' ? '点选起跑点（会自动吸附到车道上）' : '在当前位置加一个点' }}</b>　按住已有的小圆点拖动=改点　（编辑哪一样见右侧）
+            拖动=平移地图　单击=<b>{{
+              freeMode === 'curve'
+                ? '在当前位置加一个非官方路径的点'
+                : freeMode === 'line'
+                  ? '依次点出这条直路的起点与终点'
+                  : editing === 'start'
+                    ? '点选起跑点（会自动吸附到车道上）'
+                    : '在当前位置加一个点'
+            }}</b>　按住已有的小圆点拖动=改点　（编辑哪一样见右侧）
           </v-card-text>
         </v-card>
       </v-col>
 
       <v-col cols="12" md="4">
+        <!--
+          🆕 2026-09-22【测试】非官方路径绘制（用户原话："绘制**非官方性路径**……圈型，或者直线型【折返】"）
+          ⚠️ **只在任务未下发线路时出现**（`localFreeLine` 非空）⇒ 有线路的任务这块 UI 一个字都不渲染，
+             它的下拉 / 白色官方虚线 / 起跑点 / 滑杆 / 绕向 / 保存全部照旧（零回归）。
+        -->
+        <v-card v-if="localFreeLine" class="mb-3" variant="outlined" color="warning">
+          <v-card-title class="text-subtitle-1 d-flex align-center flex-wrap ga-2">
+            <v-chip size="small" color="warning" variant="flat">【测试】</v-chip>
+            非官方路径绘制
+          </v-card-title>
+          <v-card-text>
+            <v-alert type="warning" variant="tonal" density="compact" class="mb-3">
+              <div class="font-weight-bold">实验功能：用来给不指定路线的任务画一条自己的路径</div>
+              <div class="text-body-2 mt-1">
+                只对「<b>服务端未下发线路</b>」的任务（如研途健行）有意义 —— 这类任务没有官方路线可描，
+                你可以直接画一条<b>圈型闭合曲线</b>绕着跑，或者画一条<b>直线</b>来回折返跑。
+                画完保存进本机路线库（键名仍是 <code>local:free</code>），跑步页就会用这条几何开跑。
+                <b>它不是官方线路</b>，只存在这台电脑上，也不会进提交报文。
+              </div>
+            </v-alert>
+
+            <!-- ① 定位（复用既有的「快速定位」能力，不另造一套定位体系） -->
+            <v-btn
+              block
+              size="small"
+              color="secondary"
+              variant="tonal"
+              class="mb-3"
+              prepend-icon="mdi-crosshairs-gps"
+              @click="focusOn()"
+            >
+              定位（把地图移到这条路径）
+            </v-btn>
+
+            <!-- ② 形状选择：圈型 / 直线型（再点一次已选中的那个 = 退出绘制） -->
+            <div class="text-caption text-medium-emphasis mb-1">选择形状（再点一次 = 退出绘制）：</div>
+            <v-btn-toggle v-model="freeModeToggle" density="compact" class="mb-3">
+              <v-btn value="curve" size="small">圈型（闭合曲线）</v-btn>
+              <v-btn value="line" size="small">直线型（折返）</v-btn>
+            </v-btn-toggle>
+
+            <template v-if="freeMode === 'off'">
+              <div class="text-caption text-medium-emphasis mb-2">
+                上面两个按钮选一个形状后，<b>在地图上依次点出路径</b>即可；选了形状之后这个按钮才会变为可用。
+              </div>
+              <v-btn block size="small" color="primary" prepend-icon="mdi-content-save-outline" disabled>保存到本机路线库（先选形状）</v-btn>
+            </template>
+
+            <!-- ===== ③ 绘制交互 ===== -->
+            <template v-else>
+              <v-alert type="info" variant="tonal" density="compact" class="mb-2">
+                {{ freeStatusText }}
+              </v-alert>
+              <div class="text-caption mb-2">
+                <template v-if="freeMode === 'curve'">
+                  预计长度（闭合曲线一圈）：<b>{{ draftFreeUsable ? curveLengthM(draftFreeShape, true).toFixed(1) + ' m' : '—' }}</b>
+                </template>
+                <template v-else>
+                  预计长度：单程 <b>{{ draftFreeUsable ? lineLengthM(draftFreeShape).toFixed(1) + ' m' : '—' }}</b>
+                  <template v-if="draftFreeUsable">　·　一来一回 <b>{{ (lineLengthM(draftFreeShape) * 2).toFixed(1) }} m</b></template>
+                </template>
+              </div>
+              <v-btn block size="small" variant="tonal" class="mb-2" prepend-icon="mdi-undo" :disabled="!draftFreeShape" @click="undoSelfFreePoint">
+                撤销上一个点（非官方路径）
+              </v-btn>
+              <v-btn block size="small" variant="tonal" color="error" class="mb-3" prepend-icon="mdi-delete-outline" @click="clearFreeShape">
+                清空重画
+              </v-btn>
+
+              <!-- ④ 直线型的折返趟数（圈型也用它算"绕几圈"，口径一致） -->
+              <v-text-field
+                v-model.number="freeTargetKm"
+                type="number"
+                :min="0.1"
+                :step="0.1"
+                suffix="km"
+                label="目标里程（用来算趟数）"
+                density="compact"
+                hide-details="auto"
+                class="mb-2"
+              />
+              <v-text-field
+                v-model.number="freeTripsInput"
+                type="number"
+                :min="1"
+                :step="1"
+                :placeholder="String(freePlan.trips || 1)"
+                label="趟数（留空＝按目标里程自动算）"
+                density="compact"
+                hide-details="auto"
+                class="mb-1"
+              />
+              <div class="text-caption mb-1">
+                共 <b>{{ freePlan.trips || 0 }}</b> {{ freeMode === 'curve' ? '圈' : '趟' }} · 合计约
+                <b>{{ (freePlan.totalM / 1000).toFixed(2) }} km</b>
+                <span class="text-medium-emphasis">（{{ freePlan.note }}）</span>
+              </div>
+              <div v-if="freeTripsManualInvalid" class="text-caption text-warning mb-1">
+                ⚠️ 手填的趟数不是有效正数，已按目标里程自动算（口径：<b>宁可多跑，绝不少跑</b>）。
+              </div>
+              <v-alert v-if="!draftFreeUsable" type="warning" variant="tonal" density="compact" class="mb-2">
+                还不能跑：{{ freeMode === 'curve' ? '圈型至少 3 个点（且不能都重合）' : '直线型要选好起点与终点（两点不能重合）' }}。
+              </v-alert>
+              <v-btn
+                block
+                size="small"
+                color="primary"
+                class="mb-2"
+                prepend-icon="mdi-content-save-outline"
+                :disabled="!draftFreeUsable"
+                @click="saveFreeShape"
+              >
+                保存到本机路线库
+              </v-btn>
+              <div class="text-caption text-medium-emphasis">
+                保存后回「跑步」页：本任务未下发线路 ⇒ 轨迹就用你刚画的这条几何生成（地图上橙色那条就是预览）。
+              </div>
+            </template>
+          </v-card-text>
+        </v-card>
+
         <v-card>
           <v-card-title class="text-subtitle-1">编辑</v-card-title>
           <v-card-text>
@@ -955,6 +1367,10 @@ const lineOptions = computed(() =>
                             显示"编辑 1 次"是替用户猜的（详情里如实写"未记录（旧数据）"）。 -->
                     <v-chip v-if="e.start" size="x-small" color="error" variant="tonal">起跑点已设</v-chip>
                     <v-chip v-if="e.editCount" size="x-small" color="secondary" variant="tonal">编辑 {{ e.editCount }} 次</v-chip>
+                    <!-- 🆕 非官方路径（2026-09-22）：不展开也能一眼看出"这条是圈型/直线型" -->
+                    <v-chip v-if="e.freeShape" size="x-small" color="warning" variant="tonal">
+                      【测试】{{ e.freeShape.kind === 'curve' ? '圈型' : '直线型（折返）' }}
+                    </v-chip>
                   </v-list-item-title>
                   <v-list-item-subtitle class="text-caption">{{ entrySummaryText(e) }}</v-list-item-subtitle>
                   <template #append>

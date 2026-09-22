@@ -23,10 +23,30 @@
  * - **客户端**：采集并**脱敏**后的快照（`DiagSnapshot`）→ POST 到 `DIAG_EXPORT_PATH`；
  * - **服务端**：读自己的日志目录（最近 `DIAG_LOG_DAYS` 天）→ 与快照、`manifest.json` 一起打成 zip 返回。
  *   日志由**服务端自己读**（不经过浏览器）⇒ 用户不需要找目录，token 也不可能因此泄漏到前端。
+ *
+ * ## 🆕 2026-09-22（issue #12 二次返工）：「这一次记录」= **服务端锚定的记录窗口**
+ * 用户的原始抱怨是「刷新为什么会丢？我们要做的是**软件层面上的所有服务进行记录**」。
+ * 所以记录窗口**不再**是页面内存态（`useState` 也不行：刷新即丢），而是由服务端持有：
+ *   · **主存 = 服务端进程内存**（`server/utils/diagSession.ts` 的模块级单例）；
+ *   · `diagnostics/session.json` 只是**同一实例内**的持久化/导出依据；
+ *   · 窗口带**实例标识**（进程启动时刻 + 随机 id）⇒ 读到别的实例的窗口一律当"没有窗口"（见该模块）。
+ * 于是语义正好是用户要的：刷新页面 / 切页 / 关掉浏览器再打开，只要这个 EXE 还在跑就**仍在记录**；
+ * 关掉 EXE 再启动则**从零开始**。本文件提供窗口的**类型与纯函数**（客户端筛选、服务端核对共用一个口径）。
  */
 
 /** 导出接口（与既有 `/api/local/*` 同风格：本机、只读日志 + 用户自己的快照） */
 export const DIAG_EXPORT_PATH = '/api/local/diagnostics/export'
+/**
+ * 记录窗口接口族（🆕 2026-09-22）：
+ *   · `GET`    `DIAG_RECORD_PATH`        读当前状态（**界面刷新后靠它恢复"正在记录 + 已记录多久"**）
+ *   · `POST`   `DIAG_RECORD_PATH/start`  开始记录（可传 `includeGeometry`）
+ *   · `POST`   `DIAG_RECORD_PATH/stop`   结束记录（**不导出**；窗口被封存为最近一次，供导出使用）
+ *   · `PATCH`  `DIAG_RECORD_PATH/geometry` 记录中改坐标开关（只改服务端窗口里那个开关）
+ */
+export const DIAG_RECORD_PATH = '/api/local/diagnostics/record'
+export const DIAG_RECORD_START_PATH = `${DIAG_RECORD_PATH}/start`
+export const DIAG_RECORD_STOP_PATH = `${DIAG_RECORD_PATH}/stop`
+export const DIAG_RECORD_GEOMETRY_PATH = `${DIAG_RECORD_PATH}/geometry`
 /** 包内文件名（服务端写、界面展示、单测断言共用同一组常量） */
 export const DIAG_MANIFEST_NAME = 'manifest.json'
 export const DIAG_SNAPSHOT_NAME = 'snapshot.json'
@@ -36,8 +56,56 @@ export const DIAG_LOG_DAYS = 3
 /** 包内日志文件的体积上限（超出则截断并在 manifest 里注明；防止一个几百 MB 的日志把包撑爆） */
 export const DIAG_LOG_MAX_BYTES = 8 * 1024 * 1024
 
-/** 应用内事件时间线：最多带多少条（界面只展示尾部，包内也够排障） */
+/**
+ * 应用内事件时间线：最多带多少条。
+ *
+ * ⚠️ 2026-09-22 起它的**含义变了**（issue #12 二次返工）：以前是"只取**最近** 300 条"
+ * —— 长记录会把**最早**那段（含「开始记录」本身）挤掉，正是用户遇到的"记录被重置"观感之一。
+ * 现在时间线先**按窗口时间过滤**，`DIAG_TIMELINE_MAX` 降级为**上限兜底**：
+ * 超出时保留**最早 `DIAG_TIMELINE_HEAD_KEEP` 条 + 最新若干条**（见 `diagTimelineInWindow()`）。
+ */
 export const DIAG_TIMELINE_MAX = 300
+
+/** 时间线超上限时**必须保住的开头条数**（开头含「开始记录」，是判断"这次记录从哪开始"的关键） */
+export const DIAG_TIMELINE_HEAD_KEEP = 20
+
+/**
+ * 一条**记录窗口**（= 用户点「开始记录」→ 点「结束记录/结束并导出」的那一段）。
+ *
+ * 🔴 **它里面绝不允许出现 token / 学号 / 姓名**（只有 id、时间、一个开关）——
+ * 有单测 `tests/mp/diagSession.test.ts` 直接断言窗口文件与窗口对象里不含凭证样式。
+ */
+export interface DiagWindow {
+  /** 窗口 id（`w-<进程启动时刻>-<随机>`；服务端生成，界面只展示） */
+  id: string
+  /**
+   * 🔒 **实例标识**（`<进程启动 epoch ms>-<随机 hex>`）：窗口只对**产生它的那个进程实例**有效。
+   * 读到别的实例的窗口一律当"没有窗口"——语义即"刷新/切页不中断，重启 EXE 从零开始"。
+   */
+  instanceId: string
+  /** 是否正在记录（`false` = 已结束/已封存，导出时仍可用） */
+  recording: boolean
+  /** 开始的 ISO 时间（**服务端时钟**，日志行的时间戳与之同源） */
+  startedAt: string
+  /** 开始的 epoch ms（客户端 `at` 也是本机时钟 ⇒ 直接可比，不跨时区/不跨机器） */
+  startedAtMs: number
+  /** 结束的 ISO 时间（`recording=true` 时为空串） */
+  endedAt: string
+  /** 结束的 epoch ms（`recording=true` 时为 0） */
+  endedAtMs: number
+  /** 坐标开关（随窗口一起保存；记录中可改，会 PATCH 到服务端窗口） */
+  includeGeometry: boolean
+}
+
+/** 界面与服务端共享的"当前记录状态"（`GET DIAG_RECORD_PATH` 的响应） */
+export interface DiagRecordState {
+  /** 当前/最近的窗口（没有就是 null） */
+  window: DiagWindow | null
+  /** 「已记录多少秒」由服务端按 `startedAt` 算（界面刷新后据此补算，不归零） */
+  elapsedSeconds: number
+  /** 服务端进程的实例信息（界面用来显示"这一份记录属于哪一次运行"） */
+  serverInstance: { instanceId: string; startedAtMs: number; pid: number }
+}
 
 /** 掩码：学号（保留前 2 后 2）/ 姓名（保留姓）/ 手机号 */
 export const maskId = (s: unknown): string => {
@@ -62,6 +130,33 @@ export const tokenFingerprint = (token: unknown): string => {
   const t = String(token ?? '')
   if (!t) return '(无)'
   return `len=${t.length} head=${t.slice(0, 4)} tail=${t.slice(-4)}`
+}
+
+/**
+ * 诊断**记录窗口 id** 的形状：`w-<yyyymmdd>-<hhmmss>-<hex>`（与 `DiagWindow.id` 的生成口径一致）。
+ * 唯一来源在这里，`diagIdSafeDigits()` 与单测都引它。
+ */
+export const DIAG_WINDOW_ID_RE = /^w-\d{8}-\d{6}-[0-9a-f]{1,16}$/i
+
+/**
+ * **数字兜底掩码**：把自由文本里 8~18 位的纯数字当学号/手机号掩掉（见界面上那段"身份脱敏"的说明）。
+ *
+ * 🔴 但**窗口 id 里的数字段必须放过**（2026-09-22 真实浏览器导出解包时实测抓到）：
+ * `new Date().toISOString()` + 掩码的组合会把 `w-20260922-130240-c41da2` 里的 `20260922` 当学号，
+ * 掩成 `w-20****22-130240-c41da2` ⇒ 时间线里那条"开始记录诊断（服务端窗口 …）"**再也对不上**
+ * manifest 里的窗口 id，维护者没法把"时间线的一段"与"日志区间"对齐。
+ * 窗口 id 是本机自己生成的标识（**不含任何身份信息**），掩它只会废掉证据。
+ *
+ * @param text 任意自由文本（日志 msg / 错误文案…）
+ */
+export function maskDigitRuns(text: string): string {
+  return String(text ?? '').replace(/\d{8,18}/g, (m, offset: number, whole: string) => {
+    // 前面紧跟 `w-` 且后面是 `-<6位>-<hex>` ⇒ 整段是窗口 id ⇒ 原样保留
+    const before = whole.slice(Math.max(0, offset - 2), offset)
+    const after = whole.slice(offset + m.length, offset + m.length + 24).split(/\s/)[0] ?? ''
+    if (before === 'w-' && DIAG_WINDOW_ID_RE.test(`w-${m}${after.replace(/[^0-9a-f-]/gi, '')}`)) return m
+    return /^1\d{10}$/.test(m) ? maskPhone(m) : maskId(m)
+  })
 }
 
 /** 客户端采集、**已脱敏**的快照结构（服务端原样写进 `snapshot.json`） */
@@ -118,8 +213,172 @@ export interface DiagSnapshot {
   }
   /** 门禁：判定结果 + 依据（"为什么不让开跑"） */
   gate: { allow: boolean | null; reason: string; blockedBy: string; switches: unknown; cameraFlag: unknown; cameraFlagLineId: string; cameraFlagError: string }
-  /** 应用内事件时间线（尾部 `DIAG_TIMELINE_MAX` 条，已脱敏） */
+  /** 应用内事件时间线（**已按记录窗口过滤**，超上限时见 `diagTimelineInWindow()` 的取舍，已脱敏） */
   timeline: { at: string; level: string; cat: string; text: string }[]
+  /**
+   * 🆕 2026-09-22：这一份快照是**为哪个记录窗口**采集的（服务端会拿它核对，口径不一致时在 manifest 里写明）。
+   * **可选**字段：老快照没有它，服务端照旧能导出（退回"未按记录窗口过滤"）。
+   */
+  window?: { id: string; startedAt: string; endedAt: string; includeGeometry: boolean } | null
+  /**
+   * 🆕 2026-09-22（审计 B2）：采集快照时，界面见过的**服务端进程实例标识**。
+   * 服务端拿它区分"只是窗口被换掉"与"本程序重启过"（两种提示语对用户更贴切）。
+   * **可选**：老前端不给也没关系（那种情况服务端只按窗口 id 判）。
+   */
+  serverInstanceId?: string
+  /** 🆕 2026-09-22：时间线按窗口过滤/截断的结果（写进 manifest，便于维护者判断"是不是漏了操作"） */
+  timelineStats?: DiagTimelineStats
+}
+
+/**
+ * 🆕 2026-09-22（审计 B6）：从请求体里**只认显式布尔**地读"要不要包含坐标"。
+ *
+ * 为什么不能写成 `body?.includeGeometry !== false`（这是原始 bug）：空体 `{}`、
+ * `{"includeGeometry":0}`、`"false"`（字符串）都会被判成 `true` ⇒ **隐私开关被无声地打开**。
+ * 坐标是用户在这套诊断里唯一能控制的隐私取舍，**这种地方宁可报错也不能替用户做宽松解释**。
+ *
+ * 返回三态而不是布尔，让两个调用方各自决定"缺字段怎么办"（这个差别是**有意**的）：
+ *   · `PATCH /record/geometry`（**改**一个已存在的开关）⇒ 缺字段无法判断意图 ⇒ **400**；
+ *   · `POST /record/start`（**新建**窗口）⇒ 缺字段 = 用户没表达意见 ⇒ 用默认值（老前端不带也能用）。
+ * 两边共同点：`"false"` / `0` 这类写法**都不算"关闭坐标"**（都不满足 `typeof === 'boolean'`）。
+ *
+ * ⚠️ `server/utils/diagSession.ts` 里有一行 `export { readIncludeGeometryFlag } from '../../utils/mp/diagnostics'`
+ * 的**转发**：`server/api/local/diagnostics/record/**` 用相对路径引 `<root>/utils/mp/*` 时，
+ * 本机 `tsc`（moduleResolution=bundler）实测解析不到（同目录的 `server/utils/*` 却正常）⇒
+ * 端点走 `server/utils/diagSession` 取，界面与单测走这里取，**实现只有这一份**。
+ */
+export function readIncludeGeometryFlag(body: unknown): { kind: 'ok'; value: boolean } | { kind: 'missing' } | { kind: 'invalid'; got: string } {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { kind: 'missing' }
+  const v = (body as Record<string, unknown>).includeGeometry
+  if (v === undefined) return { kind: 'missing' }
+  if (typeof v === 'boolean') return { kind: 'ok', value: v }
+  return { kind: 'invalid', got: typeof v === 'string' ? `字符串 "${String(v).slice(0, 12)}"` : typeof v }
+}
+
+/**
+ * 🆕 2026-09-22（审计 B2/B4）：客户端手里那个窗口与服务端现在这个窗口**对不对得上**。
+ *
+ * 为什么必须是**纯函数**：这条判据同时用在**两个地方**（服务端 409 闸门 / 界面导出前自检），
+ * 两处各写一遍迟早会漂移（一处严一处松 = 漏洞）。返回 `null` 表示"可以继续"。
+ *
+ * 三种"对不上"分开报，因为**用户的下一步动作不同**：
+ *   · `unreported`：服务端压根没回窗口（重启过/没开始记录）⇒ 要重新记录；
+ *   · `overwritten`：id 变了 ⇒ 多半是另一个标签页点了「开始记录」⇒ 要重新记录；
+ *   · `instance-changed`：服务端**换了进程实例**（EXE/dev 重启）⇒ 也要重新记录，
+ *     但告诉用户"程序重启过"比"窗口被换掉"更贴近真相。
+ *
+ * @param args.clientWindowId   界面快照里声称的窗口 id（老前端不给 ⇒ 空串）
+ * @param args.respondedWindowId 服务端**这次请求**回的窗口 id（`stop` 返回的 / `GET` 读到的）
+ * @param args.serverInstanceId 服务端当前的进程实例标识
+ * @param args.reportedInstanceId 界面之前见过的实例标识（没见过就是空串 ⇒ 只按 id 判）
+ */
+export function diagWindowMatch(args: {
+  clientWindowId: string
+  respondedWindowId: string
+  serverInstanceId: string
+  reportedInstanceId?: string
+}): { reason: 'unreported' | 'overwritten' | 'instance-changed'; detail: string } | null {
+  const client = String(args.clientWindowId ?? '')
+  const responded = String(args.respondedWindowId ?? '')
+  const instance = String(args.serverInstanceId ?? '')
+  const reportedInstance = String(args.reportedInstanceId ?? '')
+  if (!client || client === responded) return null
+  if (reportedInstance && instance && reportedInstance !== instance) {
+    return { reason: 'instance-changed', detail: `本程序重启过（实例 ${reportedInstance} → ${instance}），重启后记录从零开始` }
+  }
+  if (!responded) {
+    return { reason: 'unreported', detail: '服务端现在没有记录窗口（这次运行没点过「开始记录」，或它已被清掉）' }
+  }
+  return { reason: 'overwritten', detail: `服务端的记录窗口已换成 ${responded}（本页手里是 ${client}）` }
+}
+
+/**
+ * 时间线按窗口过滤/截断的结果（写进 manifest + 界面能显示，**由纯函数产出**）。
+ *
+ * 为什么要单独记 `droppedToCap` 与 `outOfWindow`（2026-09-21 那版只有一个"最近 300 条"）：
+ * 维护者必须能一眼分清"**这段时间里本来就没有操作**"与"**有操作但被上限截掉了**" ——
+ * 二者的排查方向完全不同（前者查复现步骤、后者要放宽 `DIAG_TIMELINE_MAX`）。
+ */
+export interface DiagTimelineStats {
+  /** 事件日志里一共有多少条 */
+  input: number
+  /** `at` 落在窗口内的条数（截断前） */
+  inWindow: number
+  /** 落在窗口之外的条数（被过滤掉） */
+  outOfWindow: number
+  /** `at` 解析不出来、无法判断的条数（窗口生效时被剔除） */
+  unparsable: number
+  /** 因超过 `DIAG_TIMELINE_MAX` 被**上限**截掉的条数（不算窗口外那部分） */
+  droppedToCap: number
+}
+
+/** 时间线过滤只关心这三件事（**刻意不引 `LogEntry`**：契约层不依赖其它模块，保持可离线单测） */
+export interface DiagTimelineInput {
+  at: string
+  level: string
+  cat: string
+  text: string
+}
+
+/**
+ * 窗口过滤的**左边界容差**（ms）：用户点「开始记录」⇄ 服务端落窗口之间有几毫秒到几百毫秒的差，
+ * 而浏览器与这份 EXE 跑在**同一台机器**上（`startedAtMs` 与服务端 `new Date().getTime()` 同源，
+ * 不存在跨机器时钟漂移），所以 1 秒的容差足够吸收往返延迟。
+ *
+ * ⚠️ **右边界刻意不给容差**（2026-09-22 实测修正）：窗口一旦封存（`stopSession()` 已算出 `endedAtMs`），
+ * "之后"发生的事就**明确不属于**这一段记录 —— 而「结束并导出」自己那条日志恰恰发生在 stop 返回之后。
+ * 实测（真实浏览器导出解包）第一版对右边界也给了 1 秒容差，于是那条日志**混进了时间线**，
+ * 包里出现"窗口内 2/3 条"的自相矛盾。只在左边界留容差，右边界按 **`≤ endedAtMs` 严格**判。
+ */
+export const DIAG_WINDOW_TOLERANCE_MS = 1000
+
+/**
+ * **按记录窗口过滤**事件日志，并把 `DIAG_TIMELINE_MAX` 作为**上限兜底**。
+ *
+ * 取舍（写下来免得后人以为是漏了）：
+ *   · `window === null`（服务端拿不到窗口）⇒ **不过滤**、退回"最近 N 条"的旧口径，但**同样受上限约束**
+ *     （宁可少给也不能让包爆掉；此时 manifest 会写明"未按记录窗口过滤"）；
+ *   · 超出上限时保留**最早 `DIAG_TIMELINE_HEAD_KEEP` 条 + 最新若干条**（合计 `DIAG_TIMELINE_MAX`）：
+ *     开头含「开始记录」与最初的复现步骤，是最能说明"从哪开始出问题"的一段 —— 旧的"只留尾部"恰好把它丢掉；
+ *   · 时间戳解析不出来的条目在窗口生效时按"窗口外"处理（无法证明它在窗口内），但**单独计数**（`unparsable`），
+ *     便于以后判断"是不是有别的写法的时间戳"；
+ *   · 左边界留 `DIAG_WINDOW_TOLERANCE_MS` 容差、**右边界严格**（理由见上面的常量注释）。
+ *
+ * 本函数是**纯函数**（客户端筛选 / 服务端核对共用），有单测 `tests/mp/diagnostics.test.ts`。
+ */
+export function diagTimelineInWindow(
+  entries: DiagTimelineInput[],
+  window: { startedAtMs: number; endedAtMs: number } | null,
+  nowMs: number = Date.now(),
+  max: number = DIAG_TIMELINE_MAX,
+  headKeep: number = DIAG_TIMELINE_HEAD_KEEP,
+): { items: DiagTimelineInput[]; stats: DiagTimelineStats } {
+  const input = entries.length
+  const stats: DiagTimelineStats = { input, inWindow: 0, outOfWindow: 0, unparsable: 0, droppedToCap: 0 }
+  const keep: DiagTimelineInput[] = []
+  for (const e of entries) {
+    if (window) {
+      const t = Date.parse(String(e.at ?? ''))
+      if (!Number.isFinite(t)) {
+        stats.unparsable++
+        continue
+      }
+      // 窗口未结束（仍在记录）时用"此刻"当右边界；左边界留 1 秒容差（点按钮 ⇄ 服务端落窗口之间的往返）
+      const end = window.endedAtMs > 0 ? window.endedAtMs : nowMs
+      if (t < window.startedAtMs - DIAG_WINDOW_TOLERANCE_MS || t > end) {
+        stats.outOfWindow++
+        continue
+      }
+    }
+    stats.inWindow++
+    keep.push(e)
+  }
+  const cap = Math.max(0, Math.floor(max))
+  if (keep.length <= cap) return { items: keep, stats }
+  const head = Math.max(0, Math.min(Math.floor(headKeep), cap))
+  const tail = cap - head
+  stats.droppedToCap = keep.length - cap
+  return { items: [...keep.slice(0, head), ...(tail > 0 ? keep.slice(-tail) : [])], stats }
 }
 
 /** 包内清单：界面"导出前预览"与服务端 `manifest.json` **共用**（同一个函数生成，避免两处口径不一致） */
@@ -129,12 +388,41 @@ export interface DiagManifestEntry {
   /** 人类可读说明 */
   note: string
 }
-export function diagManifestEntries(input: { logNames: string[]; includeGeometry: boolean }): DiagManifestEntry[] {
+/**
+ * @param input.logNames     包内会出现的日志文件名（不含 `logs/` 前缀）
+ * @param input.includeGeometry 是否含坐标（决定最后那条"说明"怎么写）
+ * @param input.logNote      🆕 2026-09-22：日志条目的**统一补充说明**（服务端按记录窗口过滤后写"只含窗口内的行、
+ *                           共 N 行、剔了 M 行"这类话）。不传 = 老文案（保持既有调用方与单测不变）。
+ * @param input.window       🆕 2026-09-22：本次导出所依据的记录窗口（有就在清单里**明写窗口 id 与起止时间**，
+ *                           让维护者一眼看出"这个包只覆盖这一段"）。传 `null`/不传 = 没按窗口过滤。
+ */
+export function diagManifestEntries(input: {
+  logNames: string[]
+  includeGeometry: boolean
+  logNote?: string
+  window?: { id: string; startedAt: string; endedAt: string } | null
+}): DiagManifestEntry[] {
   const entries: DiagManifestEntry[] = [
     { name: DIAG_MANIFEST_NAME, note: '本次导出的清单（本文件）' },
     { name: DIAG_SNAPSHOT_NAME, note: '本机状态快照：任务原始 JSON、路线库摘要、门禁依据、操作时间线、版本与账号（已脱敏）' },
   ]
-  for (const n of input.logNames) entries.push({ name: `${DIAG_LOG_DIR}/${n}`, note: '服务端文件日志：每个上游请求一行（端点/耗时/上游原话/字段名，token 已掩码）' })
+  const baseLogNote = '服务端文件日志：每个上游请求一行（端点/耗时/上游原话/字段名，token 已掩码）'
+  for (const n of input.logNames) entries.push({ name: `${DIAG_LOG_DIR}/${n}`, note: input.logNote ? `${baseLogNote}；${input.logNote}` : baseLogNote })
+  if (input.window) {
+    /**
+     * ⚠️ 这里的 note 会**原样渲染到界面**（`DiagnosticsExportCard.vue` 的 `{{ m.note }}`），
+     * 所以**不许出现 markdown 标记**（Vue 不渲染 markdown，用户会看到字面的星号 —— `ERROR.md` E44 的老坑）。
+     * 运行期生成的文案原来没人守（`uiText.test.ts` 只扫 `.vue` 模板字面量），
+     * 2026-09-22 已补一条**直接对 `diagManifestEntries()` 输出**的断言（审计 B5）。
+     */
+    entries.push({
+      name: '(记录窗口)',
+      note:
+        `本包按这一次记录窗口取数据：窗口 id ${input.window.id}，` +
+        `${input.window.startedAt}${input.window.endedAt ? ` ~ ${input.window.endedAt}` : ' ~（仍在记录）'}。` +
+        '窗口由服务端持有（同一次运行内刷新/切页/重开浏览器都不中断；关掉本程序再启动则从零开始）。',
+    })
+  }
   entries.push({
     name: '(说明)',
     note: input.includeGeometry
@@ -144,15 +432,46 @@ export function diagManifestEntries(input: { logNames: string[]; includeGeometry
   return entries
 }
 
-/** 导出前的"红线自检"：包内**任何**文本都不许出现凭证样式（服务端与单测共用同一判据） */
+/**
+ * 把**已被 JSON 转义**的文本还原成"人会看到的样子"，供红线判据再跑一遍。
+ *
+ * 🔴 为什么必须有这一步（2026-09-22 独立审计实测反例）：
+ * 判据原先只在**原始 JSON 文本**上跑，而 JSON 里引号是 `\"`、制表符是 `\t` ⇒
+ * `{"timeline":[{"text":"body={\"token\":\"<34位>\"}"}]}` 里的 `"token":"…"` 被判据的
+ * `"token"\s*:\s*"…"` **漏掉**（`\"` 不匹配 `"`），`Bearer\t…` 同理（`\s` 匹配不到两个字符的转义序列）。
+ * 也就是说：**只要凭证是"被转义进 JSON 的"，红线就形同虚设** —— 这条必须堵。
+ *
+ * 做法（保守、只放松"能不能看见"，不放松判据本身）：把常见转义还原后再跑同一组正则；
+ * 两个方向都命中才算命中，所以**不会**因此把正常文本误判成凭证（误判只会来自还原后的真实凭证样式）。
+ */
+export function unescapeForRedlineScan(text: string): string {
+  return String(text ?? '')
+    .replace(/\\u([0-9a-f]{4})/gi, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/\\"/g, '"')
+    .replace(/\\'/g, "'")
+    .replace(/\\[tnrf]/g, ' ')
+    .replace(/\\\//g, '/')
+    .replace(/\\\\/g, '\\')
+}
+
+/**
+ * 导出前的"红线自检"：包内**任何**文本都不许出现凭证样式（服务端与单测共用同一判据）。
+ *
+ * ⚠️ 每条文本会跑**原文 + 还原转义后的两个变体**（见 `unescapeForRedlineScan()`）——
+ * 只跑原文会让"转义进 JSON 的凭证"漏网（审计实测反例，已有单测钉住）。
+ */
 export function assertNoCredentials(texts: string[]): { ok: boolean; hits: string[] } {
   const patterns: { re: RegExp; why: string }[] = [
     { re: /Bearer\s+[A-Za-z0-9._-]{16,}/i, why: 'Bearer 凭证' },
     { re: /\beyJ[A-Za-z0-9._-]{20,}/, why: 'JWT 样式串' },
     { re: /"token"\s*:\s*"[^"]{16,}"/i, why: 'token 字段明文' },
+    { re: /'token'\s*:\s*'[^']{16,}'/i, why: 'token 字段明文' },
     { re: /token=[A-Za-z0-9._-]{16,}/i, why: 'token= 查询串' },
   ]
   const hits: string[] = []
-  for (const t of texts) for (const p of patterns) if (p.re.test(t)) hits.push(p.why)
+  for (const raw of texts) {
+    const variants = [raw, unescapeForRedlineScan(raw)]
+    for (const t of variants) for (const p of patterns) if (p.re.test(t)) hits.push(p.why)
+  }
   return { ok: hits.length === 0, hits: [...new Set(hits)] }
 }

@@ -9,6 +9,7 @@
  */
 import type { LatLng } from './routeSimilarity'
 import { ringLengthM, startDirectionLabel, type LoopDirection } from './trackEditor'
+import { freePathShapeText, parseFreePathShape, usableFreePathShape, type FreePathShape } from './pathShape'
 // 「任务到底有没有下发线路」的判据只允许有一个来源（纯函数，见 `utils/mp/taskShape.ts`）
 import { routeRequirementOf } from './taskShape'
 
@@ -82,6 +83,20 @@ export interface TrackRouteEntry {
   editCount?: number
   /** 🆕 最近几次编辑留痕（最新在前，最多 `TRACK_HISTORY_MAX` 条） */
   history?: TrackEditLog[]
+  /**
+   * 🆕 **非官方路径形状**（2026-09-22「非官方路径绘制」）：圈型（闭合曲线）/ 直线型（折返）。
+   *
+   * ## 向后兼容（**老条目必须零变化**）
+   * 这是一个**可选**字段：**没有它**（老条目、以及用户在「外圈/内圈」模式里描的跑道）
+   * ⇒ 语义**就是**现在的"内外双圈"模式（`outer`/`inner` + `laneNo` + `start`），跑图链路一个字都不变。
+   * 读到**不认识的形状**（坏数据/未来版本）时 `normalizeLibrary` 会把它**丢掉**（当作没有），
+   * 于是自动退回双圈模式 —— **绝不猜、绝不抛**。
+   *
+   * ⚠️ 有 `freeShape` 时，`outer`/`inner` 只是"给旧版本应用看的占位几何"（至少各 3 点，
+   *    让老版本仍能画出个大概）；**跑图以 `freeShape` 为准**（见 `composables/demo/runner.ts`）。
+   * ⚠️ 它**永远不是官方线路几何**：只进本机路线库，绝不进提交报文（`lineId` 仍是本机键名）。
+   */
+  freeShape?: FreePathShape
 }
 
 const isPts = (v: unknown): v is LatLng[] =>
@@ -105,6 +120,23 @@ export const hasValidRings = <T extends { outer?: unknown; inner?: unknown }>(
   v.outer.length >= MIN_RING_POINTS &&
   isPts(v.inner) &&
   v.inner.length >= MIN_RING_POINTS
+
+/**
+ * **一条路线能不能进库**（唯一判据，`normalizeLibrary` 与 `useTrackLibrary.upsert` 共用）。
+ *
+ * 两条**并列**的合法路径（2026-09-22 起）：
+ *   ① **内外双圈**：内外圈各 ≥ `MIN_RING_POINTS`（老口径，逐字不变）；
+ *   ② **非官方路径形状**（`freeShape`）：圈型（≥2 个不重合的点）/ 直线型（A≠B）。
+ *      为什么算合法：跑图链路对这类条目**直接用 `freeShape`**，根本不需要内外圈
+ *      （旧版本应用读到它会看到占位几何，仍能画出个大概）。
+ *
+ * ⚠️ 为什么不能"只要点数够"：`isPts([])` 对空数组恒真（`every` 在空数组上返回 true），
+ *    审计 S1 就是被这个坑到 —— 空圈被收进库、跑图时又因点数不足回落到官方模板。
+ *    `freeShape` 分支必须同时要求 `usableFreePathShape`（长度 > 0），否则同样是"坏几何"。
+ */
+export function isValidTrackEntry(v: { outer?: unknown; inner?: unknown; freeShape?: unknown }): boolean {
+  return hasValidRings(v) || usableFreePathShape(parseFreePathShape(v.freeShape))
+}
 
 /** 自定义路名长度上限（按**码点**算，别把 emoji 截成半个 —— 用户可能起「🏃 西操场」这种名字） */
 export const TRACK_NAME_MAX = 24
@@ -232,23 +264,29 @@ export function prependHistory(prev: TrackEditLog[] | undefined, log: TrackEditL
  *   · 新格式数组 → 原样（补齐缺失字段）
  *   · 旧格式对象映射 → 转成数组（创建日期标空、版本用 fallback）
  *   · 其它垃圾 → 丢掉
+ *
+ * 🆕 2026-09-22：放行条件从"必须内外圈够点"改为 `isValidTrackEntry`（多认一种 `freeShape`）；
+ *    同时把 `freeShape` 归一化（不认识的形状一律丢掉 ⇒ 退回双圈模式，**老条目零变化**）。
  */
 export function normalizeLibrary(raw: unknown, fallbackVersion = '未知'): TrackRouteEntry[] {
   const out: TrackRouteEntry[] = []
   const push = (lineId: string, v: Record<string, unknown>) => {
-    // ⚠️ 审计 S1：不是"元素形状对"就收 —— 必须**内外圈都够 3 点**（空圈曾能被收进来）
-    if (!lineId || !hasValidRings(v)) return
+    // ⚠️ 审计 S1：不是"元素形状对"就收 —— 必须内外圈都够 3 点，**或**带一个可用的非官方形状
+    if (!lineId || !isValidTrackEntry(v)) return
     // 用户自定义名：归一化后为空（历史数据里可能存过空白）⇒ 归一化成 undefined，一律走 `resolveEntryName` 兜底
     const customName = sanitizeLineName(v.customName)
     const start = normalizeTrackStart(v.start)
     const history = normalizeHistory(v.history)
     const editCount = Number(v.editCount)
+    /** 非官方形状：不认识的形状/坏数据一律 undefined（= 退回双圈模式），绝不抛 */
+    const freeShape = parseFreePathShape(v.freeShape)
     out.push({
       lineId,
       lineName: String(v.lineName ?? lineId),
       ...(customName ? { customName } : {}),
-      outer: v.outer,
-      inner: v.inner,
+      // 带 freeShape 的条目可能**没有**内外圈（自由路径不需要双圈）⇒ 如实留空数组，不伪造几何
+      outer: isPts(v.outer) ? v.outer : [],
+      inner: isPts(v.inner) ? v.inner : [],
       createdAt: String(v.createdAt ?? ''),
       appVersion: String(v.appVersion ?? fallbackVersion),
       laneCount: typeof v.laneCount === 'number' && v.laneCount > 0 ? v.laneCount : undefined,
@@ -260,6 +298,8 @@ export function normalizeLibrary(raw: unknown, fallbackVersion = '未知'): Trac
       updatedAppVersion: String(v.updatedAppVersion ?? ''),
       editCount: Number.isFinite(editCount) && editCount > 0 ? Math.round(editCount) : undefined,
       ...(history.length ? { history } : {}),
+      // 🆕 只有**合法**的非官方形状才写回；没有这个字段的老条目**不会**多出这个键
+      ...(freeShape ? { freeShape } : {}),
     })
   }
   if (Array.isArray(raw)) {
@@ -326,7 +366,13 @@ export function entrySummaryText(e: TrackRouteEntry): string {
     : ''
   const edits = e.editCount ? ` · 编辑 ${e.editCount} 次` : ''
   const start = e.start ? ` · 起跑点 ${startSummaryText(e)}` : ''
-  return `外圈 ${e.outer.length} 点 · 内圈 ${e.inner.length} 点 · ${lane} · ${when} · ${version}${renamed}${start}${saved}${edits}`
+  /**
+   * 🆕 非官方路径形状（2026-09-22）：有它就在摘要最前面说明"这条是圈型/直线型"。
+   * ⚠️ 没有它时**一个字都不加**（老条目/双圈条目的摘要逐字不变 —— 既有验证脚本按它断言）。
+   */
+  const free = freePathShapeText(e.freeShape)
+  const freePrefix = free ? `${free} · ` : ''
+  return `${freePrefix}外圈 ${e.outer.length} 点 · 内圈 ${e.inner.length} 点 · ${lane} · ${when} · ${version}${renamed}${start}${saved}${edits}`
 }
 
 /**
@@ -342,6 +388,12 @@ export function entryDetailRows(e: TrackRouteEntry): { label: string; value: str
     { label: '最近保存时间', value: e.updatedAt ? formatLocalDateTime(e.updatedAt) : '未记录（旧数据）' },
     { label: '最近保存版本', value: versionText(e.updatedAppVersion) },
     { label: '编辑次数', value: e.editCount ? `${e.editCount} 次` : '未记录（旧数据）' },
+    // 🆕 非官方路径（2026-09-22）：没有这个形状时如实写"双圈模式（旧口径）"，
+    //    有就写清是圈型还是直线型（跑图以它为准，内外圈只是占位几何）
+    {
+      label: '非官方路径【测试】',
+      value: freePathShapeText(e.freeShape) ?? '没有（用内外双圈生成，老条目即此）',
+    },
     { label: '内外圈点数', value: `外圈 ${e.outer.length} 点 · 内圈 ${e.inner.length} 点` },
     { label: '外圈周长', value: e.outer.length >= 3 ? `${Math.round(ringLengthM(e.outer))} m` : '—' },
     {
@@ -372,6 +424,9 @@ export function historyLogText(log: TrackEditLog): string {
 /**
  * 一次**保存**的改动摘要（写进编辑历史的那句话，纯函数）。
  * 只说"存成了什么样"，不说"改了什么"——因为我们不存旧几何做 diff（那会让 localStorage 翻倍）。
+ *
+ * 🆕 2026-09-22：存的是**非官方路径形状**（圈型/直线型）时，摘要要说清"存的是形状"，
+ *    不能只报"外圈 3 点 / 内圈 3 点"（那是给旧版本看的占位几何，会让人以为存错了）。
  */
 export function saveSummaryText(input: {
   outer: LatLng[]
@@ -379,7 +434,10 @@ export function saveSummaryText(input: {
   laneNo?: number
   laneCount?: number
   start?: TrackStart | null
+  freeShape?: FreePathShape | null
 }): string {
+  const free = freePathShapeText(input.freeShape)
+  if (free) return `${free}${input.start ? ` · 起跑点 ${startSummaryText({ outer: input.outer, start: input.start })}` : ''}`
   const parts = [`外圈 ${input.outer.length} 点`, `内圈 ${input.inner.length} 点`]
   if (input.laneNo) parts.push(`第 ${input.laneNo} 道${input.laneCount ? `/${input.laneCount}` : ''}`)
   parts.push(input.start ? `起跑点 ${startSummaryText({ outer: input.outer, start: input.start })}` : '起跑点未设置')

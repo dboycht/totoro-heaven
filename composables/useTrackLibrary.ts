@@ -10,8 +10,10 @@
  *   lib.entries.value                // 列表（最新在前）
  */
 import type { LatLng } from '~/utils/mp/routeSimilarity'
+// 🆕 2026-09-22「非官方路径绘制」：本机条目可以存"圈型闭合曲线 / 直线型折返"（可选字段）
+import { parseFreePathShape, type FreePathShape } from '~/utils/mp/pathShape'
 import {
-  hasValidRings,
+  isValidTrackEntry,
   prependHistory,
   saveSummaryText,
   TRACK_LIBRARY_KEY,
@@ -99,6 +101,12 @@ export function useTrackLibrary() {
    *
    * 返回值：`undefined` = 被拒（内外圈不合法）；否则 `{ entry, persisted }`
    * （`persisted === false` = 只写进了内存、**没落盘**，调用方必须如实提示）。
+   *
+   * 🆕 2026-09-22「非官方路径绘制」：多一个可选的 `freeShape`（圈型闭合曲线 / 直线型折返）。
+   *   · `undefined` = 保持原样（老调用方不用改）；
+   *   · `null` = **明确清掉**（用户改回"内外圈"模式时要把形状删掉）；
+   *   · 合法形状 = 存进去（`outer`/`inner` 允许是占位几何 —— 跑图以 `freeShape` 为准）。
+   *   入参一律过 `parseFreePathShape` 归一化（不认识的形状当"没有"处理，绝不写坏数据进库）。
    */
   const upsert = (input: {
     lineId: string
@@ -109,18 +117,23 @@ export function useTrackLibrary() {
     laneCount?: number
     note?: string
     start?: TrackStart | null
+    freeShape?: FreePathShape | null
   }) => {
     /**
      * ⚠️ 2026-09-19 审计 S1 的**纵深防御**：即使界面判据被绕过（历史上就是 `ringCheck` 为 null
      * 让保存按钮没禁用），这里也**拒绝把不完整的圈写进库** —— 库里一旦有它，跑步页就会
      * 把它当"描过跑道"，而生成器会回落到官方模板（本版禁止）。
+     * 🆕 2026-09-22：放行条件换成 `isValidTrackEntry`（双圈够点 **或** 带一个可用的非官方形状）。
      */
-    if (!hasValidRings({ outer: input.outer, inner: input.inner })) return undefined
+    const freeShape = input.freeShape === undefined ? undefined : (parseFreePathShape(input.freeShape) ?? null)
+    if (!isValidTrackEntry({ outer: input.outer, inner: input.inner, freeShape })) return undefined
     const old = entries.value.find((e) => String(e.lineId) === String(input.lineId))
     const nowIso = new Date().toISOString()
     const version = String(appVersion.value ?? '未知')
     // `undefined` = 沿用旧值；`null` = 清掉（见上面注释）
     const start = input.start === undefined ? old?.start : (input.start ?? undefined)
+    // 🆕 非官方形状：同一个"undefined 沿用 / null 清掉"的口径
+    const keptFreeShape = freeShape === undefined ? old?.freeShape : (freeShape ?? undefined)
     const laneNo = input.laneNo ?? old?.laneNo
     const laneCount = input.laneCount ?? old?.laneCount
     const entry: TrackRouteEntry = {
@@ -137,13 +150,14 @@ export function useTrackLibrary() {
       laneNo,
       note: input.note ?? old?.note,
       ...(start ? { start } : {}),
+      ...(keptFreeShape ? { freeShape: keptFreeShape } : {}),
       updatedAt: nowIso,
       updatedAppVersion: version,
       editCount: (old?.editCount ?? 0) + 1,
       history: prependHistory(old?.history, {
         at: nowIso,
         appVersion: version,
-        summary: saveSummaryText({ outer: input.outer, inner: input.inner, laneNo, laneCount, start }),
+        summary: saveSummaryText({ outer: input.outer, inner: input.inner, laneNo, laneCount, start, freeShape: keptFreeShape ?? null }),
       }),
     }
     entries.value = [entry, ...entries.value.filter((e) => String(e.lineId) !== String(input.lineId))]
