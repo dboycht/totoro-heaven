@@ -4,11 +4,20 @@
  * ## 这是什么（用户原话）
  * > "主要的功能是绘制**非官方性路径**……用户可以选择**圈型**，或者**直线型**【直线型又有**折返性**】，
  * >  然后绘制那些路径。圈型的话就是**绘制一个闭合曲线**，然后就是这个曲线进行跑图"
+ * > 🆕 2026-09-22 用户澄清："我要的是**折线**，不是直线" ⇒ 第二类形状是**折线（polyline）**：
+ * >  用户点**多个点**（≥2，**可以拐弯**，例如 A→B→C→D），轨迹**沿这条折线来回跑**。
  *
  * 服务端**未下发线路**的任务（`routeRequirementOf(task).kind === 'free'`，如「研途健行」）
  * 只有一条本机跑道（`local:free`）。本模块让这条本机跑道**也能是"非官方形状"**：
- *   · `curve` = 用户在地图上点出来的**闭合曲线**（首尾自动闭合）⇒ 绕圈跑；
- *   · `line`  = 一条直路 A→B ⇒ **折返跑**（A→B→A→B…）。
+ *   · `curve`    = 用户在地图上点出来的**闭合曲线**（首尾自动闭合）⇒ 绕圈跑；
+ *   · `polyline` = **折线** A→B→…→Z（**不闭合**、可拐弯）⇒ **折返跑**（A→B→…→Z→…→B→A→…）。
+ *
+ * ## 向后兼容（**老数据是 `{ kind: 'line', from, to }`**）
+ * 首个版本只有"起点 + 终点"的直线型，磁盘上可能已经存着 `{kind:'line',from,to}`。
+ * 判据（可执行）：`parseFreePathShape()` **必须**把它读成**等价的 2 点折线**
+ * （`{kind:'polyline',points:[from,to]}`），**不许丢掉**；老条目"读→写一轮"后几何逐点不变
+ * （只是存储格式从 `line` 迁移成 `polyline`，见 `parseFreePathShape`）。
+ * 这样跑图链路（`freePathGeometry` / `runner`）与库层（`trackLibrary`）**都不必认识 `line`**。
  *
  * ## 三条口径（避免后人误改）
  *   ① **零依赖、纯函数**（只 relative-import 一个类型）：可离线单测，能直接被跑图链路消费；
@@ -20,9 +29,8 @@
  * ## 与生成器的接缝（重要）
  * `expandFreePathTrajectory()` 返回的是**路径本身的有序点列**（不是逐点 GPS 轨迹）：
  * 它交给 `generateCorridorRoute(geometry, …)` 当几何用，由后者按弧长推进、加抖动、算拟合度。
- * 生成器内部的**闭合判定**是"首尾点距离 < 30 m" ⇒ 本模块据此保证：
- *   · curve 展开后**首尾严格同点** ⇒ 判为闭合 ⇒ 按取模绕圈（多圈重合，符合"沿曲线跑圈"）；
- *   · line  展开后 A、B 相距 > 30 m 时首尾不同点 ⇒ 判为未闭合 ⇒ 生成器走**折返（ping-pong）**。
+ * 展开后的点列**首末同点**（curve 是闭合曲线本身；polyline 是"去 + 原路返回"回到起点）
+ * ⇒ 生成器判为闭合、按取模绕圈推进：对折线来说"绕一圈"正是"来回一趟"。
  * 详见 `expandFreePathTrajectory` 的注释。
  */
 
@@ -36,10 +44,13 @@ export type FreePathShape =
       points: LatLng[]
     }
   | {
-      /** 一条直路：A → B（折返跑按"一整趟"计，见 `lineLengthM`） */
-      kind: 'line'
-      from: LatLng
-      to: LatLng
+      /**
+       * 🆕 **折线（折返）**：用户依次点出的点，**不闭合**、**可以拐弯**（A→B→C→D…）。
+       * 轨迹=沿它来回跑（去 + 原路返回 = 一趟，见 `polylineShapeLengthM` / `planFreePathTrips`）。
+       * ⚠️ 老数据里的 `{kind:'line',from,to}` 由 `parseFreePathShape()` 读成**等价的 2 点折线**。
+       */
+      kind: 'polyline'
+      points: LatLng[]
     }
 
 /** 数值型坐标（本模块内部统一用它做算术） */
@@ -49,7 +60,7 @@ type N = { latitude: number; longitude: number }
 
 /** 闭合曲线的点数上限（localStorage 有 5 MB 量级上限；手点也不可能点到这么多，纯属防坏数据） */
 export const FREE_PATH_MAX_POINTS = 2000
-/** **一次完整折返（A→B→A）**的趟数上限（16000 → 最细 ≈ 每趟 0.2 m 才够 3.2 km，已远超手画精度） */
+/** **一趟完整折返（A→B→…→Z→…→B→A）**的趟数上限（16000 → 最细 ≈ 每趟 0.2 m 才够 3.2 km，已远超手画精度） */
 export const FREE_PATH_MAX_TRIPS = 16000
 /** 目标里程上限（km）—— 与自由跑上限同量级，纯粹用来兜住异常输入 */
 export const FREE_PATH_MAX_TARGET_KM = 100
@@ -63,10 +74,10 @@ export const FREE_PATH_MAX_TARGET_KM = 100
 export function usableFreePathShape(shape: FreePathShape | null | undefined): boolean {
   if (!shape || typeof shape !== 'object') return false
   if (shape.kind === 'curve') return Array.isArray(shape.points) && shape.points.length >= 2 && curveLengthM(shape) > 0
-  if (shape.kind === 'line') {
-    const s = shape.from
-    const e = shape.to
-    return isNumPoint(s) && isNumPoint(e) && distanceMeters(Number(s.latitude), Number(s.longitude), Number(e.latitude), Number(e.longitude)) > 0
+  /** 折线：**相邻重复点先去掉**（双击/手抖会在同一点点两下），剩 ≥2 点且总长 > 0 才算可用 */
+  if (shape.kind === 'polyline') {
+    const pts = dedupeAdjacent((Array.isArray(shape.points) ? shape.points : []).filter(isNumPoint).map(toN))
+    return pts.length >= 2 && polylineLengthM(pts, false) > 0
   }
   return false
 }
@@ -131,22 +142,20 @@ export function curveLengthM(shape: FreePathShape | null | undefined, closed = t
 }
 
 /**
- * **一条直路的长度（米）** —— 也就是**一趟折返的单程**。
+ * **一条折线的长度（米）—— 也就是"一趟折返的单程"**（`polylineLengthM(points, false)` 的形状级入口）。
  *
- * ⚠️ 语义说明：折返跑"跑一个来回"= 2 × 本值。本函数只回答"A 到 B 有多远"，
- *    "绕几趟"由 `planFreePathTrips` 算（它内部按 `2 × 单程` 计一趟）。
+ * ⚠️ 语义说明：折返跑"跑一个来回"= 2 × 本值。本函数只回答"沿这条折线走一遍有多远"，
+ *    "跑几趟"由 `planFreePathTrips` 算（它内部按 `2 × 单程` 计一趟）。
+ * ⚠️ 只认 `kind === 'polyline'`；老数据 `{kind:'line'}` **必须先过 `parseFreePathShape()`**（它会转成折线）。
  */
-export function lineLengthM(shape: FreePathShape | null | undefined): number {
-  if (!shape || typeof shape !== 'object' || shape.kind !== 'line') return 0
-  if (!isNumPoint(shape.from) || !isNumPoint(shape.to)) return 0
-  const a = toN(shape.from)
-  const b = toN(shape.to)
-  return distanceMeters(a.latitude, a.longitude, b.latitude, b.longitude)
+export function polylineShapeLengthM(shape: FreePathShape | null | undefined): number {
+  if (!shape || typeof shape !== 'object' || shape.kind !== 'polyline') return 0
+  return polylineLengthM(shape.points, false)
 }
 
-/** 一趟（curve = 一圈；line = 一去一回）的长度（米）—— `planFreePathTrips` 的分母 */
+/** 一趟（curve = 一圈；polyline = 一去一回）的长度（米）—— `planFreePathTrips` 的分母 */
 function perTripLengthM(shape: FreePathShape): number {
-  return shape.kind === 'curve' ? curveLengthM(shape, true) : lineLengthM(shape) * 2
+  return shape.kind === 'curve' ? curveLengthM(shape, true) : polylineShapeLengthM(shape) * 2
 }
 
 // ---------------------------------------------------------------- 趟数（**宁可多跑，不许少跑**）
@@ -200,7 +209,7 @@ function ceilNear(ratio: number): number {
 /** 计划结果（界面直接显示 `共 X 趟 · 合计约 Y km`） */
 export interface FreePathTripPlan {
   /**
-   * 绕几圈（curve）/ 折返几趟（line）；**恒为 ≥ 1 的整数**。
+   * 绕几圈（curve）/ 折返几趟（polyline）；**恒为 ≥ 1 的整数**。
    * ⚠️ `totalM` 与目标的关系**不是**严格的 `>=`：`ceilNear` 允许 ≤ **1e-5 相对量**的
    *    "恰好整除"容差（用来吞掉 km↔米 的换算噪声）⇒ 极端情况下可能比目标少几毫米。
    *    这个量级与"少跑一趟"（几十米起）差好几个数量级，不影响"宁可多跑"的口径。
@@ -208,8 +217,8 @@ export interface FreePathTripPlan {
   trips: number
   /**
    * 一趟的长度（米）：
-   *   · curve ⇒ 闭合曲线一圈的长度（= `curveLengthM(shape, true)`）；
-   *   · line  ⇒ **一去一回**的长度（= `2 × lineLengthM(shape)`）。
+   *   · curve    ⇒ 闭合曲线一圈的长度（= `curveLengthM(shape, true)`）；
+   *   · polyline ⇒ **一去一回**的长度（= `2 × polylineShapeLengthM(shape)`，即"单程 × 2"）。
    * `perTripM × trips = totalM`（展开后几何的弧长，正是生成器要跑的距离量级）。
    */
   perTripM: number
@@ -239,7 +248,7 @@ export function planFreePathTrips(
   targetKm: number,
   override?: unknown,
 ): FreePathTripPlan {
-  const perTripM = shape && typeof shape === 'object' && (shape.kind === 'curve' || shape.kind === 'line') ? perTripLengthM(shape) : 0
+  const perTripM = shape && typeof shape === 'object' && (shape.kind === 'curve' || shape.kind === 'polyline') ? perTripLengthM(shape) : 0
   const targetM0 = normalizeTargetKm(targetKm)
   /** 目标非法（缺省/0/负数/非数字）⇒ 用 3 km 兜底（与界面"默认 3.2 km"同一量级），并如实标注 */
   const fellBackTarget = targetM0 === null
@@ -273,12 +282,18 @@ export function planFreePathTrips(
  *   · `curve`：`p0 p1 … pn-1` 重复 `trips` 遍，且**收尾处补回 `p0`**
  *     （这样首末两点完全相同 ⇒ 生成器判为闭合 ⇒ 取模绕圈，多圈重合、不会"从末点瞬移回首点"）；
  *     ⚠️ 补点时**不让两个相同坐标相邻**（否则会多出一段 0 m 的段，生成器会把速度算成 0）；
- *   · `line` ：`A B A …` 共 `trips` 趟（每趟 = A→B→A）⇒ 相邻两段方向天然相反（这就是"折返"，
- *     可直接用"相邻段方向是否相反"来断言）。
+ *   · `polyline`（🆕 折线，用户澄清"我要的是折线，不是直线"）：一趟 = **去**（A,B,C,…,Z）
+ *     + **原路返回**（…,C,B,A）⇒ 展开成 `A B C … Z … C B A`，`trips` 趟首尾相接。
+ *     三条硬判据（有单测钉住）：
+ *       ⓐ **端点不重复放两遍** —— 去程末点 Z 与回程首点 Z 只出现一次（相邻同点一律跳过），
+ *          趟与趟之间的接缝（上一趟末点 A = 下一趟首点 A）同理；
+ *       ⓑ **方向反转要真实** —— 折返点前后两段方向必须相反（可直接断言"相邻段方向相反"）；
+ *       ⓒ 整个点列**首末同点**（回到起点）⇒ 生成器判闭合、按取模绕圈推进，
+ *          对折线来说"绕一圈"正是"来回一趟"（与 `planFreePathTrips` 的 `perTripM` 同源）。
  *
- * ⚠️ 已知边界（**如实记下，不藏**）：若直线短到 `单程 × 2 × trips ≤ 30 m`，生成器的
- *    "首尾 < 30 m 即闭合"判定会把展开结果当成闭合圈 —— 那时它在 A 点会重复一次（原地不动一步），
- *    整体仍是往复而非单向。这么短的直线（< 15 m）在真实场景里没有意义（GPS 抖动就有几米），
+ * ⚠️ 已知边界（**如实记下，不藏**）：若整条折线短到 `单程 × 2 × trips ≤ 30 m`，生成器的
+ *    "首尾 < 30 m 即闭合"判定会把展开结果当成闭合圈 —— 那时它在起点会重复一次（原地不动一步），
+ *    整体仍是往复而非单向。这么短的折线（< 15 m）在真实场景里没有意义（GPS 抖动就有几米），
  *    故不做特殊处理（否则反而要引入一条只有坏数据才走到的分支）。
  *
  * 趟数非法（`<= 0`）或形状不可用 ⇒ 返回 `[]`（调用方按"空几何"处理，绝不抛异常）。
@@ -303,12 +318,22 @@ export function expandFreePathTrajectory(shape: FreePathShape | null | undefined
     return out
   }
 
-  const a = toN(shape.from)
-  const b = toN(shape.to)
-  const out: N[] = [{ ...a }]
+  /** ===== 折线（折返）===== */
+  const pts = dedupeAdjacent(shape.points.map(toN))
+  if (pts.length < 2) return []
+  /**
+   * 一趟 = 去程全部点 + **原路返回**（去掉末端点后倒序）。
+   * 例：`[A,B,C,D]` ⇒ 去 `A,B,C,D` + 回 `C,B,A` ⇒ `A,B,C,D,C,B,A`
+   * （末端的 D 不重复、回到起点 A；相邻同点由下面统一的 `samePoint` 跳过 ⇒ 趟间接缝也不重复）
+   */
+  const back = pts.slice(0, -1).reverse()
+  const trip = [...pts, ...back]
+  const out: N[] = []
   for (let t = 0; t < n; t++) {
-    out.push({ ...b })
-    out.push({ ...a })
+    for (const p of trip) {
+      if (out.length && samePoint(out[out.length - 1]!, p)) continue
+      out.push({ ...p })
+    }
   }
   return out
 }
@@ -325,14 +350,14 @@ export function freePathShapeText(shape: FreePathShape | null | undefined): stri
   if (shape!.kind === 'curve') {
     return `圈型（闭合曲线）：${shape!.points.length} 个点 · 一圈 ${curveLengthM(shape, true).toFixed(1)} m`
   }
-  return `直线型（折返）：单程 ${lineLengthM(shape).toFixed(1)} m · 一来一回 ${(lineLengthM(shape) * 2).toFixed(1)} m`
+  const one = polylineShapeLengthM(shape)
+  return `折线型（折返）：${shape!.points.length} 个点 · 单程 ${one.toFixed(1)} m · 一来一回 ${(one * 2).toFixed(1)} m`
 }
 
 /** 形状的点数（列表摘要用；不可用返回 0） */
 export function freePathPointCount(shape: FreePathShape | null | undefined): number {
   if (!shape || typeof shape !== 'object') return 0
-  if (shape.kind === 'curve') return Array.isArray(shape.points) ? shape.points.length : 0
-  if (shape.kind === 'line') return 2
+  if (shape.kind === 'curve' || shape.kind === 'polyline') return Array.isArray(shape.points) ? shape.points.length : 0
   return 0
 }
 
@@ -344,6 +369,10 @@ export function freePathPointCount(shape: FreePathShape | null | undefined): num
  *     （含义＝"这条记录没有非官方形状"，退回双圈模式）；**绝不抛异常、绝不猜**；
  *   · 坐标统一转成 `number`（字符串坐标写回 JSON 会变成字符串，比较/算术都要先 Number）；
  *   · 点数/趟数一律按上限截断 ⇒ 坏数据不会把 localStorage 撑爆。
+ *
+ * 🆕 **向后兼容（老 `{kind:'line',from,to}` ⇒ 2 点折线）**：首个版本只有"起点+终点"的直线型，
+ *    磁盘上可能已存着它。判据：读成 `{kind:'polyline',points:[from,to]}`（**等价几何**，绝不丢数据），
+ *    于是"读→写一轮"后存储格式迁移成 `polyline`、几何逐点不变；跑图/库层也不必认识 `line`。
  */
 export function parseFreePathShape(raw: unknown): FreePathShape | undefined {
   if (!raw || typeof raw !== 'object') return undefined
@@ -354,9 +383,16 @@ export function parseFreePathShape(raw: unknown): FreePathShape | undefined {
     const shape: FreePathShape = { kind: 'curve', points: pts }
     return usableFreePathShape(shape) ? shape : undefined
   }
+  if (v.kind === 'polyline') {
+    const list = Array.isArray(v.points) ? v.points : []
+    const pts = dedupeAdjacent(list.filter(isNumPoint).map(toN)).slice(0, FREE_PATH_MAX_POINTS)
+    const shape: FreePathShape = { kind: 'polyline', points: pts }
+    return usableFreePathShape(shape) ? shape : undefined
+  }
+  /** ⭐ 老格式：一条直线 A→B ⇒ **等价的 2 点折线**（老条目照旧能读、能跑，写回时迁移成 polyline） */
   if (v.kind === 'line') {
     if (!isNumPoint(v.from) || !isNumPoint(v.to)) return undefined
-    const shape: FreePathShape = { kind: 'line', from: toN(v.from), to: toN(v.to) }
+    const shape: FreePathShape = { kind: 'polyline', points: [toN(v.from), toN(v.to)] }
     return usableFreePathShape(shape) ? shape : undefined
   }
   return undefined
@@ -364,12 +400,11 @@ export function parseFreePathShape(raw: unknown): FreePathShape | undefined {
 
 /**
  * 形状上的**顶点**（供界面画线、定位取范围、给库里的形状取点用）：
- * curve ⇒ 用户点出的那些点（不补收盘点）；line ⇒ `[from, to]`；不可用 ⇒ `[]`。
+ * curve / polyline ⇒ 用户点出的那些点（curve 不补收盘点、polyline 不补任何点）；不可用 ⇒ `[]`。
  */
 export function freePathPoints(shape: FreePathShape | null | undefined): { latitude: number; longitude: number }[] {
   if (!usableFreePathShape(shape)) return []
-  if (shape!.kind === 'curve') return dedupeAdjacent(shape!.points.map(toN))
-  return [toN(shape!.from), toN(shape!.to)]
+  return dedupeAdjacent(shape!.points.map(toN))
 }
 
 /**
@@ -383,19 +418,15 @@ export function freePathPoints(shape: FreePathShape | null | undefined): { latit
  *     `entries` 整体写回 localStorage ⇒ **连同 `freeShape` 一起被永久删掉**。
  * 补到 ≥3 点就能让旧版**收下**这条记录（哪怕它画出来的是一条粗糙的线，也好过丢掉用户画的路径）。
  *
- * 判据（可执行）：返回数组长度 **≥ 3**，且**每个点都落在原形状上**（line 就是 A、中点、B；
- * curve 少于 3 点时补中间点），坐标一律 `number`。形状不可用 ⇒ `[]`（调用方如实报错）。
+ * 判据（可执行）：返回数组长度 **≥ 3**，且**每个点都落在原形状上**
+ * （2 点折线/老直线型 = A、中点、B；≥3 点的折线或曲线原样返回），坐标一律 `number`。
+ * 形状不可用 ⇒ `[]`（调用方如实报错）。
  */
 export function freeShapePlaceholderRing(shape: FreePathShape | null | undefined): { latitude: number; longitude: number }[] {
   if (!usableFreePathShape(shape)) return []
-  if (shape!.kind === 'line') {
-    const a = toN(shape!.from)
-    const b = toN(shape!.to)
-    return [a, { latitude: (a.latitude + b.latitude) / 2, longitude: (a.longitude + b.longitude) / 2 }, b]
-  }
   const ring = dedupeAdjacent(shape!.points.map(toN))
   if (ring.length >= 3) return ring
-  /** 2 点（= 一条往返线）：中间补一个点凑够 3 个 */
+  /** 2 点（= 一条往返线 / 老直线型）：中间补一个点凑够 3 个 */
   const a = ring[0]!
   const b = ring[ring.length - 1]!
   return [a, { latitude: (a.latitude + b.latitude) / 2, longitude: (a.longitude + b.longitude) / 2 }, b]

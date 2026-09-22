@@ -20,14 +20,16 @@ const curve = (n = 4) => ({
   kind: 'curve' as const,
   points: Array.from({ length: n }, (_, i) => pt(31.37 + i * 0.0004, 119.48 + i * 0.0004)),
 })
-const line = { kind: 'line' as const, from: pt(31.37, 119.48), to: pt(31.372, 119.482) }
+const line = { kind: 'polyline' as const, points: [pt(31.37, 119.48), pt(31.372, 119.482)] }
+/** 🆕 会拐弯的折线（3 点）：保存报文对"多点折线"同样要成立 */
+const bent = { kind: 'polyline' as const, points: [pt(31.37, 119.48), pt(31.371, 119.48), pt(31.371, 119.483)] }
 
 /** `composables/useTrackLibrary.ts` 的 `upsert` 对 start 的合并口径（**照抄一行**，用于回归断言） */
 const mergeStart = (input: { start?: unknown }, old?: { start?: { offsetM: number } }) =>
   input.start === undefined ? old?.start : ((input.start ?? undefined) as { offsetM: number } | undefined)
 
 test('⭐ B1：保存形状的报文里 `start` 必须是**显式 null**（不许"不传" ⇒ 沿用旧起跑点）', () => {
-  for (const shape of [curve(), line]) {
+  for (const shape of [curve(), line, bent]) {
     const payload = buildFreeShapeSave({ shape, lineId: 'local:free', lineName: '本机跑道（本任务未下发线路）' })
     assert.ok(payload, '可用形状必须构造出报文')
     assert.equal('start' in payload, true, '必须**显式带上** start 字段')
@@ -53,7 +55,7 @@ test('⭐ B1：按 upsert 的口径合并后，**旧的 offsetM 不许留下来*
   assert.equal(mergeStart(after, old), undefined)
 })
 
-test('B3：占位几何各 ≥3 点、且一律 number 坐标；直线型是 A/中点/B', () => {
+test('B3：占位几何各 ≥3 点、且一律 number 坐标；2 点折线是 A/中点/B，多点折线原样', () => {
   const curvePayload = buildFreeShapeSave({ shape: curve(4), lineId: 'local:free', lineName: 'x' })!
   assert.ok(curvePayload.outer.length >= 3 && curvePayload.inner.length >= 3, `outer=${curvePayload.outer.length} inner=${curvePayload.inner.length}`)
   for (const p of [...curvePayload.outer, ...curvePayload.inner]) {
@@ -61,9 +63,13 @@ test('B3：占位几何各 ≥3 点、且一律 number 坐标；直线型是 A/�
     assert.equal(typeof p.longitude, 'number')
   }
   const linePayload = buildFreeShapeSave({ shape: line, lineId: 'local:free', lineName: 'x' })!
-  assert.equal(linePayload.outer.length, 3, '直线型占位 = A / 中点 / B')
+  assert.equal(linePayload.outer.length, 3, '2 点折线的占位 = A / 中点 / B')
   assert.deepEqual(linePayload.outer[1], { latitude: (31.37 + 31.372) / 2, longitude: (119.48 + 119.482) / 2 })
   assert.notEqual(linePayload.outer, linePayload.inner, 'outer / inner 必须是两份数组（避免调用方就地改到另一份）')
+  /** 🆕 会拐弯的折线：**≥3 点就原样拿去当占位**（每个点都真的在折线上，旧版画出来仍是这条折线） */
+  const bentPayload = buildFreeShapeSave({ shape: bent, lineId: 'local:free', lineName: 'x' })!
+  assert.deepEqual(bentPayload.outer, bent.points)
+  assert.ok(bentPayload.outer.length >= 3)
 })
 
 test('不传 laneNo / laneCount（那是「跑道编辑」双圈的事，本页不碰）', () => {
@@ -73,7 +79,15 @@ test('不传 laneNo / laneCount（那是「跑道编辑」双圈的事，本页�
 })
 
 test('形状不可用 ⇒ null（调用方如实报"还存不了"），绝不产出坏报文', () => {
-  for (const bad of [null, undefined, { kind: 'curve', points: [pt(31.37, 119.48)] }, { kind: 'line', from: pt(31.37, 119.48), to: pt(31.37, 119.48) }]) {
+  for (const bad of [
+    null,
+    undefined,
+    { kind: 'curve', points: [pt(31.37, 119.48)] },
+    { kind: 'polyline', points: [pt(31.37, 119.48)] },
+    { kind: 'polyline', points: [pt(31.37, 119.48), pt(31.37, 119.48)] },
+    /** ⚠️ 老格式**必须先进 `parseFreePathShape()`**：直接塞进来会被当"不可用"挡下（这里就是在钉这条边界） */
+    { kind: 'line', from: pt(31.37, 119.48), to: pt(31.372, 119.482) },
+  ]) {
     assert.equal(buildFreeShapeSave({ shape: bad as never, lineId: 'local:free', lineName: 'x' }), null, JSON.stringify(bad))
   }
 })

@@ -23,8 +23,9 @@ import {
   curveLengthM,
   freePathPoints,
   freeShapePlaceholderRing,
-  lineLengthM,
+  parseFreePathShape,
   planFreePathTrips,
+  polylineShapeLengthM,
   type FreePathShape,
 } from '../../utils/mp/pathShape.ts'
 import {
@@ -53,7 +54,15 @@ const QUAD: FreePathShape = {
   kind: 'curve',
   points: [atM(0, 0), atM(300, 0), atM(300, 200), atM(0, 200)],
 }
-const LINE: FreePathShape = { kind: 'line', from: atM(0, 0), to: atM(0, 300) }
+/** 折线（2 点 = 老"直线型"的等价形状；用户澄清后统一叫 polyline） */
+const LINE: FreePathShape = { kind: 'polyline', points: [atM(0, 0), atM(0, 300)] }
+/**
+ * 🆕 **会拐弯的折线**（3 点：北 300 m → 东 200 m）—— 用于验证"点更多也照样走同一条几何链路"：
+ * 起跑点不做旋转、一趟 = 单程 × 2、占位几何落在折线上。
+ */
+const BENT: FreePathShape = { kind: 'polyline', points: [atM(0, 0), atM(0, 300), atM(200, 300)] }
+/** ⭐ 老格式（磁盘上已有的 `{kind:'line',from,to}`）：解析后必须与 `LINE` 逐值等价 */
+const LEGACY_LINE = { kind: 'line', from: atM(0, 0), to: atM(0, 300) }
 
 /**
  * **"用户画的圈"到几何的最大偏离（米）**—— B1 的核心判据。
@@ -209,7 +218,7 @@ test('B2：直线型 1 趟几何仍能跑出"来回"（相邻段方向相反）'
   const d0 = dirAt(0)
   const d1 = dirAt(1)
   assert.ok(d0.x * d1.x + d0.y * d1.y < -0.99, '第 1 段与第 2 段必须反向（折返）')
-  assert.ok(lineLengthM(LINE) > 0 && curveLengthM(TRIANGLE, true) > 0, '长度读数健全')
+  assert.ok(polylineShapeLengthM(LINE) > 0 && curveLengthM(TRIANGLE, true) > 0, '长度读数健全')
   assert.ok(distanceMeters(a.latitude, a.longitude, b.latitude, b.longitude) > 0)
 })
 
@@ -218,6 +227,7 @@ test('B2：直线型 1 趟几何仍能跑出"来回"（相邻段方向相反）'
 test('B3：占位几何 ≥3 点，且每个点都落在原形状上（旧版按"内外圈各 ≥3 点"判合法）', () => {
   const cases: FreePathShape[] = [
     LINE,
+    BENT,
     TRIANGLE,
     QUAD,
     // 2 点的"圈型"（= 一条往返线）：也必须补到 3 点
@@ -237,13 +247,14 @@ test('B3：占位几何 ≥3 点，且每个点都落在原形状上（旧版按
       `${shape.kind}：旧版 hasValidRings 必须收下这条记录（否则它会连 freeShape 一起写没）`,
     )
     // 点必须落在原形状上（不能凭空造出一条离谱的几何给旧版画）
-    const dev = shape.kind === 'line' ? maxDeviationFromUserRing(placeholder, { kind: 'curve', points: [shape.from, shape.to] }) : maxDeviationFromUserRing(placeholder, shape)
+    const dev = maxDeviationFromUserRing(placeholder, shape)
     assert.ok(dev < 0.05, `${shape.kind}：占位点必须落在原形状上（偏离 ${dev.toFixed(3)} m）`)
   }
 })
 
 test('B3：形状不可用 ⇒ 占位几何为空（调用方会如实报错，不伪造几何）', () => {
-  assert.deepEqual(freeShapePlaceholderRing({ kind: 'line', from: atM(0, 0), to: atM(0, 0) }), [])
+  assert.deepEqual(freeShapePlaceholderRing({ kind: 'polyline', points: [atM(0, 0), atM(0, 0)] }), [])
+  assert.deepEqual(freeShapePlaceholderRing({ kind: 'polyline', points: [atM(0, 0)] }), [])
   assert.deepEqual(freeShapePlaceholderRing({ kind: 'curve', points: [atM(0, 0)] }), [])
   assert.deepEqual(freeShapePlaceholderRing(null), [])
   assert.deepEqual(freeShapePlaceholderRing(undefined), [])
@@ -253,5 +264,28 @@ test('resolveFreePathGeometry：形状不可用 ⇒ null（调用方按"没有�
   assert.equal(resolveFreePathGeometry(null), null)
   assert.equal(resolveFreePathGeometry(undefined), null)
   assert.equal(resolveFreePathGeometry({ kind: 'curve', points: [{ ...atM(0, 0) }] }), null)
-  assert.equal(resolveFreePathGeometry({ kind: 'line', from: atM(0, 0), to: atM(0, 0) }), null)
+  assert.equal(resolveFreePathGeometry({ kind: 'polyline', points: [atM(0, 0), atM(0, 0)] }), null)
+})
+
+test('⭐ 老 `{kind:\'line\'}` 经 parseFreePathShape 之后，几何装配与本模块**逐值一致**（向后兼容）', () => {
+  const parsed = parseFreePathShape(LEGACY_LINE)
+  assert.ok(parsed && parsed.kind === 'polyline', '老格式必须读成折线')
+  const a = resolveFreePathGeometry(parsed, null)
+  const b = resolveFreePathGeometry(LINE, null)
+  assert.ok(a && b)
+  assert.deepEqual(a!.geometry, b!.geometry, '展开几何逐点一致')
+  assert.equal(a!.lapLengthM, b!.lapLengthM, '一圈/一趟长度一致')
+  assert.equal(a!.smooth, b!.smooth, '圆角开关一致')
+})
+
+test('🆕 会拐弯的折线：几何装配不做起跑点旋转（与 2 点折线同一口径），一趟 = 单程 × 2', () => {
+  const resolved = resolveFreePathGeometry(BENT, { offsetM: 25, direction: 'reverse' })
+  assert.ok(resolved)
+  const plan = planFreePathTrips(BENT, 1)
+  const one = polylineShapeLengthM(BENT)
+  assert.ok(one > 0)
+  assert.equal(plan.perTripM, one * 2, '一趟 = 单程 × 2（折线也一样）')
+  /** 传了 start 也不旋转（折线没有"沿弧长旋转"的语义）⇒ 几何与不传 start 时逐点相同 */
+  const plain = resolveFreePathGeometry(BENT, null)
+  assert.deepEqual(resolved!.geometry, plain!.geometry, '折线忽略起跑点（与直线型同口径）')
 })

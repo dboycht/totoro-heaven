@@ -24,7 +24,12 @@ const pt = (lat: number, lng: number) => ({ latitude: lat, longitude: lng })
 const ring = (n: number) => Array.from({ length: n }, (_, i) => pt(31.9 + i * 0.0001, 118.7 + i * 0.0001))
 
 const curve: FreePathShape = { kind: 'curve', points: [pt(31.37, 119.48), pt(31.371, 119.48), pt(31.371, 119.481), pt(31.37, 119.481)] }
-const line: FreePathShape = { kind: 'line', from: pt(31.37, 119.48), to: pt(31.372, 119.48) }
+/** 折线（2 点 = 老"直线型"的等价形状；用户澄清后统一叫 polyline） */
+const line: FreePathShape = { kind: 'polyline', points: [pt(31.37, 119.48), pt(31.372, 119.48)] }
+/** 🆕 会拐弯的折线（3 点） */
+const bent: FreePathShape = { kind: 'polyline', points: [pt(31.37, 119.48), pt(31.371, 119.48), pt(31.371, 119.482)] }
+/** ⭐ 老格式（磁盘上已有的 `{kind:'line',from,to}`）：库层读进来必须被迁移成折线且不丢数据 */
+const legacyLineRaw = { kind: 'line', from: pt(31.37, 119.48), to: pt(31.372, 119.48) }
 
 test('isValidTrackEntry：双圈够点 **或** 带一个可用的非官方形状 ⇒ 都算合法', () => {
   // ① 老口径（双圈）逐字不变
@@ -33,29 +38,52 @@ test('isValidTrackEntry：双圈够点 **或** 带一个可用的非官方形状
   assert.equal(isValidTrackEntry({ outer: [], inner: [] }), false)
   // ② 非官方形状（自由路径不需要双圈）⇒ 合法
   assert.equal(isValidTrackEntry({ outer: [], inner: [], freeShape: curve }), true, '圈型可以没有内外圈')
-  assert.equal(isValidTrackEntry({ outer: [], inner: [], freeShape: line }), true, '直线型可以没有内外圈')
+  assert.equal(isValidTrackEntry({ outer: [], inner: [], freeShape: line }), true, '折线型可以没有内外圈')
+  assert.equal(isValidTrackEntry({ outer: [], inner: [], freeShape: bent }), true, '会拐弯的折线也可以没有内外圈')
   // ③ 坏形状不能放行（否则又是"库里存着跑不了的几何"）
   assert.equal(isValidTrackEntry({ outer: [], inner: [], freeShape: { kind: 'circle', r: 3 } }), false)
-  assert.equal(isValidTrackEntry({ outer: [], inner: [], freeShape: { kind: 'line', from: pt(1, 2), to: pt(1, 2) } }), false, '两点重合的直线不可用')
+  assert.equal(isValidTrackEntry({ outer: [], inner: [], freeShape: { kind: 'polyline', points: [pt(1, 2), pt(1, 2)] } }), false, '两点重合的折线不可用')
+  assert.equal(isValidTrackEntry({ outer: [], inner: [], freeShape: { kind: 'polyline', points: [pt(1, 2)] } }), false, '单点折线不可用')
   assert.equal(isValidTrackEntry({ outer: [], inner: [], freeShape: { kind: 'curve', points: [pt(1, 2)] } }), false, '单点曲线不可用')
+  // ④ ⭐ 老格式也要照旧合法（parse 会把它读成等价的 2 点折线）
+  assert.equal(isValidTrackEntry({ outer: [], inner: [], freeShape: legacyLineRaw }), true, '老 {kind:line} 条目仍然合法（向后兼容）')
+  assert.equal(isValidTrackEntry({ outer: [], inner: [], freeShape: { kind: 'line', from: pt(1, 2), to: pt(1, 2) } }), false, '老格式里两点重合的仍然不可用')
 })
 
-test('normalizeLibrary：**存→读往返**（圈型/直线型）逐值一致', () => {
+test('normalizeLibrary：**存→读往返**（圈型/折线型）逐值一致', () => {
   const raw = [
     { lineId: 'local:free', lineName: '本机跑道', outer: [], inner: [], freeShape: curve, createdAt: '2026-09-22T00:00:00.000Z' },
-    { lineId: 'L-line', lineName: '直线', outer: ring(4), inner: ring(4), freeShape: line, createdAt: '2026-09-22T00:00:00.000Z' },
+    { lineId: 'L-line', lineName: '折线', outer: ring(4), inner: ring(4), freeShape: line, createdAt: '2026-09-22T00:00:00.000Z' },
+    { lineId: 'L-bent', lineName: '折线（拐弯）', outer: ring(4), inner: ring(4), freeShape: bent, createdAt: '2026-09-22T00:00:00.000Z' },
   ]
   const out = normalizeLibrary(raw, '1.2.5')
-  assert.equal(out.length, 2)
-  const [a, b] = out as [TrackRouteEntry, TrackRouteEntry]
+  assert.equal(out.length, 3)
+  const [a, b, c] = out as [TrackRouteEntry, TrackRouteEntry, TrackRouteEntry]
   assert.deepEqual(a.freeShape, curve, '圈型形状原样读回（坐标已收敛成 number）')
   assert.equal(a.outer.length, 0, '没有内外圈就如实为空数组，不伪造几何')
   assert.deepEqual(b.freeShape, line)
+  assert.deepEqual(c.freeShape, bent, '多点折线（拐弯）原样读回')
   assert.equal(b.outer.length, 4, '同时有双圈与形状时，两者都保留（形状优先用于跑图）')
   // 再过一遍 JSON（模拟 localStorage 往返）也必须一致
   const again = normalizeLibrary(JSON.parse(JSON.stringify(out)), '1.2.5')
   assert.deepEqual(again[0]!.freeShape, curve)
   assert.deepEqual(again[1]!.freeShape, line)
+  assert.deepEqual(again[2]!.freeShape, bent)
+})
+
+test('⭐⭐ **向后兼容**：老 `{kind:\'line\'}` 条目读进来 = 等价的 2 点折线（读→写一轮不丢数据）', () => {
+  const out = normalizeLibrary(
+    [{ lineId: 'local:free', lineName: '本机跑道', outer: [], inner: [], freeShape: legacyLineRaw, createdAt: '2026-09-22T00:00:00.000Z' }],
+    '1.2.5',
+  )
+  assert.equal(out.length, 1, '老条目不许被丢掉')
+  assert.deepEqual(out[0]!.freeShape, { kind: 'polyline', points: [pt(31.37, 119.48), pt(31.372, 119.48)] }, '读成等价的 2 点折线')
+  /** 摘要（界面可见的那句话）现在说的是"折线型"，且点数/长度口径不变 */
+  assert.match(entrySummaryText(out[0]!), /折线型（折返）：2 个点/)
+  /** 再写一轮（= 保存时 upsert 写回的就是这份数据）后仍然稳定 */
+  const again = normalizeLibrary(JSON.parse(JSON.stringify(out)), '1.2.5')
+  assert.deepEqual(again[0]!.freeShape, out[0]!.freeShape)
+  assert.deepEqual(entryDetailRows(again[0]!).find((r) => r.label.includes('非官方路径'))?.value, entryDetailRows(out[0]!).find((r) => r.label.includes('非官方路径'))?.value)
 })
 
 test('normalizeLibrary：**老条目（没有 freeShape）零变化** —— 不多出这个键、校验口径不变', () => {
@@ -99,7 +127,9 @@ test('saveSummaryText：存的是非官方形状时，摘要说的是形状（�
   assert.match(s, /圈型（闭合曲线）/)
   assert.doesNotMatch(s, /外圈 0 点/)
   const s2 = saveSummaryText({ outer: ring(4), inner: ring(4), laneNo: 3, laneCount: 6, freeShape: line })
-  assert.match(s2, /直线型（折返）/)
+  assert.match(s2, /折线型（折返）/)
+  const s3 = saveSummaryText({ outer: ring(4), inner: ring(4), laneNo: 3, laneCount: 6, freeShape: bent })
+  assert.match(s3, /折线型（折返）：3 个点/)
   // 没有形状时逐字保持老口径
   assert.match(saveSummaryText({ outer: ring(4), inner: ring(4), laneNo: 3, laneCount: 6 }), /^外圈 4 点 · 内圈 4 点 · 第 3 道\/6 · 起跑点未设置$/)
 })

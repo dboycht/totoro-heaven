@@ -30,9 +30,10 @@ import {
   curveLengthM,
   freePathPoints,
   freePathShapeText,
-  lineLengthM,
   normalizeFreePathTrips,
+  parseFreePathShape,
   planFreePathTrips,
+  polylineShapeLengthM,
   usableFreePathShape,
   type FreePathShape,
 } from '~/utils/mp/pathShape'
@@ -238,7 +239,7 @@ const onUp = (e: MouseEvent) => {
   const wasDragging = dragging
   dragging = false
   if (!wasDragging || moved) return
-  /** 单击（没拖动）= **画非官方路径**：圈型点点 / 直线型点起点与终点 */
+  /** 单击（没拖动）= **画非官方路径**：圈型与折线型都是"逐点添加" */
   onFreeMapClick(toLatLng(e.offsetX, e.offsetY))
 }
 const zoomBy = (d: number) => {
@@ -257,12 +258,14 @@ const zoomBy = (d: number) => {
  *   · `freeMode` 非空 = 正在画这条路径，地图单击一律走 `onFreeMapClick`（本页没有别的编辑语义）；
  *   · 几何与趟数的算法全部在 `utils/mp/pathShape.ts`（纯函数、有单测），**界面不自己算**。
  */
-const freeMode = ref<'off' | 'curve' | 'line'>('off')
+const freeMode = ref<'off' | 'curve' | 'polyline'>('off')
 /** 圈型草稿点（**不重复存收盘点** —— 闭合由算法统一补，界面只负责"点了几笔"） */
 const draftFreePoints = ref<N[]>([])
-/** 直线型草稿的两端（`lineFrom` = 起点，点第二下就是终点） */
-const draftLineFrom = ref<N | null>(null)
-const draftLineTo = ref<N | null>(null)
+/**
+ * 🆕 **折线型草稿点**（2026-09-22 用户澄清："我要的是折线，不是直线"）：**逐点添加**、**不闭合**、可拐弯。
+ * 一趟 = 沿它去 + 原路返回（算法在 `expandFreePathTrajectory` 里展开，界面不自己拼）。
+ */
+const draftPolyPoints = ref<N[]>([])
 /** 目标里程（km，用于"自动算趟数"）—— 默认 3.2，与既有轨迹预览的口径一致 */
 const freeTargetKm = ref(3.2)
 /**
@@ -277,12 +280,8 @@ const draftFreeShape = computed<FreePathShape | null>(() => {
   if (freeMode.value === 'curve') {
     return draftFreePoints.value.length >= 2 ? { kind: 'curve', points: draftFreePoints.value.map((p) => ({ ...p })) } : null
   }
-  if (freeMode.value === 'line' && draftLineFrom.value && draftLineTo.value) {
-    return {
-      kind: 'line',
-      from: { latitude: draftLineFrom.value.latitude, longitude: draftLineFrom.value.longitude },
-      to: { latitude: draftLineTo.value.latitude, longitude: draftLineTo.value.longitude },
-    }
+  if (freeMode.value === 'polyline') {
+    return draftPolyPoints.value.length >= 2 ? { kind: 'polyline', points: draftPolyPoints.value.map((p) => ({ ...p })) } : null
   }
   return null
 })
@@ -291,12 +290,12 @@ const draftFreeUsable = computed(() => usableFreePathShape(draftFreeShape.value)
 /**
  * 草稿**是不是空的**（一个点都没有）—— 「撤销上一个点」的禁用判据（审计 B6）。
  *
- * ⚠️ 不能拿 `draftFreeShape` 当判据：圈型要 2 个点才构成形状 ⇒ 只点了 1 个点时按钮是灰的，
+ * ⚠️ 不能拿 `draftFreeShape` 当判据：形状至少要 2 个点才成立 ⇒ 只点了 1 个点时按钮是灰的，
  *    用户**撤不掉自己刚点错的那一笔**（"撤销"恰恰是那时最需要按的按钮）。
  */
 const freeDraftEmpty = computed(() => {
   if (freeMode.value === 'curve') return draftFreePoints.value.length === 0
-  if (freeMode.value === 'line') return !draftLineFrom.value && !draftLineTo.value
+  if (freeMode.value === 'polyline') return draftPolyPoints.value.length === 0
   return true
 })
 /** 趟数计划（自动/手填都在这里算，界面只渲染它的结果） */
@@ -318,21 +317,22 @@ const freeStatusText = computed(() => {
     const n = draftFreePoints.value.length
     if (n === 0) return '还没开始：在地图上依次点出边缘的几个点（至少 2 个；点满 3 个才是真正的圈），算法会自动把首尾闭合起来'
     if (n === 1) return '已点 1 个点：再点至少 1 个点才能成为一条路径（只有 2 个点 = 一条往返线）'
-    if (n === 2) return '已点 2 个点：已闭合成一条"往返线"（等于直线型折返）。想画圈就再点几个点'
+    if (n === 2) return '已点 2 个点：已闭合成一条"往返线"（等于折线型折返）。想画圈就再点几个点'
     return `已点 ${n} 个点，已闭合成曲线（算法自动补上"最后一点 → 第一点"这一段）`
   }
-  if (freeMode.value === 'line') {
-    if (!draftLineFrom.value) return '还没开始：在地图上点出这条直路的起点'
-    if (!draftLineTo.value) return '已选起点：再点一下终点（A→B，之后按折返跑）'
-    return '已选好起点与终点（A→B，来回跑）'
+  if (freeMode.value === 'polyline') {
+    const n = draftPolyPoints.value.length
+    if (n === 0) return '还没开始：在地图上依次点出这条折线的点（至少 2 个；每多点一个就多一个拐弯）'
+    if (n === 1) return '已点 1 个点：再点至少 1 个点才能成为一条折线（两点就是一条来回的直路）'
+    return `已点 ${n} 个点：已连成折线（不闭合），轨迹会沿它来回跑 —— 去 + 原路返回 = 一趟`
   }
   return ''
 })
 
-/** 地图上要画的非官方路径（闭合曲线按闭合画，直线型就是一条线段） */
+/** 地图上要画的非官方路径（圈型按闭合画；折线型是**不闭合**的折线） */
 const freeShapePath = computed<N[]>(() => {
   if (freeMode.value === 'curve') return draftFreePoints.value
-  if (freeMode.value === 'line' && draftLineFrom.value && draftLineTo.value) return [draftLineFrom.value, draftLineTo.value]
+  if (freeMode.value === 'polyline') return draftPolyPoints.value
   return []
 })
 
@@ -376,7 +376,7 @@ const freeTrajectory = computed<N[]>(() => {
 })
 
 /** 切到/切出某个形状（`off` = 没在画） */
-const setFreeMode = (m: 'off' | 'curve' | 'line') => {
+const setFreeMode = (m: 'off' | 'curve' | 'polyline') => {
   freeMode.value = m
 }
 /**
@@ -388,27 +388,22 @@ const setFreeMode = (m: 'off' | 'curve' | 'line') => {
  *   · `'off'`（没在画）不属于任何按钮 ⇒ 两个按钮都显示未选中，正是我们要的。
  * 这里统一收口：`null` / `'off'` 都是"退出绘制"。
  */
-const freeModeToggle = computed<'curve' | 'line' | null>({
+const freeModeToggle = computed<'curve' | 'polyline' | null>({
   get: () => (freeMode.value === 'off' ? null : freeMode.value),
-  set: (v) => setFreeMode(v === 'curve' || v === 'line' ? v : 'off'),
+  set: (v) => setFreeMode(v === 'curve' || v === 'polyline' ? v : 'off'),
 })
-/** 撤销上一个点（圈型 = 弹掉最后一笔；直线型 = 先清终点、再清起点） */
+/** 撤销上一个点（两种形状一样：都是"弹掉刚点的那一笔"） */
 const undoFreePoint = () => {
-  if (freeMode.value === 'curve') {
-    draftFreePoints.value = draftFreePoints.value.slice(0, -1)
+  if (freeMode.value === 'polyline') {
+    draftPolyPoints.value = draftPolyPoints.value.slice(0, -1)
     return
   }
-  if (draftLineTo.value) {
-    draftLineTo.value = null
-    return
-  }
-  draftLineFrom.value = null
+  draftFreePoints.value = draftFreePoints.value.slice(0, -1)
 }
 /** 清空重画 */
 const clearFreeShape = () => {
   draftFreePoints.value = []
-  draftLineFrom.value = null
-  draftLineTo.value = null
+  draftPolyPoints.value = []
   showSnackbar('已清空非官方路径，可以重新画')
 }
 
@@ -524,32 +519,29 @@ const onFreeMapClick = (p: N) => {
     draftFreePoints.value = [...draftFreePoints.value, p]
     return
   }
-  if (freeMode.value !== 'line') return
-  if (!draftLineFrom.value) {
-    draftLineFrom.value = p
+  if (freeMode.value !== 'polyline') return
+  /**
+   * 折线型：**逐点添加**（可以拐弯）。
+   * ⚠️ 与上一个点太近（< 1 m）就直接拒绝并说明 —— 双击/手抖会在同一点点两下，
+   *    那种"0 m 的段"没有意义（算法里也会被 `dedupeAdjacent` 去掉，这里先如实告诉用户）。
+   */
+  const last = draftPolyPoints.value[draftPolyPoints.value.length - 1]
+  if (last && distanceMeters(last.latitude, last.longitude, p.latitude, p.longitude) < 1) {
+    showSnackbar('这个点与上一个点太近了（不足 1 m），请在地图上离远一些再点', 'warning')
     return
   }
-  if (!draftLineTo.value) {
-    if (distanceMeters(draftLineFrom.value.latitude, draftLineFrom.value.longitude, p.latitude, p.longitude) < 1) {
-      showSnackbar('起点与终点太近了（不足 1 m），请在地图上离起点远一些的地方点终点', 'warning')
-      return
-    }
-    draftLineTo.value = p
-    return
-  }
-  // 两端都已选：再点一下就改**离点击处更近的那一端**（和大多数地图工具的直觉一致）
-  const dFrom = distanceMeters(draftLineFrom.value.latitude, draftLineFrom.value.longitude, p.latitude, p.longitude)
-  const dTo = distanceMeters(draftLineTo.value.latitude, draftLineTo.value.longitude, p.latitude, p.longitude)
-  if (dFrom <= dTo) draftLineFrom.value = p
-  else draftLineTo.value = p
+  draftPolyPoints.value = [...draftPolyPoints.value, p]
 }
 
-/** 从库里载入某条记录的形状时，把它填进草稿（没有就清空草稿、停在"先选形状"） */
-const loadFreeDraft = (raw: FreePathShape | null | undefined) => {
-  const shape = usableFreePathShape(raw) ? (raw as FreePathShape) : null
+/**
+ * 从库里载入某条记录的形状时，把它填进草稿（没有就清空草稿、停在"先选形状"）。
+ * ⚠️ 一律先过 `parseFreePathShape()`：**老记录里的 `{kind:'line',from,to}` 会被读成等价的 2 点折线**
+ *    （向后兼容的唯一入口），于是本页只会看到 `curve` / `polyline` 两种形状。
+ */
+const loadFreeDraft = (raw: unknown) => {
+  const shape = parseFreePathShape(raw)
   draftFreePoints.value = []
-  draftLineFrom.value = null
-  draftLineTo.value = null
+  draftPolyPoints.value = []
   freeTripsInput.value = null
   if (!shape) {
     freeMode.value = 'off'
@@ -559,9 +551,8 @@ const loadFreeDraft = (raw: FreePathShape | null | undefined) => {
     freeMode.value = 'curve'
     draftFreePoints.value = shape.points.map(num)
   } else {
-    freeMode.value = 'line'
-    draftLineFrom.value = num(shape.from)
-    draftLineTo.value = num(shape.to)
+    freeMode.value = 'polyline'
+    draftPolyPoints.value = shape.points.map(num)
   }
 }
 /**
@@ -574,7 +565,7 @@ const loadFreeDraft = (raw: FreePathShape | null | undefined) => {
  * ⚠️ 2026-09-22（审计 B3）：占位几何**必须 ≥3 点**（`freeShapePlaceholderRing`）。
  *    1.2.4 及更早的版本按"内外圈各 ≥3 点"判合法 ⇒ 只放 2 点时旧版会认为这条记录不合法、
  *    列表里看不到它，而旧版**任何一次写操作**都会把"不含它"的整份 `entries` 写回 localStorage
- *    ⇒ **把用户画的非官方路径永久删掉**。补到 3 点（直线型是 A/中点/B）就能让旧版收下这条记录。
+ *    ⇒ **把用户画的非官方路径永久删掉**。补到 3 点（2 点的折线就是 A/中点/B）就能让旧版收下这条记录。
  *
  * ⭐ 2026-09-22（审计 B1，真 bug）：报文里**显式传 `start: null`** —— 形状变了，起跑点就失效。
  *    原先**没传** `start`，而 `upsert` 的口径是「`undefined` = 沿用旧值」⇒
@@ -593,7 +584,7 @@ const saveFreeShape = () => {
     lineName: String(localFreeLine.value?.lineName ?? entry.value?.lineName ?? LOCAL_FREE_LINE_NAME),
   })
   if (!payload) {
-    showSnackbar('还存不了非官方路径：至少 2 个不重合的点（圈型 3 点以上才是真正的圈），直线型要选好起点和终点', 'warning')
+    showSnackbar('还存不了非官方路径：至少 2 个不重合的点（圈型 3 点以上才是真正的圈；折线型多点几个就多几个拐弯）', 'warning')
     return
   }
   /** 这次保存会不会**真的清掉**一个原先存在的起跑点（提示里如实说，见 `startClearedNote`） */
@@ -652,8 +643,7 @@ const clearFreeShapeOnEntry = () => {
   }
   freeMode.value = 'off'
   draftFreePoints.value = []
-  draftLineFrom.value = null
-  draftLineTo.value = null
+  draftPolyPoints.value = []
   showSnackbar(
     `已删除「【测试】非官方路径」形状，这条记录改回内外双圈几何${saved.persisted ? '' : '（但本机存储写入失败，刷新后可能丢失）'}`,
     saved.persisted ? undefined : 'warning',
@@ -733,7 +723,7 @@ const pathOf = (pts: P[], close = false) => {
       </div>
       <div class="text-body-2 mt-1">
         本任务「服务端未下发线路」（runPointList 为空），所以跑步页没有官方路线可用 ——
-        你可以直接画一条<b>圈型闭合曲线</b>绕着跑，或者画一条<b>直线</b>来回折返跑。
+        你可以直接画一条<b>圈型闭合曲线</b>绕着跑，或者画一条<b>折线</b>（可以拐弯，如 A→B→C→D）来回折返跑。
         画完保存进本机路线库（键名仍是 <code>local:free</code>），跑步页就会用这条几何开跑。
         <b>它不是官方线路</b>，只存在这台电脑上，也不会进提交报文。
       </div>
@@ -793,7 +783,7 @@ const pathOf = (pts: P[], close = false) => {
                   opacity="0.9"
                 />
                 <!--
-                  🆕 非官方路径（2026-09-22）：**洋红 = 你画的那条形状本身**（圈型闭合曲线 / 直线 A→B）
+                  🆕 非官方路径（2026-09-22）：**洋红 = 你画的那条形状本身**（圈型闭合曲线 / 折线 A→B→C…）
                   ⚠️ 圈型用 `pathOf(..., true)` 闭合画 —— 用户点完最后一个点就该看到"已经连上了"，
                      而不是等保存后才发现自己画的其实是条开口折线。
                 -->
@@ -841,10 +831,10 @@ const pathOf = (pts: P[], close = false) => {
           <v-card-text class="text-caption text-medium-emphasis">
             拖动=平移地图　单击=<b>{{
               freeMode === 'curve'
-                ? '在当前位置加一个非官方路径的点'
-                : freeMode === 'line'
-                  ? '依次点出这条直路的起点与终点'
-                  : '先在右侧选一个形状（圈型 / 直线型）'
+                ? '在当前位置加一个非官方路径的点（首尾会自动闭合）'
+                : freeMode === 'polyline'
+                  ? '在当前位置加一个折线点（逐个点出来，可以拐弯）'
+                  : '先在右侧选一个形状（圈型 / 折线型）'
             }}</b>　画好的点<b>不可拖动</b>：要改就「撤销上一个点」或「清空重画」
             <template v-if="myPos">
               <br />蓝点=你在这里（半透明圆 = 浏览器给的精度范围 ±{{ myPos.accuracyM > 0 ? Math.round(myPos.accuracyM) : '?' }} m）
@@ -894,12 +884,16 @@ const pathOf = (pts: P[], close = false) => {
               上次定位失败：{{ geoFailure.reason }}（{{ geoFailure.hint }}）
             </div>
 
-            <!-- ② 形状选择：圈型 / 直线型（再点一次已选中的那个 = 退出绘制） -->
+            <!-- ② 形状选择：圈型 / 折线型（再点一次已选中的那个 = 退出绘制） -->
             <div class="text-caption text-medium-emphasis mb-1">选择形状（再点一次 = 退出绘制）：</div>
             <v-btn-toggle v-model="freeModeToggle" density="compact" class="mb-3">
               <v-btn value="curve" size="small">圈型（闭合曲线）</v-btn>
-              <v-btn value="line" size="small">直线型（折返）</v-btn>
+              <v-btn value="polyline" size="small">折线型（折返）</v-btn>
             </v-btn-toggle>
+            <div class="text-caption text-medium-emphasis mb-3">
+              圈型 = 绕圈跑；<b>折线型</b> = 在地图上<b>逐个点出多个点</b>（可以拐弯，如 A→B→C→D），
+              轨迹沿这条折线<b>来回跑</b>（去 + 原路返回 = 一趟）。
+            </div>
 
             <template v-if="freeMode === 'off'">
               <div class="text-caption text-medium-emphasis mb-2">
@@ -920,14 +914,14 @@ const pathOf = (pts: P[], close = false) => {
                   预计长度（闭合曲线一圈）：<b>{{ draftFreeUsable ? curveLengthM(draftFreeShape, true).toFixed(1) + ' m' : '—' }}</b>
                 </template>
                 <template v-else>
-                  预计长度：单程 <b>{{ draftFreeUsable ? lineLengthM(draftFreeShape).toFixed(1) + ' m' : '—' }}</b>
-                  <template v-if="draftFreeUsable">　·　一来一回 <b>{{ (lineLengthM(draftFreeShape) * 2).toFixed(1) }} m</b></template>
+                  预计长度（折线单程）：<b>{{ draftFreeUsable ? polylineShapeLengthM(draftFreeShape).toFixed(1) + ' m' : '—' }}</b>
+                  <template v-if="draftFreeUsable">　·　一来一回 <b>{{ (polylineShapeLengthM(draftFreeShape) * 2).toFixed(1) }} m</b></template>
                 </template>
                 <!--
                   🆕 审计 B1：圈型**保留起跑点/绕向**，且用的是"保点旋转"（只插一个点、保留你点的每个折角，
-                  几何总长与形状都不变）；直线型没有"沿弧长旋转"的语义，如实忽略起跑点。
+                  几何总长与形状都不变）；折线型没有"沿弧长旋转"的语义，如实忽略起跑点。
                   ⭐ 但**保存形状会清掉起跑点**（形状变了，旧 offsetM 是按旧几何量的；见 saveFreeShape 的说明）：
-                     有起跑点时这里必须把这件事说出来，否则用户会以为起点还在原处。
+                    有起跑点时这里必须把这件事说出来，否则用户会以为起点还在原处。
                 -->
                 <template v-if="freeMode === 'curve'">
                   <br />
@@ -939,7 +933,11 @@ const pathOf = (pts: P[], close = false) => {
                   <template v-else>圈型当前没有起跑点设置（起跑点在「跑道编辑」里设）。</template>
                 </template>
                 <template v-else>
-                  <br />直线型忽略起跑点设置（一条线段没有弧长可旋转）。
+                  <br />折线型忽略起跑点设置（折线没有"沿弧长旋转"的语义）。
+                  <template v-if="hasStart">
+                    <br />⚠️ 另外：<b>保存这条形状会清掉起跑点</b>（形状变了，旧起跑点是按旧形状量的）——
+                    保存后请回「<b>跑道编辑</b>」按新形状重设。
+                  </template>
                 </template>
               </div>
               <v-btn block size="small" variant="tonal" class="mb-2" prepend-icon="mdi-undo" :disabled="freeDraftEmpty" @click="undoFreePoint">
@@ -949,7 +947,7 @@ const pathOf = (pts: P[], close = false) => {
                 清空重画
               </v-btn>
 
-              <!-- ④ 直线型的折返趟数（圈型也用它算"绕几圈"，口径一致） -->
+              <!-- ④ 折线型的折返趟数（圈型也用它算"绕几圈"，口径一致） -->
               <v-text-field
                 v-model.number="freeTargetKm"
                 type="number"
@@ -982,7 +980,7 @@ const pathOf = (pts: P[], close = false) => {
                 ⚠️ 手填的趟数不是有效正数，已按目标里程自动算（口径：<b>宁可多跑，绝不少跑</b>）。
               </div>
               <v-alert v-if="!draftFreeUsable" type="warning" variant="tonal" density="compact" class="mb-2">
-                还不能跑：{{ freeMode === 'curve' ? '圈型至少 2 个不重合的点（3 点以上才是真正的圈）' : '直线型要选好起点与终点（两点不能重合）' }}。
+                还不能跑：{{ freeMode === 'curve' ? '圈型至少 2 个不重合的点（3 点以上才是真正的圈）' : '折线型至少要 2 个不重合的点（多点几个就多几个拐弯）' }}。
               </v-alert>
               <!--
                 ⚠️ 2026-09-22（终检口径提示）：预览里程**固定 1.5 km**，与上面的"目标里程/趟数"无关
