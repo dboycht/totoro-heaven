@@ -50,6 +50,7 @@ export const VERSION_ADVICE = {
 } as const
 
 /** 版本列表（最新在前） */
+export const VERSION_ENTRIES: VersionEntry[] = [
   {
     version: '1.2.5',
     date: '2026-09-22',
@@ -62,7 +63,6 @@ export const VERSION_ADVICE = {
     ],
     note: '开发中的条目，不在版本页展示；对外推荐正式版为 1.2.4。',
   },
-export const VERSION_ENTRIES: VersionEntry[] = [
   {
     version: '1.2.4',
     /** ⚠️ 日期口径（规则 12）：以 Release 的 `published_at` 转本地日期为准；跨零点要同步改（有脚本核对）。 */
