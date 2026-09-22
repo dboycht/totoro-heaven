@@ -57,17 +57,26 @@ test('redactValue：按 key 掩码 + 嵌套对象递归 + 深度保护', () => {
   assert.equal(String(nested.a.b.token).startsWith('[masked'), true)
   assert.equal(nested.a.b.keep, 1)
   /**
-   * 深度保护：默认上限 2026-09-22 从 4 放宽到 **8**（`getSunRunSchoolList` 的 `body[0].schoolName`
-   * 在第 4 层，默认 4 会把它变成 `[deep]` ⇒ 「全记录」只剩键名）。这里同时钉住两件事：
-   *   · 8 层以内**不**降级；超过 8 层仍然 `[deep]`（保护没被取消）；
-   *   · 显式传更小上限时旧行为仍在（可回退）。
+   * 深度保护：默认上限 **8**（`getSunRunSchoolList` 的 `body[0].schoolName` 在第 4 层，旧默认 4 会把它
+   * 变成标记 ⇒ 「全记录」只剩键名）。这里钉住三件事：
+   *   · 8 层以内**不**降级；
+   *   · 超过 8 层**换成"已脱敏"标记**（闸门复验后：**绝不再原样返回** —— 那会把"丢内容"变成"漏原文"）；
+   *   · 显式传更小上限时同样按标记处理（可回退）。
    */
   const deep8 = redactValue('', { a: { b: { c: { d: { e: { f: { g: 1 } } } } } } }) as Record<string, unknown>
-  assert.ok(!JSON.stringify(deep8).includes('[deep]'), '8 层以内不得降级（否则内容会被整段丢掉）')
+  assert.ok(!JSON.stringify(deep8).includes('层级过深'), '8 层以内不得降级（否则内容会被整段丢掉）')
   const deep12 = redactValue('', { a: { b: { c: { d: { e: { f: { g: { h: { i: { j: 1 } } } } } } } } } }) as Record<string, unknown>
-  assert.ok(JSON.stringify(deep12).includes('[deep]'), '超过上限仍要保护（不是取消限制）')
+  assert.ok(JSON.stringify(deep12).includes('层级过深'), '超过上限要换成"已脱敏"标记（不是取消限制，也不是原样返回）')
   const shallowCap = redactValue('', { a: { b: { c: { d: { e: 1 } } } } }, 0, [], 2) as Record<string, unknown>
-  assert.ok(JSON.stringify(shallowCap).includes('[deep]'), '显式传更小上限时，旧行为仍可用')
+  assert.ok(JSON.stringify(shallowCap).includes('层级过深'), '显式传更小上限时，同样按标记处理')
+  /**
+   * 🔴 闸门复验的必修：**11 层深处的 token/姓名绝不能原样落盘**。
+   * 老实现 `if (depth > maxDepth) return '[deep]'` 在最前面 ⇒ 整棵子树原样返回 ⇒ 漏原文（比丢内容更严重）。
+   */
+  const deepSecret = redactValue('', { l1: { l2: { l3: { l4: { l5: { l6: { l7: { l8: { l9: { l10: { l11: { token: TOKEN, studentName: '张小明' } } } } } } } } } } } }) as unknown
+  const deepText = JSON.stringify(deepSecret)
+  assert.ok(!deepText.includes(TOKEN), `11 层深处的 token 不得原样落盘：${deepText}`)
+  assert.ok(!deepText.includes('张小明'), `11 层深处的姓名不得原样落盘：${deepText}`)
 })
 
 test('summarizeUpstream：只取状态类字段（status/code/msg/header.bizCode）', () => {

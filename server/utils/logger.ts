@@ -94,6 +94,37 @@ export const logInfo = (cat: string, msg: string, data?: Record<string, unknown>
 export const logWarn = (cat: string, msg: string, data?: Record<string, unknown>) => logEvent('warn', cat, msg, data)
 export const logError = (cat: string, msg: string, data?: Record<string, unknown>) => logEvent('error', cat, msg, data)
 
+/**
+ * 🆕 2026-09-22（闸门复验第二轮）：写一条**已经渲染好**的日志行（整行 JSON 文本）。
+ *
+ * 为什么需要：代理的响应记录要按**整行字节**收敛（`convergeLogLine()`），而"整行"必须包含
+ * `{t,level,cat,msg}` 这层包装与时间戳 —— 只有调用方知道最终要写的文本，也只有它能**收敛后复检**。
+ * 老做法是"调用方收敛 → logger 再包一层 stringify"，等于**量错了对象**（复验实测最坏行 44,203 B）。
+ *
+ * 约定：`lineJson` 必须是**单行 JSON**（调用方已脱敏 + 已收敛）。目录、轮转、失败吞掉等行为与本文件一致。
+ */
+export function logRawLine(level: LogLevel, cat: string, lineJson: string): void {
+  try {
+    if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true })
+    appendFileSync(logFilePath(), `${lineJson}\n`, 'utf8')
+    const now = Date.now()
+    if (now - lastRotateAt >= ROTATE_INTERVAL_MS) {
+      lastRotateAt = now
+      try {
+        rotateOldLogs()
+      } catch {
+        /* 轮转失败不影响日志写入本身 */
+      }
+    }
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.log(`[${level.toUpperCase()}] [${cat}] ${lineJson.slice(0, 400)}`)
+    }
+  } catch {
+    /* 日志失败不影响业务 */
+  }
+}
+
 /** 读今天的日志尾部（行文本，供界面展示） */
 export function tailLog(lines = 200): { lines: string[]; dir: string; totalBytes: number } {
   try {

@@ -36,7 +36,16 @@
  * 上游偶发返回 HTML 错误页 / 纯文本报错（网关 502、鉴权拦截），**那几百个字符往往就是根因**；
  * 只记 `content-type` 等于把这些线索全丢掉。512 字符的上限保证它不会让日志失控。
  */
-import { PERSON_NAME_KEY_RE, REDACTED_MARK, SENSITIVE_KEYS, knownValuePairs, maskTokenLike, redactValue } from './logFormat'
+import {
+  REDACTED_MARK,
+  SENSITIVE_KEYS,
+  isPersonNameEntry,
+  knownValuePairs,
+  maskKeysPreservingUniqueness,
+  maskTokenLike,
+  redactFreeText,
+  redactValue,
+} from './logFormat'
 import { maskDigitRuns } from './diagnostics'
 
 /** 单条响应的**内容**上限（字节，UTF-8）；超出即瘦身/截断并如实标记 */
@@ -61,6 +70,11 @@ export const COORD_KEYS = new Set(['latitude', 'longitude', 'lat', 'lng', 'point
 
 /** `respShape.envelope` 里会照记的"信封标量"字段名（**值必须脱敏**，见 `summarizeRespShape`） */
 const ENVELOPE_SCALAR_KEYS = ['status', 'code', 'msg', 'message', 'total', 'success', 'timestamp', 'serverTime'] as const
+/**
+ * 信封标量最多记多少字符（第三轮复验 N7-2）：`msg = 30000` 那种超长文案会挤爆整行，
+ * 逼得收敛阶梯一路降到底、**连结构摘要都保不住**。截到 2000 字符后"状态/消息要点"仍在，摘要也能留下。
+ */
+const ENVELOPE_SCALAR_MAX_CHARS = 2000
 
 /**
  * 把「全记录」里的坐标字段剥掉（**导出时**按用户的「包含跑道/任务坐标」开关决定要不要调）。
@@ -129,17 +143,13 @@ export function redactForRecordWithStats(
    * 这种"把学号/姓名当键"的响应，键名在 `respBody` 与 `respShape.nested` **两处**原样落盘。
    * 判据：键名同样跑"token 样式 + 已知原值 + 数字兜底"，**只改文本、不合并键**（结构不变）。
    */
-  /** 字段名是否敏感（含"看起来就是人名"的键 —— 审计 B5） */
-  const isSensitiveKey = (k: string): boolean => PERSON_NAME_KEY_RE.test(k) || SENSITIVE_KEYS.test(k)
   /**
-   * 键名脱敏：**只改文本、不合并键**（结构不变）。
-   * ⚠️ "看起来就是人名"的键**换成固定占位**，不能只是把值掩掉 ——
-   * 审计 B5 的原话是"学号/姓名在 `respBody` 与 `respShape.nested` 两处原样"，
-   * 键名留着 `张小明` 本身就等于把姓名写进了包（实测：`{"张小明":"[masked len=8]"}` 仍然带着姓名）。
+   * 键名脱敏：**只改文本**；"看起来就是人名"的键换成占位符（判据见 `isPersonNameEntry()`，
+   * 三条同时成立才算：键像人名 + 不在业务白名单 + 值也像人名/是对象）。
    */
-  const maskKey = (k: string): string => {
+  const maskKey = (k: string, v?: unknown): string => {
     const s = String(k)
-    if (PERSON_NAME_KEY_RE.test(s)) return '[姓名已掩码]'
+    if (isPersonNameEntry(s, v)) return '[姓名已掩码]'
     let out = maskTokenLike(s)
     for (const p of known) out = out.split(p.raw).join(p.masked)
     return maskDigitRuns(out)
@@ -148,27 +158,41 @@ export function redactForRecordWithStats(
    * ④ 数字串兜底：**字符串与数字都要判**（审计 B4）。
    * 实测 `{"list":[2021101234,13812345678]}` 是 JSON **number**，只判 `typeof === 'string'` 会原样落盘。
    * 判据：8~18 位**整数**（无小数/无科学计数）才当学号/手机处理；其它数字原样（别把 3.14 掩了）。
+   *
+   * ⚠️ 键名一律走 `maskKeysPreservingUniqueness()`：**键的数量与唯一性绝不能变**
+   * （闸门复验：老判据把 15 个中文键全塌成一个占位符 ⇒ 落盘只剩 1 个键、内容静默丢失）。
    */
-  const maskDigits = (v: unknown): unknown => {
+  const maskDigits = (v: unknown, path = ''): unknown => {
     if (typeof v === 'string') return maskDigitRuns(v)
     if (typeof v === 'number' && Number.isInteger(v)) {
       const s = String(v)
       if (s.length >= 8 && s.length <= 18) return maskDigitRuns(s)
       return v
     }
-    if (Array.isArray(v)) return v.map(maskDigits)
+    if (Array.isArray(v)) return v.map((item, i) => maskDigits(item, `${path}[${i}]`))
     if (!isObj(v)) return v
+    const rawKeys = Object.keys(v)
+    const safeKeys = maskKeysPreservingUniqueness(rawKeys, (k) => maskKey(k, (v as Record<string, unknown>)[k]))
     const out: Record<string, unknown> = {}
-    for (const [k, val] of Object.entries(v)) out[maskKey(k)] = maskDigits(val)
+    rawKeys.forEach((k, i) => {
+      const safeKey = safeKeys[i]!
+      // ⚠️ 路径要传下去：`trimmedPaths` 要给"被裁数组"报**完整路径**（如 `data.records`），
+      //    第一版丢了 path ⇒ 记成顶层 `'[]'`，维护者看不出是哪个数组被裁（实测踩到）。
+      const childPath = path ? `${path}.${safeKey}` : safeKey
+      out[safeKey] = maskDigits((v as Record<string, unknown>)[k], childPath)
+    })
     return out
-  }
-  /**
+  }  /**
    * 脱敏主流程：**只做掩码，不做"字节瘦身"**（那是 `summarizeResponseBody()` 的阶段）。
    * 这里对超长数组的裁剪**必须留下"原共 N 项"**（而不是静默少给）——
    * 实测踩到：第一版静默裁到 20 项，于是"响应 300 条 → 日志 20 条"根本看不出来。
    */
   const walk = (v: unknown, path: string, depth: number): unknown => {
-    if (depth > maxDepth) return v
+    /**
+     * ⚠️ 闸门复验 B2（第二半）：超深度**不能原样返回** —— 那会把"丢内容"换成"漏原文"。
+     * 这里的收尾交给 `redactValue`（它保证**标量永远先脱敏**，超深度只把结构换成"已脱敏"标记）。
+     */
+    if (depth > maxDepth) return redactValue('', v, 0, known, maxDepth)
     if (Array.isArray(v)) {
       if (v.length > arrayCap) {
         droppedItems += v.length - arrayCap
@@ -179,24 +203,24 @@ export function redactForRecordWithStats(
       return v.map((item, i) => walk(item, `${path}[${i}]`, depth + 1))
     }
     if (isObj(v)) {
+      const rawKeys = Object.keys(v)
+      // 键名脱敏 + **键数量/唯一性不变**（闸门复验）
+      const safeKeys = maskKeysPreservingUniqueness(rawKeys, (k) => maskKey(k, (v as Record<string, unknown>)[k]))
       const out: Record<string, unknown> = {}
-      for (const [k, val] of Object.entries(v)) {
-        const safeKey = maskKey(k)
+      rawKeys.forEach((rawKey, i) => {
+        const safeKey = safeKeys[i]!
         const childPath = path ? `${path}.${safeKey}` : safeKey
+        const val = (v as Record<string, unknown>)[rawKey]
         // 字段名敏感 ⇒ 交给 redactValue 统一掩码（口径单一来源）
-        out[safeKey] = isSensitiveKey(safeKey) ? redactValue(safeKey, val, 0, known, maxDepth) : walk(val, childPath, depth + 1)
-      }
+        out[safeKey] = SENSITIVE_KEYS.test(rawKey) || isPersonNameEntry(rawKey, val) ? redactValue(rawKey, val, 0, known, maxDepth) : walk(val, childPath, depth + 1)
+      })
       return out
     }
-    if (typeof v === 'string') {
-      let s = v
-      for (const p of known) s = s.split(p.raw).join(p.masked)
-      return maskTokenLike(s)
-    }
+    if (typeof v === 'string') return redactFreeText(v, known)
     return v
   }
   // ① 字段名脱敏/② 已知原值/③ token 样式 都在 walk 里；④ 数字兜底整体再走一遍（顺序与模块头一致）
-  const out = maskDigits(walk(value, '', 0))
+  const out = maskDigits(walk(value, '', 0), '')
   /**
    * 🔒 打上"**已经脱敏过**"的标记（非枚举 Symbol，不进 JSON）：`server/utils/logger.ts` 的
    * `redactObject()` 看到它就不再二次降深度（审计 B2：否则 `respBody` 在日志行根之下只剩 ~6 层，
@@ -226,8 +250,16 @@ export interface RespShape {
   keysMore?: number
   /** 嵌套 2~3 层的键名路径，如 `["data","data.mileage","sunrunTaskList[0].runPointList"]` */
   nested: string[]
+  /** 被 `nested` 上限截掉的条数（**要计数**：复验要求"不是静默少给"） */
+  nestedMore?: number
   /** 数组长度（**只记长度**）：路径 → 条数 */
   arrays: Record<string, number>
+  /**
+   * 🆕 被 `arrays` 上限截掉的条数（闸门复验第二轮的**阻断项**）：
+   * 老实现**对 `arrays` 完全没有上限** —— 实测 `{data:{40 个对象 × 40 个数组字段}}` 让 22,944 B 的响应
+   * 产出 **46,248 B 的 respShape**、整行 44,203 B（超上限 20%）；`3 层×40` 甚至到 2.3 MB。
+   */
+  arraysMore?: number
   /** 信封自身的标量（这几个是诊断最关心的状态码/消息，**不是**业务内容） */
   envelope: Record<string, unknown>
   [k: string]: unknown
@@ -239,6 +271,16 @@ export interface RespShapeOptions {
    * 嵌套层数上限（默认 **4** = 顶层 + 3 层嵌套）。
    * 为什么是 4 而不是 3：`data.runPointList[0].pointName` 这种"**数组元素里的键名**"要到第 4 层才走得到，
    * 而那正是最有用的一层（"每条线路里有哪些字段"）；只到 3 会把它漏掉（实测踩到）。
+   *
+   * ## 🔴 **深度的定义**（第四轮复验要求写清，避免参考实现差 1）
+   * 「深度」= **值在对象/数组循环中的位置**，从 **1** 起算：
+   *   · `walk(v, path, depth)` 由 `for (const key of Object.keys(v))` 调用 ⇒ **对象属性的值** depth = 父 + 1；
+   *   · 数组**自身**也按其所在位置计一层：`{data:{list:[…]}}` 里 `list` 这个**数组**的 depth = 2
+   *     （`data` 是 1，`list` 是 2），数组**元素**里对象的属性 depth = 3；
+   *   · 遍历门限是 `if (depth > maxDepth) return` ⇒ 默认 `maxDepth = 4` 时，
+   *     **depth ≤ 4 的值会被走到**（即"顶层 + 3 层嵌套"，或"数组在第 4 层时其元素属性也在第 4 层内"）。
+   * 换句话说：**数组由它在对象循环中的位置计深度**（不是"数组自身额外加一"）。
+   * 按"数组自身深度 ≤ 4"写的参考实现会比本实现**少看一层** —— 这是文档差异，不是行为差异。
    */
   maxDepth?: number
   /** `keys` / `nested` 各自最多列多少个（默认 40） */
@@ -261,18 +303,20 @@ export function summarizeRespShape(json: unknown, opts: RespShapeOptions = {}, k
   const maxDepth = opts.maxDepth ?? 4
   const maxKeys = opts.maxKeys ?? 40
   const maxArrayProbe = opts.maxArrayProbe ?? 2
-  /** 键名脱敏：结构不变，只把"像学号/token/人名 的键"掩掉（审计 B5 —— 学号/姓名可能被当成键） */
-  const maskKey = (k: string): string => {
+  /**
+   * 键名脱敏（与 `respBody` 同一判据）：人名键换成占位；**键数量与唯一性不变**
+   * （闸门复验：老判据把 15 个中文键全塌成一个 ⇒ 只剩 1 个键）。
+   */
+  const maskKey = (k: string, v?: unknown): string => {
     const s = String(k)
-    // 人名键换成固定占位（只掩值不够：键名本身就把姓名写进包了）
-    if (PERSON_NAME_KEY_RE.test(s)) return '[姓名已掩码]'
+    if (isPersonNameEntry(s, v)) return '[姓名已掩码]'
     let out = maskTokenLike(s)
     for (const p of known) out = out.split(p.raw).join(p.masked)
     return maskDigitRuns(out)
   }
-  /** 信封标量的值脱敏（自由文本走 `redactValue` + 数字兜底） */
+  /** 信封标量的值脱敏（自由文本走 `redactFreeText`：已知原值 + 自述人名兜底 + 凭证/数字掩码） */
   const maskScalar = (k: string, v: unknown): unknown => {
-    if (typeof v === 'string') return maskDigitRuns(String(redactValue(k, v, 0, known)))
+    if (typeof v === 'string') return redactFreeText(v, known)
     if (typeof v === 'number' && Number.isInteger(v)) {
       const s = String(v)
       return s.length >= 8 && s.length <= 18 ? maskDigitRuns(s) : v
@@ -283,13 +327,64 @@ export function summarizeRespShape(json: unknown, opts: RespShapeOptions = {}, k
     return { keys: [], nested: [], arrays: Array.isArray(json) ? { '[]': json.length } : {}, envelope: { kind: Array.isArray(json) ? 'array' : typeof json } }
   }
   const allKeys = Object.keys(json).sort() // **排序**：结构摘要要可 diff（同一响应每次落盘的键序一致）
-  const top = allKeys.slice(0, maxKeys).map(maskKey)
+  // 顶层键名同样**保唯一**（同一层里两个不同中文键掩码后撞车时补 `#n`）
+  const topKeys = maskKeysPreservingUniqueness(allKeys, (k) => maskKey(k, json[k]))
+  const top = topKeys.slice(0, maxKeys)
   const nested: string[] = []
   const arrays: Record<string, number> = {}
+  /**
+   * 🔴 `arrays` / `nested` 的**硬上限**（闸门复验第二轮阻断项）。
+   * 老实现只给 `nested` 限了 120 条、**`arrays` 一条都没限** ⇒ 40×40 的响应能产出 46 KB 的 respShape。
+   * 超出的条数记进 `arraysMore` / `nestedMore`（**如实计数**，不静默少给）。
+   * 路径字符串本身也可能很长（深嵌套），所以再加一条**路径文本总量**上限。
+   */
+  const entryCap = maxKeys * 3
+  const pathCharBudget = 4000
+  let nestedChars = 0
+  let arraysChars = 0
+  let arraysMore = 0
+  let nestedMore = 0
+  /**
+   * 🆕 被 `keyScanCap` 截掉的**对象键**总数（第三轮 N7 ②）：老实现对这些键**既不记也不数** ⇒
+   * 120 个对象的那一层只走前 40 个，其余 80 个对象里的数组**凭空消失**（既不在 `arrays` 也不在 `arraysMore`）。
+   * 现在如实累计（与顶层 `keysMore` **相加**，不覆盖）。
+   */
+  let keysMore = 0
+  /**
+   * 🔴 第三轮复验 N7 计数修正（三处都要：
+   *   ① **去重**：同一路径在"对象子键处"与"后续 walk"里会被**各记一次** ⇒ 实测 `arrays 91 + arraysMore 3018 = 3109`，
+   *      而真实数组数只有 1600（报多 ≈2×）。用 `countedPaths` 保证**一条路径只计一次**。
+   *   ② **被截断的对象层要计数**：每层 `Object.keys(v).slice(0, maxKeys)` 丢掉的那些键（及其子树里的数组）
+   *      原先**既不在 `arrays` 也不在 `arraysMore`** ⇒ 120 个对象的层只走 40 个，其余 80 个对象的 960 个数组凭空消失。
+   *      现在把"被截掉的键"计入 `keysMore`，并在超上限时**继续遍历**（只是不再新增记录）以保证计数准确。
+   *   ③ `arraysChars` 对同一路径**重复累加** ⇒ 4000 字符预算被吃 2×（40×40 只留 91 条，本可留 120）。
+   */
+  const countedArrayPaths = new Set<string>()
+  /** 记录（或计入 `arraysMore`）一个数组 —— **同一路径只计一次**（N7 ①） */
+  const accountArray = (p: string, len: number): void => {
+    const key = p || '[]'
+    if (countedArrayPaths.has(key)) return
+    countedArrayPaths.add(key)
+    if (Object.keys(arrays).length < entryCap && arraysChars + key.length <= pathCharBudget) {
+      arrays[key] = len
+      arraysChars += key.length // 只累加一次（去重后天然成立，N7 ③）
+    } else {
+      arraysMore++
+    }
+  }
+  /**
+   * 每层遍历的键数上限（**计数准确性与性能的折中**）。
+   * 复验 N7 ② 要求"被截断的对象层也要计数"：这里对**前 120 个键**照常遍历（计数 + 记录），
+   * 超出的部分计入 `keysMore`（**明确告知"还有多少键没看"**，而不是像老实现那样静默丢掉）。
+   * 为什么不是一个不漏：`walk()` 会进数组元素（每个元素算一层），对 40×40 这种形状"全键遍历"
+   * 会把开销从数千次推到数万次，而它对维护者的价值远低于代价。现在的契约是**可验证的一句话**：
+   * 「`arrays` + `arraysMore` = 在前 `maxKeys` 个键、前 `maxDepth` 层之内**实际遍历到的**数组总数」。
+   */
+  const keyScanCap = Math.max(maxKeys * 3, 120)
   const walk = (v: unknown, path: string, depth: number): void => {
     if (depth > maxDepth) return
     if (Array.isArray(v)) {
-      arrays[path || '[]'] = v.length
+      accountArray(path, v.length)
       const probe = Math.min(v.length, maxArrayProbe)
       for (let i = 0; i < probe; i++) {
         if (isObj(v[i])) walk(v[i], `${path}[${i}]`, depth + 1)
@@ -297,26 +392,55 @@ export function summarizeRespShape(json: unknown, opts: RespShapeOptions = {}, k
       return
     }
     if (!isObj(v)) return
-    for (const k of Object.keys(v).slice(0, maxKeys)) {
-      const safeKey = maskKey(k)
+    const allChildKeys = Object.keys(v)
+    const scanKeys = allChildKeys.slice(0, keyScanCap)
+    /** 连"看都没看"的键也要如实计数（否则那部分子树里的数组会凭空消失 —— N7 ②） */
+    if (allChildKeys.length > keyScanCap) keysMore += allChildKeys.length - keyScanCap
+    const childKeysSafe = maskKeysPreservingUniqueness(scanKeys, (k) => maskKey(k, (v as Record<string, unknown>)[k]))
+    scanKeys.forEach((k, ki) => {
+      const safeKey = childKeysSafe[ki]!
       const childPath = path ? `${path}.${safeKey}` : safeKey
-      const child = v[k]
-      if (nested.length < maxKeys * 3) nested.push(childPath)
-      if (Array.isArray(child)) arrays[childPath] = child.length
+      const child = (v as Record<string, unknown>)[k]
+      if (nested.length < entryCap && nestedChars + childPath.length <= pathCharBudget) {
+        nested.push(childPath)
+        nestedChars += childPath.length
+      } else {
+        nestedMore++
+      }
+      if (Array.isArray(child)) accountArray(childPath, child.length)
       walk(child, childPath, depth + 1)
-    }
+    })
   }
-  for (const k of top) {
-    const v = json[k]
-    if (isObj(v) || Array.isArray(v)) walk(v, k, 1)
-  }
+  // 顶层键：`top` 已经是"脱敏后（且保唯一）"的名字；取值要用**原始键**
+  allKeys.slice(0, maxKeys).forEach((rawKey) => {
+    const v = json[rawKey]
+    const safeKey = topKeys[allKeys.indexOf(rawKey)]!
+    if (isObj(v) || Array.isArray(v)) walk(v, safeKey, 1)
+  })
   /** 信封标量：**值和键名都脱敏**（审计 B3 —— 这里是自由文本，实测带学号） */
+  /**
+   * 🔴 超长信封标量要**就地截断**（第三轮复验 N7-2）：`msg = 30000 字符` 时，stage②/③ 仍带着
+   * 30 KB 的 `envelope`（以及 `upstream.msg`）⇒ 一路降到 stage⑤，**连 `respShape` 结构摘要一起丢**（整行只剩 230 B）。
+   * 现在 envelope 的每个标量都过 `truncate()`（2000 字符，超出注明），确保"至少保住结构摘要"。
+   */
   const envelope: Record<string, unknown> = {}
   for (const k of ENVELOPE_SCALAR_KEYS) {
     if (json[k] === undefined || json[k] === null || json[k] === '') continue
-    envelope[k] = maskScalar(k, json[k])
+    const masked = maskScalar(k, json[k])
+    envelope[k] = typeof masked === 'string' && masked.length > ENVELOPE_SCALAR_MAX_CHARS
+      ? `${masked.slice(0, ENVELOPE_SCALAR_MAX_CHARS)}…[信封标量已截断，原 ${masked.length} 字符]`
+      : masked
   }
-  return { keys: top, ...(allKeys.length > top.length ? { keysMore: allKeys.length - top.length } : {}), nested, arrays, envelope }
+  const keysMoreTotal = keysMore + Math.max(0, allKeys.length - top.length)
+  return {
+    keys: top,
+    ...(keysMoreTotal > 0 ? { keysMore: keysMoreTotal } : {}),
+    nested,
+    ...(nestedMore > 0 ? { nestedMore } : {}),
+    arrays,
+    ...(arraysMore > 0 ? { arraysMore } : {}),
+    envelope,
+  }
 }
 
 /**
@@ -401,7 +525,124 @@ export function unpackNote(json: unknown): UnpackNote {
   return { status: 'suspect', payloadKeys, envelopeField, hint }
 }
 
-/** `respBody` 的形状 */
+/**
+ * **整行收敛**（闸门复验第二轮阻断项的修法③）：把**完整的日志行**（含 `{t,level,cat,msg}` 包装）
+ * 压到 `maxBytes` 以内，**每降一档都重新量整行**（复检）。
+ *
+ * ## 为什么要有它（复验实测）
+ * 老逻辑只缩/删 `respBody`、**从不看 `respShape`**，而且 fallback 分支之后**不再复检整行**（set-and-forget）⇒
+ * 结果反而是"行里写着'已省略响应内容（结构摘要仍在）'、整行 44,203 B 超上限 20%"；
+ * `20 字中文键 40×40`（112,720 B 响应）⇒ 221,506 B 行；`3 层×40` ⇒ respShape 2.3 MB。
+ *
+ * ## 降级阶梯（每一步都**重新量整行**，不满足就继续降）
+ *   ① 原样 → ② `respBody` 缩成"已收缩"说明 → ③ `respShape` 降档（8 键 + 计数）→
+ *   ④ `respShape` 只留键数/数组数 → ⑤ 丢掉 `respBody`（**元数据行永远保留**：端点/耗时/状态码/解包标记）
+ * 返回最终**已序列化**的一行 JSON（调用方用 `logRawLine()` 直接写，不要再 stringify）。
+ */
+export function convergeLogLine(entry: { t: string; level: string; cat: string; msg: string; data: Record<string, unknown> }, maxBytes: number): { text: string; degraded: string[] } {
+  const degraded: string[] = []
+  const build = (data: Record<string, unknown>): string => JSON.stringify({ ...entry, data })
+  const size = (text: string): number => Buffer.byteLength(text, 'utf8')
+  const base = entry.data
+  let text = build(base)
+  if (size(text) <= maxBytes) return { text, degraded }
+
+  /**
+   * 🔴 第四轮：**任何截断档都要让 `respBody` 自报与实际落盘内容自洽**。
+   * 实测故障：`/msg30k` 落盘 `respBody.truncated=false, bytes=30091`，而实际存的是 500 字符截断版
+   * （内容里明明有「…[已截断，原 30000 字符]」）⇒ 维护者会以为完整。
+   * 判据（可执行）：以**序列化后的 `body`/`text` 实际字节**为准重算 `bytes`，并强制 `truncated=true`。
+   */
+  const reconcileRespBody = (rb: unknown): unknown => {
+    if (!isObj(rb)) return rb
+    const o = rb as Record<string, unknown>
+    const payload = o.body !== undefined ? o.body : o.text
+    const actual = payload === undefined ? 0 : byteLen(typeof payload === 'string' ? payload : (JSON.stringify(payload) ?? 'null'))
+    return { ...o, bytes: actual, truncated: true }
+  }
+  /**
+   * 🆕 ⓪ **先把"超长自由文本"截断**（第三轮复验 N7-2 的修法；第四轮补 `respBody` 记账自洽）：
+   * `msg = 30000 字符` 时，`upstream.msg` / `respShape.envelope.msg` 各带 30 KB
+   * ⇒ 老阶梯一路降到底（连 `respShape` 结构摘要一起丢，整行只剩 230 B）。
+   * 截到 1000 字符后重试一次 —— 这样**多数情况能保住结构摘要**（不必降到最后一档）。
+   */
+  const truncateDeep = (v: unknown, max = 1000): unknown => {
+    if (typeof v === 'string') return v.length > max ? `${v.slice(0, max)}…[已截断，原 ${v.length} 字符]` : v
+    if (Array.isArray(v)) return v.slice(0, 20).map((x) => truncateDeep(x, max))
+    if (isObj(v)) {
+      const o: Record<string, unknown> = {}
+      for (const [k, val] of Object.entries(v)) o[k] = truncateDeep(val, max)
+      return o
+    }
+    return v
+  }
+  const truncatedBody = reconcileRespBody(truncateDeep(base.respBody, 500))
+  text = build({ ...base, upstream: truncateDeep(base.upstream), respShape: truncateDeep(base.respShape), respBody: truncatedBody })
+  degraded.push('超长自由文本截断')
+  if (size(text) <= maxBytes) return { text, degraded }
+  // 之后的阶梯以"已截断版"为基准
+  const trimmed: Record<string, unknown> = { ...base, upstream: truncateDeep(base.upstream), respShape: truncateDeep(base.respShape), respBody: truncatedBody }
+
+  /** ① `respBody` 缩成一句"已收缩"的说明（内容由后面几档负责保住结构） */
+  if (isObj(trimmed.respBody)) {
+    const rb = trimmed.respBody as Record<string, unknown>
+    text = build({
+      ...trimmed,
+      respBody: { kind: 'text', originalBytes: Number(rb.originalBytes ?? 0), bytes: 0, truncated: true, note: `响应内容过大，已按整行上限 ${maxBytes} 字节收缩` },
+    })
+    degraded.push('respBody 缩预算')
+    if (size(text) <= maxBytes) return { text, degraded }
+  }
+  /** ② `respShape` 降档（只留 8 个键 + 计数） */
+  if (isObj(trimmed.respShape)) {
+    const sh = trimmed.respShape as Record<string, unknown>
+    const keys = Array.isArray(sh.keys) ? (sh.keys as unknown[]) : []
+    text = build({
+      ...trimmed,
+      respShape: {
+        keys: keys.slice(0, 8),
+        keysMore: Math.max(0, keys.length - 8) + (typeof sh.keysMore === 'number' ? sh.keysMore : 0),
+        arraysMore: typeof sh.arraysMore === 'number' ? sh.arraysMore : 0,
+        nestedMore: typeof sh.nestedMore === 'number' ? sh.nestedMore : 0,
+        envelope: sh.envelope ?? {},
+      },
+    })
+    degraded.push('respShape 降档')
+    if (size(text) <= maxBytes) return { text, degraded }
+  }
+  /** ③ `respShape` 只留"键数/数组数" */
+  if (isObj(trimmed.respShape)) {
+    const sh = trimmed.respShape as Record<string, unknown>
+    const keys = Array.isArray(sh.keys) ? (sh.keys as unknown[]) : []
+    text = build({
+      ...trimmed,
+      respShape: {
+        keys: keys.slice(0, 8),
+        keysTotal: keys.length + (typeof sh.keysMore === 'number' ? sh.keysMore : 0),
+        arraysTotal: isObj(sh.arrays) ? Object.keys(sh.arrays as Record<string, unknown>).length + (typeof sh.arraysMore === 'number' ? sh.arraysMore : 0) : 0,
+        note: '结构摘要过大，已省略明细（键数/数组数见本字段）',
+      },
+    })
+    degraded.push('respShape 丢明细')
+    if (size(text) <= maxBytes) return { text, degraded }
+  }
+  /** ④ 丢掉 `respBody`（元数据 + 结构摘要永远保留） */
+  if (trimmed.respBody !== undefined) {
+    const rb = isObj(trimmed.respBody) ? (trimmed.respBody as Record<string, unknown>) : {}
+    text = build({
+      ...trimmed,
+      respBody: { kind: 'text', originalBytes: Number(rb.originalBytes ?? 0), bytes: 0, truncated: true, note: `单行超过上限 ${maxBytes} 字节，已省略响应内容（端点/耗时/状态码/结构摘要仍在）` },
+    })
+    degraded.push('respBody 丢内容')
+    if (size(text) <= maxBytes) return { text, degraded }
+  }
+  /** ⑤ 兜底：连结构摘要也去掉，只留元数据 */
+  text = build({ endpoint: base.endpoint, http: base.http, ms: base.ms, bytes: base.bytes, auth: base.auth, note: '日志行过大，只保留元数据' })
+  degraded.push('仅元数据')
+  return { text, degraded }
+}
+
+/** `respBody` 的形状（"全记录"的主体） */
 export interface RespBodyRecord {
   /** 落盘形态：`json`（已脱敏的对象）/ `text`（非 JSON 的前缀预览）/ `empty`（空响应） */
   kind: 'json' | 'text' | 'empty'

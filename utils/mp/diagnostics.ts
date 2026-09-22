@@ -34,6 +34,8 @@
  * 关掉 EXE 再启动则**从零开始**。本文件提供窗口的**类型与纯函数**（客户端筛选、服务端核对共用一个口径）。
  */
 
+import { hasUnmaskedCredential } from './credentialScan'
+
 /** 导出接口（与既有 `/api/local/*` 同风格：本机、只读日志 + 用户自己的快照） */
 export const DIAG_EXPORT_PATH = '/api/local/diagnostics/export'
 /**
@@ -288,8 +290,7 @@ export function readIncludeGeometryFlag(body: unknown): { kind: 'ok'; value: boo
  * @param args.respondedWindowId 服务端**这次请求**回的窗口 id（`stop` 返回的 / `GET` 读到的）
  * @param args.serverInstanceId 服务端当前的进程实例标识
  * @param args.reportedInstanceId 界面之前见过的实例标识（没见过就是空串 ⇒ 只按 id 判）
- */
-export function diagWindowMatch(args: {
+ */export function diagWindowMatch(args: {
   clientWindowId: string
   respondedWindowId: string
   serverInstanceId: string
@@ -505,41 +506,26 @@ export function unescapeForRedlineScan(text: string): string {
     .replace(/\\\\/g, '\\')
 }
 
-import { CREDENTIAL_PATTERNS } from './credentialScan'
-
 /**
  * 导出前的"红线自检"：包内**任何**文本都不许出现凭证样式（服务端与单测共用同一判据）。
  *
  * ⚠️ 每条文本会跑**原文 + 还原转义后的两个变体**（见 `unescapeForRedlineScan()`）——
  * 只跑原文会让"转义进 JSON 的凭证"漏网（审计实测反例，已有单测钉住）。
  *
- * 🆕 2026-09-22 审计 B6 的第二半：判据与**落盘侧的掩码形态**对齐（`CREDENTIAL_PATTERNS` 单一来源）。
- * 老实现只认 `Bearer …` / `"token":"…"` / `token=…`，于是：
- *   · **裸 JWT** 只被这里判命中 ⇒ 文件被剔（用户丢证据）；
- *   · `access_token` / `X-Auth-Token` / `tokenValue` / `sk-live-…` **两边都不认** ⇒ 随包发出。
- * 现在"载明字段名的凭证"与"裸高熵凭证"都在这里被判命中（漏掩的那一侧因此还会被剔文件兜住）。
+ * 🔴 2026-09-22 闸门复验**第二轮**：本文件**不再持有任何凭证正则**。
+ * 上一版还留着 4 条（`Bearer` / token 字段 / `token=` / `sk-`），与掩码侧的低熵门槛不同 ⇒ 又出现分叉：
+ * `Authorization: Bearer abcdefghijklmnopqrst`（22 位纯小写）**掩码侧不掩** ⇒ 真落盘 ⇒ 红线命中 ⇒
+ * **整个日志文件被剔出包**。现在**唯一判据**是 `credentialScan` 的 `hasUnmaskedCredential()`
+ * （内部就是"掩码侧能不能掩掉这段"），因此 **"掩码说安全 ⇒ 红线必不命中"** 是构造性成立的
+ * （单测用反例夹具逐条钉：`Bearer <22 位>`、`?token=<22 位>`、`sk-`、JWT、高熵）。
+ * 代价：命中原因只剩一条笼统说明（分不出是哪一类）—— 换来的是两侧**不可能**再分叉。
  */
 export function assertNoCredentials(texts: string[]): { ok: boolean; hits: string[] } {
-  const patterns: { re: RegExp; why: string }[] = [
-    { re: /Bearer\s+[A-Za-z0-9._-]{16,}/i, why: 'Bearer 凭证' },
-    { re: /\beyJ[A-Za-z0-9._-]{20,}/, why: 'JWT 样式串' },
-    /**
-     * 载明字段名的凭证：token / auth / secret / sessionkey / ticket …（与落盘侧 `SENSITIVE_KEYS` 同口径）。
-     * ⚠️ 两条实测修正：
-     *   · 值的长度门槛用 **24+**（不是 16）：本程序自己的 `tokenFingerprint`（形如 `len=101 head=WXXC tail=abcd`）
-     *     恰好 16~20 字符 ⇒ 用 16 会把**正常快照**判成"token 字段明文"（实测踩到）。
-     *   · 允许 `fingerprint` 例外：`"tokenFingerprint"` 是"长度 + 前后各 4 位"的**指纹**，不是凭证本体。
-     */
-    { re: /"[^"]*(?:token|auth|secret|sessionkey|ticket)(?!fingerprint)[^"]*"\s*:\s*"[^"]{24,}"/i, why: 'token 字段明文' },
-    { re: /'[^']*(?:token|auth|secret|sessionkey|ticket)(?!fingerprint)[^']*'\s*:\s*'[^']{24,}'/i, why: 'token 字段明文' },
-    { re: /[?&][^=&\s]*(?:token|auth|secret|ticket)[^=&\s]*=[A-Za-z0-9._-]{20,}/i, why: 'token= 查询串' },
-    { re: /\b(?:sk|pk|rk)-[A-Za-z0-9][A-Za-z0-9_-]{15,}/, why: 'sk- 形态密钥' },
-    ...CREDENTIAL_PATTERNS,
-  ]
   const hits: string[] = []
   for (const raw of texts) {
-    const variants = [raw, unescapeForRedlineScan(raw)]
-    for (const t of variants) for (const p of patterns) if (p.re.test(t)) hits.push(p.why)
+    for (const t of [raw, unescapeForRedlineScan(raw)]) {
+      if (hasUnmaskedCredential(t)) hits.push('未掩的凭证形态（与掩码侧同一判据）')
+    }
   }
   return { ok: hits.length === 0, hits: [...new Set(hits)] }
 }

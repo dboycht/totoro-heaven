@@ -921,10 +921,14 @@ function buildSnapshot(): DiagSnapshot {
   const win = serverWindow.value
   /**
    * 🆕 2026-09-22（用户原话："刷新后就丢了，我们直接丢之前记录下来不行吗"）：
-   * **最近一次成功读取时的状态** —— 用**当前实时状态**重建一份（实时有值就是"刚刚读到"，实时为空就退回
-   * `localStorage` 里那份历史证据）。为什么在这里也重建：
-   *   · 用户在**没刷新**的情况下导出时，"最近已知"其实就是"此刻"（重建比读旧值更准）；
-   *   · 顺带把这份证据**写回 localStorage**，与 `data.ts` 的写入是同一条口径（同一 `buildLastKnown`）。
+   * **最近一次成功读取时的状态** —— 用**当前实时状态**重建一份用于**显示**（实时有值就是"刚刚读到"，
+   * 实时为空就退回 `localStorage` 里那份历史证据）。
+   *
+   * 🔴 闸门复验修正：这里**只读不写**（`captureLastKnown()` 内部不再 `saveLastKnown()`）。
+   * 老实现"顺带写回 localStorage"会把 17:10 那份**好证据**覆盖成"有 task、无 switches"的新记录
+   * （连 `at` 都被盖成导出时刻）—— 正是这条功能要救的现场。**写点只有一个**：
+   * `composables/real/data.ts` 的 `loadRealData()` 成功读取之后。
+   *
    * 🔴 **不参与任何放行判断**（门禁只认实时 `switches`/`cameraFlag`），这一点写在 `diagLastKnown.ts` 文件头。
    */
   const lastKnown = captureLastKnown()
@@ -984,7 +988,8 @@ function buildSnapshot(): DiagSnapshot {
 
 /**
  * 采集「最近已知状态」：**当前实时态优先**（实时有值 = 刚刚读到），实时为空则退回 `localStorage` 里那份历史证据。
- * 顺带把结果写回 `localStorage`（与 `data.ts` 成功读取后的写入同一口径 —— 同一个 `buildLastKnown`）。
+ * 🔴 **只读不写**（闸门复验修正）：写点只有一个 —— `composables/real/data.ts` 成功读取之后。
+ * 这里若"顺带写回"，会把 17:10 那份好证据覆盖成"有 task、无 switches"的导出时刻记录（见下面的说明）。
  *
  * 🔴 2026-09-22 审计 B7（**正是这条功能要救的现场**）：
  * 老实现**每次都写盘**，于是"刷新后导出"会把 17:10 那份**好证据**（开关均无阻碍）覆盖成

@@ -13,6 +13,7 @@ import assert from 'node:assert/strict'
 import {
   RESP_BODY_MAX_BYTES,
   RESP_TEXT_PREVIEW_CHARS,
+  convergeLogLine,
   knownValuePairs,
   redactForRecord,
   stripGeometryFromRespBody,
@@ -21,7 +22,7 @@ import {
   unpackNote,
 } from '../../utils/mp/responseRecord.ts'
 import { assertNoCredentials } from '../../utils/mp/diagnostics.ts'
-import { REDACTED_MARK, redactObject, summarizeUpstream } from '../../utils/mp/logFormat.ts'
+import { REDACTED_MARK, maskTokenLike, redactFreeText, redactObject, summarizeUpstream } from '../../utils/mp/logFormat.ts'
 
 /** 一份"像真实上游"的信封（含任务、线路坐标、身份信息、token 样式串） */
 function envelopeWithSecrets() {
@@ -227,8 +228,8 @@ test('summarizeResponseBody：长数组被脱敏裁剪时，truncated=true 且 d
   const rec = summarizeResponseBody(JSON.stringify(many), many)
   assert.equal(rec.truncated, true, '被裁过就必须标记 truncated（否则维护者以为"本来就 20 条"）')
   assert.equal(rec.droppedItems, 280, '300 - 20 = 280（裁剪口径与 redactValue 一致）')
-  assert.match(String(rec.note), /裁掉过长数组的 280 个元素/)
-  assert.match(String(rec.note), /data\.records/, 'note 里要指出是哪个数组被裁的')
+  assert.match(String(rec.note), /裁掉过长数组的 280 个元素/, `实际 note：${rec.note}｜trimmedPaths=${JSON.stringify(rec.trimmedPaths)}`)
+  assert.match(String(rec.note), /data\.records/, `note 里要指出是哪个数组被裁的（实际：${rec.note}）`)
   // 裁剪后是 20 条 + **一条"省略 N 项，原共 300 项"的说明**（长度 21）：说明那一项是关键，
   // 它保证维护者永远看得出"这里不是全部"（而不是静默少给）
   const records = (rec.body as { data: { records: unknown[] } }).data.records
@@ -429,4 +430,493 @@ test('可疑 2：unpack 不许对"规格负载层就是 body/obj/data"的正常�
   assert.equal(unpackNote({ status: '00', data: { records: [1, 2, 3] } }).status, 'suspect')
   // 顶层就是业务数组 ⇒ ok
   assert.equal(unpackNote({ status: '00', runPointList: [1, 2] }).status, 'ok')
+})
+
+// ============================================================================
+// 2026-09-22 **闸门复验**的反例（复验方给的输入与实测输出，逐条钉住）
+// ============================================================================
+
+test('🔴 闸门(1)：超大单串不得抛错（6MB/10MB alnum + 6MB base64-like）—— 旧正则会爆栈', () => {
+  for (const [name, s] of [
+    ['6MB alnum', 'A'.repeat(6 * 1024 * 1024)],
+    ['10MB alnum', 'B'.repeat(10 * 1024 * 1024)],
+    ['6MB base64-like', 'Ab3kZ9_x-y.'.repeat(Math.ceil((6 * 1024 * 1024) / 11))],
+  ] as [string, string][]) {
+    const env = { blob: s }
+    const t0 = Date.now()
+    const rec = summarizeResponseBody(JSON.stringify(env), env)
+    const ms = Date.now() - t0
+    assert.ok(rec.bytes <= RESP_BODY_MAX_BYTES, `${name}：落盘必须 ≤ 上限，实际 ${rec.bytes}`)
+    assert.ok(ms < 20_000, `${name}：不该慢到超时（实测 ${ms} ms）`)
+  }
+})
+
+test('🔴 闸门复验(第二轮/阻断)：复验方三个形状的 **respShape** 也必须落进整行上限内', () => {
+  const LINE_MAX = RESP_BODY_MAX_BYTES + 4096
+  /**
+   * 复验方给的三个形状 —— **它们才是真正会撑爆 `respShape` 的形态**。
+   * 上面那三个（40×2KB / 100KB / 宽+深）的 shape 只有几百字节~1.1 KB，**永远碰不到这条路径**
+   * （所以那条断言看着有、其实盖不住 —— 复验方原话）。
+   */
+  const en = (i: number) => `field${String.fromCharCode(97 + (i % 26))}${i}` // 8 字符英文字段名
+  const shapes: [string, unknown][] = [
+    ['40 对象 × 40 数组字段（≈23 KB 响应）', { data: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`o${i}`, Object.fromEntries(Array.from({ length: 40 }, (_, j) => [en(j), [1, 2, 3]]))])) }],
+    ['20 字中文键 × 40 × 40（≈112 KB 响应）', { data: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`键${i}${'长'.repeat(18)}`, Object.fromEntries(Array.from({ length: 40 }, (_, j) => [`数组${j}`, [1, 2, 3, 4]]))])) }],
+    ['3 层 × 40（≈917 KB 响应）', { data: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`l1_${i}`, Object.fromEntries(Array.from({ length: 40 }, (_, j) => [`l2_${j}`, Object.fromEntries(Array.from({ length: 40 }, (_, k) => [`l3_${k}`, [1, 2]]))]))])) }],
+  ]
+  for (const [name, v] of shapes) {
+    const raw = JSON.stringify(v)
+    const shape = summarizeRespShape(v)
+    const arraysCount = Object.keys(shape.arrays).length
+    assert.ok(arraysCount <= 120, `${name}：arrays 必须有上限（复验实测老实现无上限 ⇒ 46 KB / 2.3 MB），实际 ${arraysCount}`)
+    const rec = summarizeResponseBody(raw, v)
+    /** 与代理**完全同一条路径**：完整日志行（含 `{t,level,cat,msg}` 包装）交给 `convergeLogLine` */
+    const entry = { t: '2026-09-23T00:00:00.000Z', level: 'info' as const, cat: 'proxy', msg: 'POST /x', data: { endpoint: '/x', http: 200, ms: 12, bytes: raw.length, auth: '(无 token)', respShape: shape, respBody: rec, body: {} } as Record<string, unknown> }
+    const { text, degraded } = convergeLogLine(entry, LINE_MAX)
+    const lineBytes = Buffer.byteLength(text, 'utf8')
+    assert.ok(lineBytes <= LINE_MAX, `${name}：整行 ${lineBytes} B > 上限 ${LINE_MAX}（降级=${degraded.join('/')}）`)
+    // 收敛后**复检**：解析回来再序列化也必须 ≤ 上限（不是"量错了对象"）
+    assert.ok(Buffer.byteLength(JSON.stringify(JSON.parse(text)), 'utf8') <= LINE_MAX, `${name}：复检整行仍超上限`)
+    assert.ok(text.includes('"endpoint":"/x"'), `${name}：元数据必须永远保留`)
+  }
+  // 反向：小响应**不该**被降级（否则正常日志平白丢结构）
+  const small = { status: '00', data: { list: [1, 2, 3] } }
+  const smallRaw = JSON.stringify(small)
+  const noDegrade = convergeLogLine(
+    { t: 'x', level: 'info', cat: 'proxy', msg: 'm', data: { endpoint: '/x', http: 200, ms: 1, bytes: smallRaw.length, respShape: summarizeRespShape(small), respBody: summarizeResponseBody(smallRaw, small) } },
+    LINE_MAX,
+  )
+  assert.deepEqual(noDegrade.degraded, [], '小响应不该触发任何降级')
+})
+
+test('🔴 闸门(1)/B1：整行字节必须 ≤ 上限（40×2KB 与 宽+深 两个反例）', () => {
+  /** 代理侧的整行判据：`RESP_BODY_MAX_BYTES + 4096`（与 `server/api/mp/[...slug].ts` 同一常量口径） */
+  const LINE_MAX = RESP_BODY_MAX_BYTES + 4096
+  const shapes: [string, unknown][] = [
+    ['顶层 40×2KB 字符串', Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`k${i}`, 'A'.repeat(2048)]))],
+    ['宽 + 深', { a: 'D'.repeat(50000), b: { c: { d: { e: { f: 'E'.repeat(50000) } } } }, g: Array.from({ length: 500 }, () => ({ h: 'F'.repeat(500) })) }],
+    ['单键 100KB', { blob: 'B'.repeat(100 * 1024) }],
+  ]
+  for (const [name, v] of shapes) {
+    const rec = summarizeResponseBody(JSON.stringify(v), v)
+    // 模拟"日志行"：元数据 + respBody（中文 note 也照算，复验方就是按整行量的）
+    const line = JSON.stringify({ t: new Date().toISOString(), level: 'info', cat: 'proxy', msg: 'POST /x', data: { endpoint: '/x', http: 200, ms: 12, bytes: 1, auth: '(无 token)', upstream: {}, respShape: summarizeRespShape(v), respBody: rec } })
+    assert.ok(Buffer.byteLength(line, 'utf8') <= LINE_MAX, `${name}：整行 ${Buffer.byteLength(line, 'utf8')} B 超上限 ${LINE_MAX}`)
+  }
+})
+
+test('🔴 闸门(2)：掩码判安全的文本，红线**不得**命中（长填充串 / 宽对象 / 深对象）', () => {
+  const fixtures: [string, string][] = [
+    ['长填充串 2048', 'A'.repeat(2048)],
+    ['长填充串 50000', 'D'.repeat(50000)],
+    ['纯小写重复 400', 'x'.repeat(400)],
+    ['纯数字重复 200', '7'.repeat(200)],
+  ]
+  for (const [name, s] of fixtures) {
+    const masked = maskTokenLike(s) // 掩码侧的动作
+    assert.equal(masked, s, `${name}：填充串不该被误掩（否则内容凭空变短）`)
+    assert.deepEqual(assertNoCredentials([masked]).hits, [], `${name}：掩码说安全，红线却命中 ⇒ 整个日志文件会被剔出包`)
+  }
+  /** 宽/深对象整行：掩码后过红线也必须干净 */
+  const wide = { data: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`k${i}`, 'A'.repeat(2048)])) }
+  const deep = { a: { b: { c: { d: { e: { f: { g: { h: { i: { j: { k: 'D'.repeat(3000) } } } } } } } } } } }
+  for (const [name, v] of [['宽对象', wide], ['深对象', deep]] as [string, unknown][]) {
+    const rec = summarizeResponseBody(JSON.stringify(v), v)
+    const line = JSON.stringify({ data: { respBody: rec } })
+    assert.deepEqual(assertNoCredentials([line]).hits, [], `${name}：掩码后的整行不该被红线命中`)
+  }
+})
+
+test('🔴 闸门(3)：键名掩码**不得改变键的数量与唯一性**（15 个中文键 / 3 个姓名键 / 拼音键）', () => {
+  const bizKeys = ['姓名', '学号', '名次', '分数', '成绩', '线路', '校区', '任务', '状态', '备注', '原因', '时间', '总数', '结果', '单位']
+  const bizObj = Object.fromEntries(bizKeys.map((k, i) => [k, i]))
+  const recBiz = summarizeResponseBody(JSON.stringify(bizObj), bizObj)
+  const outBiz = recBiz.body as Record<string, unknown>
+  assert.equal(Object.keys(outBiz).length, bizKeys.length, `15 个业务键必须还是 15 个（实测老实现只剩 1 个）：${JSON.stringify(Object.keys(outBiz))}`)
+  assert.equal(new Set(Object.keys(outBiz)).size, bizKeys.length, '去重后键数也要一样')
+  // 业务键**不该**被换成占位符（否则内容全丢）
+  assert.ok(Object.keys(outBiz).includes('成绩') && Object.keys(outBiz).includes('单位'), `业务键不该被掩：${JSON.stringify(Object.keys(outBiz))}`)
+
+  /** 3 个姓名键 ⇒ 3 条记录都要在（键名可以掩，但**不能合并成 1 个键**） */
+  const names = { 张小明: { ok: 1 }, 李小华: { ok: 2 }, 王子涵: { ok: 3 } }
+  const recN = summarizeResponseBody(JSON.stringify(names), names)
+  const outN = recN.body as Record<string, unknown>
+  assert.equal(Object.keys(outN).length, 3, `3 个姓名键必须还是 3 个键：${JSON.stringify(Object.keys(outN))}`)
+  assert.equal(new Set(Object.keys(outN)).size, 3, '掩码后撞车必须补去重后缀')
+  const textN = JSON.stringify(outN)
+  assert.ok(!textN.includes('张小明') && !textN.includes('李小华') && !textN.includes('王子涵'), `姓名不得原文出现：${textN}`)
+
+  /**
+   * 拼音/英文人名键（审计 N3；**第三轮 N10 收窄后**）：
+   * · 值是**字符串**且同为人名形态（`zhangxiaoming: "lixiaohua"`）⇒ 掩；
+   * · 值是**对象**（`zhangxiaoming: {ok:1}`）⇒ **不掩** —— 这是 N10 的取舍：`{students:[…]}` / `{metadata:{…}}`
+   *   与它形态完全相同，把后者当人名会让**整棵子树被抹**（实测 6 棵子树丢失、连我们自己的 `{degraded:[…]}` 都被抹掉）。
+   *   真实姓名另有 `known` 值级替换与 `SENSITIVE_KEYS` 兜底。
+   */
+  const pinyin = { zhangxiaoming: 'lixiaohua', ZhangXiaoMing: 'LiXiaohua' }
+  const recP = summarizeResponseBody(JSON.stringify(pinyin), pinyin)
+  const textP = JSON.stringify(recP.body)
+  assert.ok(!textP.includes('zhangxiaoming') && !textP.includes('ZhangXiaoMing'), `拼音人名键不得原文出现：${textP}`)
+  assert.ok(!textP.includes('lixiaohua') && !textP.includes('LiXiaohua'), '值也不得原文出现')
+  assert.equal(Object.keys(recP.body as Record<string, unknown>).length, 2, '拼音键也要保数量')
+  /** 反向（N10）：值是对象时**不**当人名（否则会抹掉整棵子树） */
+  const bizLike = { zhangxiaoming: { ok: 1 } }
+  assert.ok(JSON.stringify(summarizeResponseBody(JSON.stringify(bizLike), bizLike).body).includes('zhangxiaoming'), '对象值不当作人名（N10 取舍）')
+})
+
+test('🔴 闸门(B2)：11 层嵌套里的 token/姓名**不得原样落盘**（老实现超深度直接原样返回）', () => {
+  const token = `WXXCX${'Ab3kZ9_x-y.'.repeat(6)}`
+  let deep: Record<string, unknown> = { token, studentName: '张小明' }
+  for (let i = 0; i < 11; i++) deep = { [`l${i}`]: deep }
+  const rec = summarizeResponseBody(JSON.stringify(deep), deep)
+  const text = JSON.stringify(rec.body)
+  assert.ok(!text.includes(token), `11 层深处的 token 原文落盘了：${text.slice(0, 200)}`)
+  assert.ok(!text.includes('张小明'), `11 层深处的姓名原文落盘了：${text.slice(0, 200)}`)
+  // 同一棵树走 logger 的二次脱敏，也不得漏
+  const again = JSON.stringify(redactObject({ respBody: rec.body }))
+  assert.ok(!again.includes(token) && !again.includes('张小明'), 'logger 二次脱敏后也不得漏原文')
+})
+
+test('🔴 闸门(B3 残漏)：**没有 known 对照表**（GET 无请求体）时，自述人名也不得原样落盘', () => {
+  const env = { status: '01', msg: '未找到用户 2021101234（张小明，13812345678）' }
+  const rec = summarizeResponseBody(JSON.stringify(env), env, []) // 故意不给 known
+  const text = JSON.stringify(rec.body)
+  assert.ok(!text.includes('2021101234'), `学号不得原文：${text}`)
+  assert.ok(!text.includes('13812345678'), `手机号不得原文：${text}`)
+  assert.ok(!text.includes('张小明'), `姓名不得原文（自述人名兜底没生效）：${text}`)
+  assert.match(text, /张\*/, '姓名要留下掩码痕迹')
+  // 信封标量那条路同样要挡住
+  const shape = summarizeRespShape(env, {}, [])
+  assert.ok(!JSON.stringify(shape).includes('张小明'), `respShape.envelope 不得漏姓名：${JSON.stringify(shape)}`)
+})
+
+test('🔴 闸门复验(第二轮)：自述人名兜底**不得误掩业务词**（复验给的两句 + 一批常见业务句）', () => {
+  const okSentences = [
+    '账户 余额 不足', // 复验实测：老实现 ⇒ 「账户 余* 不足」
+    '考生 名单 已过期', // 复验实测：老实现 ⇒ 「考生 名* 已过期」
+    '用户 成绩 已发布',
+    '用户 学号 不存在',
+    '学生 校区 未开通',
+    '账号 密码 错误',
+    '用户 状态 异常',
+    '学生 备注 为空',
+    '考试 时间 已变更',
+    '班级 人数 已满',
+  ]
+  for (const s of okSentences) {
+    const masked = redactFreeText(s)
+    assert.equal(masked, s, `业务句不该被误掩：${s} ⇒ ${masked}`)
+    // 走完整记录链路也不该变
+    const rec = summarizeResponseBody(JSON.stringify({ msg: s }), { msg: s }, [])
+    assert.ok(JSON.stringify(rec.body).includes(s), `记录链路里也不该被误掩：${s}`)
+  }
+  // 反向：真姓名仍然要掩（不能因为加了白名单就全放过）
+  for (const s of ['未找到用户 张小明', '（李小华）', '学生 王子涵 不存在']) {
+    const masked = redactFreeText(s)
+    assert.notEqual(masked, s, `真姓名必须掩：${s}`)
+    assert.ok(masked.includes('*'), `姓名要留下掩码痕迹：${masked}`)
+  }
+})
+
+test('🔴 第三轮 N10：拼音人名判据不得误伤普通英文/PascalCase 业务键（6 棵子树 + 9 个业务键）', () => {
+  /** 复验方实测的形状：这些键**一个都不该被当人名**（老实现把它们全抹了、6 棵子树内容整体丢失） */
+  const biz: Record<string, unknown> = {
+    students: [{ id: 1 }],
+    metadata: { a: 1 },
+    children: [],
+    response: { b: 2 },
+    arguments: [1, 2],
+    sections: { c: 3 },
+    degraded: ['respBody 缩预算'],
+    PointName: '西操场',
+    PaperName: '研途健行',
+    SchoolName: '南开大学',
+    CampusName: '天目湖',
+    RunPointList: [{ pointId: 'L1' }],
+    StudentInfo: { snCode: 'x' },
+    TaskList: [1],
+    DataList: [2],
+    ErrorMsg: '登录过期',
+  }
+  const rec = summarizeResponseBody(JSON.stringify(biz), biz)
+  const body = rec.body as Record<string, unknown>
+  const keys = Object.keys(body)
+  assert.equal(keys.length, Object.keys(biz).length, `键数必须不变：${keys.length} vs ${Object.keys(biz).length}`)
+  for (const k of Object.keys(biz)) {
+    assert.ok(keys.includes(k), `业务键 ${k} 不得被换成占位符（实际键：${keys.join(',')}）`)
+  }
+  assert.ok(!keys.some((k) => k.includes('姓名已掩码')), `不该出现人名占位符：${keys.join(',')}`)
+  // 6 棵子树的内容必须还在
+  const text = JSON.stringify(body)
+  for (const probe of ['"id":1', '"a":1', '"b":2', '"c":3', '"西操场"', '"南开大学"', '"登录过期"', 'respBody 缩预算']) {
+    assert.ok(text.includes(probe), `子树内容丢了：${probe}（实际 ${text.slice(0, 200)}）`)
+  }
+  /** 🔴 我们自己的诊断字段：降级 warn 的 `{degraded:[…]}` 必须**原样**保留（第三轮日志实证被抹掉过） */
+  const warnRec = summarizeResponseBody(JSON.stringify({ degraded: ['respBody 缩预算', 'respShape 降档'] }), { degraded: ['respBody 缩预算', 'respShape 降档'] })
+  const warnText = JSON.stringify(warnRec.body)
+  assert.ok(warnText.includes('"degraded"'), `degraded 必须原样：${warnText}`)
+  assert.ok(warnText.includes('respShape 降档'), '降级明细必须看得见（这是我们自己的诊断字段）')
+  /** 反向：真姓名键**仍要掩**且保数量 */
+  const names = { zhangxiaoming: 'lixiaohua', ZhangXiaoMing: 'LiXiaohua', TomZhang: 'TomLi', 张小明: { ok: 1 }, 李小华: { ok: 2 } }
+  const nameRec = summarizeResponseBody(JSON.stringify(names), names)
+  const nameBody = nameRec.body as Record<string, unknown>
+  const nameKeys = Object.keys(nameBody)
+  assert.equal(nameKeys.length, 5, `姓名键数量必须保持 5：${nameKeys.join(',')}`)
+  const nameText = JSON.stringify(nameBody)
+  for (const raw of ['zhangxiaoming', 'lixiaohua', 'ZhangXiaoMing', 'TomZhang', '张小明', '李小华']) {
+    assert.ok(!nameText.includes(raw), `姓名不得原文出现：${raw}`)
+  }
+})
+
+test('🔴 第三轮 N7：业务句按**正向判据**（首字须是常见姓氏）判定 —— 复验方 14 句逐条不得误掩', () => {
+  const sentences = [
+    '用户 积分 不足', '考生 准考证 未生成', '账户 优惠 已过期', '学生 宿舍 未分配', '用户 订单 不存在',
+    '考生 座位 未安排', '学生 头像 未上传', '用户 昵称 重复', '学生 借阅 记录异常', '账户 钱包 已冻结',
+    '用户 实名 未认证', '学生 学历 异常', '考生 志愿 未填报', '用户 发票 未开具',
+    // 上一轮已过的那 5 句也要继续过
+    '账户 余额 不足', '考生 名单 已过期', '用户 成绩 已发布', '用户 学号 不存在', '学生 校区 未开通',
+  ]
+  for (const s of sentences) {
+    assert.equal(redactFreeText(s), s, `业务句不该被误掩：${s} ⇒ ${redactFreeText(s)}`)
+  }
+  /** 反向：真姓名仍要掩（首字 ∈ 常见姓氏表） */
+  for (const s of ['未找到用户 张小明', '（李小华）', '学生 王子涵 不存在', '用户 欧阳修 不存在']) {
+    const m = redactFreeText(s)
+    assert.notEqual(m, s, `真姓名必须掩：${s}`)
+    assert.ok(m.includes('*'), `要留下掩码痕迹：${m}`)
+  }
+  /** 边界（如实保留）：cue 不在候选前、或裸姓名没有上下文 —— 不掩（需姓名库，属另一条线） */
+  assert.equal(redactFreeText('名叫李小华的同学'), '名叫李小华的同学')
+  assert.equal(redactFreeText('张小明 登录失败'), '张小明 登录失败')
+})
+
+test('🔴 第三轮 N7-1：`arrays`/`arraysMore` 计数必须**不重不漏**（40×40 与 120×12 两个形状）', () => {
+  /** 形状 A：40 个对象 × 40 个数组字段（都在可达层内）⇒ 真实数组总数可手算 = 40×40 = 1600 */
+  const a = { data: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`o${i}`, Object.fromEntries(Array.from({ length: 40 }, (_, j) => [`f${j}`, [1, 2, 3]]))])) }
+  const shapeA = summarizeRespShape(a)
+  const countedA = Object.keys(shapeA.arrays).length + (shapeA.arraysMore ?? 0)
+  assert.equal(countedA, 1600, `40×40：arrays(${Object.keys(shapeA.arrays).length}) + arraysMore(${shapeA.arraysMore ?? 0}) 必须等于真实数组数 1600`)
+  /** 形状 B：120 个对象 × 12 个数组字段 = 1440 */
+  const b = { data: Object.fromEntries(Array.from({ length: 120 }, (_, i) => [`o${i}`, Object.fromEntries(Array.from({ length: 12 }, (_, j) => [`f${j}`, [1]]))])) }
+  const shapeB = summarizeRespShape(b)
+  const countedB = Object.keys(shapeB.arrays).length + (shapeB.arraysMore ?? 0)
+  assert.equal(countedB, 1440, `120×12：arrays(${Object.keys(shapeB.arrays).length}) + arraysMore(${shapeB.arraysMore ?? 0}) 必须等于真实数组数 1440`)
+  /** 超上限时**不许把同一条路径重复计**（老实现报成 ≈2×：91 + 3018 = 3109 vs 真实 1600） */
+  assert.ok(countedA < 1700, `不该报多（老实现 3109）：${countedA}`)
+  /** 被截断的对象层要如实计数（不许静默丢） */
+  const wide = { data: Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`o${i}`, { x: 1 }])) }
+  const shapeW = summarizeRespShape(wide)
+  assert.ok((shapeW.keysMore ?? 0) > 0, '被截断的键要计入 keysMore（不许静默丢）')
+})
+
+test('🔴 第三轮 N7-2：超长 envelope msg（30000 字符）也必须**保住结构摘要**', () => {
+  const msg = '登录失败：'.repeat(5000) // 30000 字符
+  const v = { status: '01', msg, message: msg, data: { runPointList: [{ pointId: 'L1' }], records: [1, 2, 3] } }
+  const raw = JSON.stringify(v)
+  const entry = {
+    t: '2026-09-23T00:00:00.000Z',
+    level: 'info' as const,
+    cat: 'proxy',
+    msg: 'POST /x',
+    data: { endpoint: '/x', http: 200, ms: 12, bytes: raw.length, auth: '(无 token)', upstream: summarizeUpstream(v), respShape: summarizeRespShape(v), respBody: summarizeResponseBody(raw, v), body: {} } as Record<string, unknown>,
+  }
+  const LINE_MAX = RESP_BODY_MAX_BYTES + 4096
+  const { text, degraded } = convergeLogLine(entry, LINE_MAX)
+  assert.ok(Buffer.byteLength(text, 'utf8') <= LINE_MAX, `整行必须 ≤ 上限：${Buffer.byteLength(text, 'utf8')}`)
+  const parsed = JSON.parse(text) as { data: Record<string, unknown> }
+  assert.ok(parsed.data.respShape, `超长 msg 不许把结构摘要整块丢掉（降级=${degraded.join('/')}）：${text.slice(0, 300)}`)
+  const shapeText = JSON.stringify(parsed.data.respShape)
+  assert.ok(/keys|arraysTotal|keysTotal/.test(shapeText), `结构摘要要有键/数组信息：${shapeText.slice(0, 200)}`)
+  assert.ok(text.includes('"endpoint":"/x"'), '元数据永远保留')
+  /** envelope 标量本身也要被截断（不许 30 KB 原样进包） */
+  assert.ok(!text.includes(msg), '30 KB 的 msg 不许原样落盘')
+})
+
+test('🔴 第四轮 1️⃣：定向补入的罕见姓要掩；同时业务句（含首字为姓氏的）不得被改花', () => {
+  /** 真姓名必须掩（含复验实测漏掩的 5 个 + 表内本已正常的 2 个） */
+  const nameCases: [string, string, string][] = [
+    // [原句, 姓名, 期望整句]
+    ['用户 胥小明 不存在', '胥小明', '用户 胥** 不存在'],
+    ['考生 芮丽 未报名', '芮丽', '考生 芮* 未报名'],
+    ['学生 邝建国 未到', '邝建国', '学生 邝** 未到'],
+    ['用户 冼志强 不存在', '冼志强', '用户 冼** 不存在'],
+    ['考生 佘诗曼 缺考', '佘诗曼', '考生 佘** 缺考'],
+    ['用户 岑小明 不存在', '岑小明', '用户 岑** 不存在'],
+    ['考生 覃丽 未报名', '覃丽', '考生 覃* 未报名'],
+  ]
+  for (const [s, raw, expected] of nameCases) {
+    const m = redactFreeText(s)
+    assert.equal(m, expected, `罕见姓要掩成固定形态：${s} ⇒ ${m}`)
+    assert.ok(!m.includes(raw), `姓名原文不得留下：${m}`)
+  }
+  /** 业务句回归：14 句 + 5 句 + 首字为姓氏的业务词 + 新增姓氏的巧合词，**一次跑全** */
+  const business = [
+    '用户 积分 不足', '考生 准考证 未生成', '账户 优惠 已过期', '学生 宿舍 未分配', '用户 订单 不存在',
+    '考生 座位 未安排', '学生 头像 未上传', '用户 昵称 重复', '学生 借阅 记录异常', '账户 钱包 已冻结',
+    '用户 实名 未认证', '学生 学历 异常', '考生 志愿 未填报', '用户 发票 未开具',
+    '账户 余额 不足', '考生 名单 已过期', '用户 成绩 已发布', '用户 学号 不存在', '学生 校区 未开通',
+    '用户 关注 失败', '账户 解绑 需验证',
+    '用户 常常 登录', '账户 温度 异常', '学生 容易 混淆', '用户 完全 未认证', '考生 安全 未通过',
+    '账户 全部 冻结', '用户 实际 未到', '学生 常见 错误', '考生 日常 打卡', '用户 非常 满意',
+    '账户 计费 异常', '学生 订票 失败', '考生 设备 未连接', '用户 请求 超时',
+  ]
+  const broken = business.filter((s) => redactFreeText(s) !== s)
+  assert.deepEqual(broken, [], `业务句被改花了（新增姓氏的回归）：\n  - ${broken.map((s) => `${s} ⇒ ${redactFreeText(s)}`).join('\n  - ')}`)
+})
+
+test('🔴 第四轮 3️⃣：小写拼音分支 8→10 + 英文词黑名单（误伤例全部原样，该掩的仍掩）', () => {
+  /** (a) 复验给的误伤例必须**全部原样** */
+  const biz: Record<string, unknown> = {
+    username: 'zhangsan',
+    nickname: 'xiaoming',
+    password: 'abc',
+    students: 'green',
+    metadata: 'all',
+    children: 'none',
+    response: 'json',
+    arguments: 'yes',
+    parameters: 'analysis',
+    sections: 'full',
+    keywords: 'success',
+    features: 'false',
+    contents: 'true',
+    messages: 'ok',
+    settings: 'null',
+    comments: 'undefined',
+    warnings: 'error',
+    degraded: 'green',
+    envelope: 'json',
+  }
+  const rec = summarizeResponseBody(JSON.stringify(biz), biz)
+  const body = rec.body as Record<string, unknown>
+  assert.deepEqual(Object.keys(body).sort(), Object.keys(biz).sort(), `键不得被改：${Object.keys(body).join(',')}`)
+  const text = JSON.stringify(body)
+  for (const [k, v] of Object.entries(biz)) {
+    assert.ok(text.includes(`"${k}":"${v}"`), `误伤例必须原样：${k}:"${v}"（实际 ${text.slice(0, 240)}）`)
+  }
+  /** (b) 该掩的仍掩且保数量 */
+  const names = { zhangxiaoming: 'lixiaohua', ZhangXiaoMing: 'LiXiaohua', TomZhang: 'JerryLi', 张小明: '张小明', 李小华: '李小华', 王子涵: '王子涵' }
+  const nameBody = summarizeResponseBody(JSON.stringify(names), names).body as Record<string, unknown>
+  assert.equal(Object.keys(nameBody).length, 6, `键数必须不变：${Object.keys(nameBody).join(',')}`)
+  const nameText = JSON.stringify(nameBody)
+  for (const raw of ['zhangxiaoming', 'lixiaohua', 'ZhangXiaoMing', 'LiXiaohua', 'TomZhang', 'JerryLi', '张小明', '李小华', '王子涵']) {
+    assert.ok(!nameText.includes(raw), `姓名不得原文出现：${raw}（实际 ${nameText}）`)
+  }
+  /** (c) 代价（明确写进断言，防后人误以为漏）：9 位拼音键**不再**被当人名 */
+  const nine = { zhangxiao: 'lixiaohua' }
+  assert.ok(JSON.stringify(summarizeResponseBody(JSON.stringify(nine), nine).body).includes('zhangxiao'), '门槛 10 的代价：9 位拼音键不再掩（已写进注释与文档）')
+})
+
+test('🔴 第四轮 4️⃣：走截断档的记录，`truncated` 与 `bytes` 必须与落盘内容自洽', () => {
+  const msg = '登录失败：'.repeat(5000)
+  const v = { status: '01', msg, message: msg, data: { runPointList: [{ pointId: 'L1' }] } }
+  const raw = JSON.stringify(v)
+  const entry = {
+    t: '2026-09-23T00:00:00.000Z',
+    level: 'info' as const,
+    cat: 'proxy',
+    msg: 'POST /x',
+    data: { endpoint: '/x', http: 200, ms: 1, bytes: raw.length, auth: '(无 token)', upstream: summarizeUpstream(v), respShape: summarizeRespShape(v), respBody: summarizeResponseBody(raw, v), body: {} } as Record<string, unknown>,
+  }
+  const LINE_MAX = RESP_BODY_MAX_BYTES + 4096
+  const { text, degraded } = convergeLogLine(entry, LINE_MAX)
+  assert.ok(degraded.length > 0, '这条应当走降级')
+  const rb = (JSON.parse(text) as { data: { respBody?: Record<string, unknown> } }).data.respBody
+  assert.ok(rb, 'respBody 必须还在')
+  assert.equal(rb.truncated, true, `走了截断档就必须 truncated=true（实测故障：报 false）：${JSON.stringify(rb).slice(0, 200)}`)
+  /** `bytes` 必须等于**实际落盘内容**的字节（不是截断前的大小） */
+  const payload = rb.body !== undefined ? rb.body : rb.text
+  const actual = payload === undefined ? 0 : Buffer.byteLength(typeof payload === 'string' ? payload : JSON.stringify(payload), 'utf8')
+  assert.equal(rb.bytes, actual, `bytes 必须与实际落盘内容自洽（报 ${String(rb.bytes)}，实际 ${actual}）`)
+  assert.ok(actual < Buffer.byteLength(JSON.stringify(v), 'utf8'), '实际存下的内容确实小于原始响应')
+  assert.ok(Number(rb.originalBytes) > actual, 'originalBytes 仍要保留原始大小（便于对照）')
+})
+
+test('🔴 闸门复验(第二轮)：记录环节抛错**不影响上游返回**（源码级守卫：整段都在 try 里）', async () => {
+  const { readFileSync, existsSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  let dir = join(fileURLToPath(import.meta.url), '..')
+  let root = ''
+  /**
+   * ⚠️ 项目根的判据用 `DEVELOPMENT.md`（**根目录独有**）而不是"存在 server/api"：
+   * 测试跑在 `.mp-test-build/tests/mp/`，而构建目录里**只有** `server/utils`（被复制进来的那些）
+   * ⇒ 用 `server/api` 判会一路找不到根（实测踩到）。
+   */
+  for (let i = 0; i < 6; i++) {
+    const parent = join(dir, '..')
+    if (existsSync(join(parent, 'DEVELOPMENT.md')) && existsSync(join(parent, 'server', 'api', 'mp', '[...slug].ts'))) {
+      root = parent
+      break
+    }
+    dir = parent
+  }
+  assert.ok(root, '找不到项目根（DEVELOPMENT.md + server/api/mp/[...slug].ts）')
+  const src = readFileSync(join(root, 'server', 'api', 'mp', '[...slug].ts'), 'utf8')
+  /**
+   * 判据（可执行）：① `knownValuePairs` / `summarizeUpstream` / `summarizeResponseBody` / `convergeLogLine`
+   * **都必须出现在 try 块内**；② try 块之前不许有这些调用；③ 记录失败只写 warn 且构造"只有元数据"的行。
+   * 本轮实测还会用 `TOTORO_FAULT_RECORD=1` 起一个临时端口做真 HTTP 验证（见报告）。
+   */
+  const tryAt = src.indexOf('const nowIso = new Date().toISOString()')
+  assert.ok(tryAt > 0, '找不到记录段起点（守卫需同步更新）')
+  const after = src.slice(tryAt)
+  const catchAt = after.indexOf('} catch (err) {')
+  assert.ok(catchAt > 0, '记录段必须有 catch（否则任何异常都会 500）')
+  const inside = after.slice(0, catchAt)
+  for (const fn of ['knownValuePairs(', 'summarizeUpstream(', 'summarizeResponseBody(', 'summarizeRespShape(', 'convergeLogLine(']) {
+    assert.ok(inside.includes(fn), `${fn} 必须在记录段的 try 块内（复验实测：留在外面抛错照样 500）`)
+  }
+  /**
+   * `logRawLine(` 是**故意**在 try 之外的：它自己内部就 try/catch（日志失败不影响业务），
+   * 而且必须放最后（记录段即便抛错，catch 也构造好了"只有元数据"的行再交给它写）。
+   */
+  assert.ok(after.includes('logRawLine('), 'logRawLine 必须在记录段之后调用（catch 也要走到它）')
+  assert.ok(after.indexOf('logRawLine(') > catchAt, 'logRawLine 要在 catch 之后（这样记录失败也写得出一条元数据行）')
+  // 记录段**之外**不许再出现这些调用（除了 catch 里构造的"只有元数据"行）；命中在注释里不算
+  const outside = src.slice(0, tryAt) + src.slice(tryAt + catchAt)
+  for (const fn of ['knownValuePairs(', 'summarizeUpstream(', 'summarizeResponseBody(', 'convergeLogLine(']) {
+    for (const line of outside.split('\n')) {
+      if (!line.includes(fn)) continue
+      const t = line.trim()
+      if (t.startsWith('*') || t.startsWith('//') || t.startsWith('/*')) continue // 注释里提到函数名是给人看的
+      assert.fail(`${fn} 不该出现在记录段之外（会绕过 try/catch）：${t}`)
+    }
+  }
+  assert.match(after.slice(catchAt, catchAt + 700), /响应记录失败（不影响上游返回）/, 'catch 里要写"不影响上游返回"的 warn')
+  assert.match(after.slice(catchAt, catchAt + 900), /只有元数据|响应记录失败（详见上一条 warn）/, 'catch 要构造一个只有元数据的行')
+  // 🧪 故障注入开关存在（本轮真 HTTP 验证要用它）
+  assert.ok(src.includes('TOTORO_FAULT_RECORD'), '缺故障注入开关 ⇒ "记录抛错不影响响应"无法实测')
+})
+
+/** 与其它源码级守卫共用的小工具 */
+function existsSyncCompat(p: string): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require('node:fs').existsSync(p) as boolean
+  } catch {
+    return false
+  }
+}
+
+test('🔴 闸门(N5)：无字段名的裸凭证三类形态（36 位混合 / 40 位纯小写 / 64 位十六进制）都要掩', () => {
+  const fixtures: [string, number, string][] = [
+    // 用 `.slice()` 构造精确位数（手数过的字面量改错过两次 —— 夹具要准，否则测的不是目标形态）
+    ['36 位混合串', 36, 'Ab3kZ9xY7wQ2pL5mN8rT4vS6uH1jK0cD3eF5gH7'.slice(0, 36)],
+    ['40 位纯小写', 40, 'abcdefghijklmnopqrstuvwxyzabcdefghijklmn'.slice(0, 40)],
+    ['64 位十六进制', 64, 'a3f0c9b8d7e6f5a4c3b2a1908f7e6d5c4b3a29108f7e6d5c4b3a2910f8e7d6c5'],
+  ]
+  for (const [name, len, s] of fixtures) {
+    assert.equal(s.length, len, `${name} 位数不对（夹具要准）：实际 ${s.length}`)
+    const rec = summarizeResponseBody(JSON.stringify({ note: s }), { note: s })
+    const text = JSON.stringify(rec.body)
+    assert.ok(!text.includes(s), `${name} 不该原文落盘：${text}`)
+    assert.match(text, /\[token len=\d+\]/, `${name} 要留下掩码痕迹`)
+    // 掩码后必须过红线（否则文件被剔）
+    assert.deepEqual(assertNoCredentials([text]).hits, [], `${name}：掩码后不该触发红线`)
+  }
+  // 反向：34 位指纹（本程序自己的 tokenFingerprint）**不该**被误掩、也不该被红线命中
+  const fp = 'len=101 head=WXXC tail=abcd'
+  assert.equal(maskTokenLike(fp), fp, '指纹串不得被误掩（否则核对手段废掉）')
+  assert.deepEqual(assertNoCredentials([fp]).hits, [], '指纹串不得被红线命中（否则正常快照被判违规）')
 })

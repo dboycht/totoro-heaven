@@ -30,6 +30,8 @@ import {
   tokenFingerprint,
 } from '../../utils/mp/diagnostics.ts'
 import type { DiagSnapshot } from '../../utils/mp/diagnostics.ts'
+// 🆕 闸门复验第二轮：掩码侧与红线必须同源，测试里直接拿掩码函数做"掩完再喂红线"的一致性断言
+import { maskTokenLike } from '../../utils/mp/logFormat.ts'
 
 test('diagnostics：maskId 保留前 2 后 2，短串整串打码', () => {
   assert.equal(maskId('2021001234'), '20******34')
@@ -261,16 +263,64 @@ test('🔴 红线（反向用例）：带 `Bearer xxx` 的文本**必须**被判
   const leaked = `POST /api/mp/GetStudentInfoByToken\nAuthorization: Bearer ${bearerToken}\n`
   const verdict = assertNoCredentials([leaked])
   assert.equal(verdict.ok, false, '含 Bearer 凭证的文本必须判命中（否则红线形同虚设）')
-  assert.ok(verdict.hits.includes('Bearer 凭证'), `命中原因里要有「Bearer 凭证」，实际：${verdict.hits.join('、')}`)
+  /**
+   * ⚠️ 2026-09-22 闸门复验第二轮：红线**不再持有任何凭证正则**，判据只剩 `credentialScan` 的
+   * `hasUnmaskedCredential()` ⇒ 命中原因统一为一条（分不出类别，换来的是两侧**不可能**再分叉）。
+   * 判据本身没放松（Bearer 仍然必须命中）。
+   */
+  assert.ok(verdict.hits.length > 0, `含 Bearer 凭证的文本必须判命中，实际：${JSON.stringify(verdict.hits)}`)
+  assert.match(verdict.hits[0]!, /凭证/, `命中原因要说明是凭证问题：${verdict.hits.join('、')}`)
+})
+
+test('🔴 闸门复验(2)：掩码侧放过的每一行，红线都不得命中（含 Bearer 22 位 / token= 22 位）', () => {
+  /**
+   * 复验方复现的分叉：`Authorization: Bearer abcdefghijklmnopqrst`（22 位纯小写）与 `?token=<22 位>`
+   * —— 老实现掩码侧"低熵不掩"、红线侧"Bearer/token= 一律命中" ⇒ **整个日志文件被剔**。
+   * 现在掩码侧也掩这些"载明是凭证"的形态 ⇒ 掩完再喂红线必须干净。
+   */
+  const cases = [
+    'Authorization: Bearer abcdefghijklmnopqrst',
+    'GET /x?token=abcdefghijklmnopqrst&x=1',
+    '{"accessToken":"abcdefghijklmnopqrstuvwx"}',
+    '{"sessionKey":"abcdefghijklmnopqrstuvwx"}',
+  ]
+  for (const raw of cases) {
+    const masked = maskTokenLike(raw)
+    assert.notEqual(masked, raw, `掩码侧必须掩掉"载明是凭证"的形态：${raw}`)
+    assert.deepEqual(assertNoCredentials([masked]).hits, [], `掩码后红线不得命中（否则文件被剔）：${masked}`)
+    // 反向：未掩时必须被红线拦住（否则它就会随包发出）
+    assert.ok(assertNoCredentials([raw]).hits.length > 0, `未掩时必须被红线拦住：${raw}`)
+  }
+  // 字段名保留、值只留长度（便于人读）
+  assert.match(maskTokenLike('Authorization: Bearer abcdefghijklmnopqrst'), /Bearer \[token len=20\]/)
+  assert.match(maskTokenLike('GET /x?token=abcdefghijklmnopqrst'), /token=\[token len=20\]/)
+  /**
+   * 🔴 掩码产物必须**逐字符**等于期望值（不只是"包含"）—— 本轮实测抓到一个真实漏洞：
+   * `String.replace` 的回调第三参在"只有两个捕获组"时是 **offset 数字**，
+   * 被当成 `tail` 拼回文本 ⇒ `?token=<20 位>` 变成 `…[token len=20]6`（多吐一个字符，且那个字符是凭证下一位）。
+   * 用"全等"断言把这类"多吐/少吐字符"钉死。
+   */
+  assert.equal(maskTokenLike('GET /x?token=abcdefghijklmnopqrst'), 'GET /x?token=[token len=20]')
+  assert.equal(maskTokenLike('GET /x?token=abcdefghijklmnopqrst&y=1'), 'GET /x?token=[token len=20]&y=1')
+  assert.equal(maskTokenLike('?token=abcdefghijklmnopqrst'), '?token=[token len=20]')
+  assert.equal(maskTokenLike('Authorization: Bearer abcdefghijklmnopqrst'), 'Authorization: Bearer [token len=20]')
+  assert.equal(maskTokenLike('bearer abcdefghijklmnopqrst'), 'bearer [token len=20]')
+  assert.equal(maskTokenLike('{"accessToken":"abcdefghijklmnopqrstuvwx"}'), '{"accessToken":"[token len=24]"}')
 })
 
 test('🔴 红线（反向用例）：JWT 样式 / token 字段明文 / token= 查询串 三类都必须命中', () => {
   const jwtLike = `{"msg":"上游返回 ${'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'}.${'cGF5bG9hZGF0YQ'}.${'c2lnbmF0dXJl'}"}`
   const tokenField = `{"token":"${'A'.repeat(24)}"}`
   const tokenQuery = `GET /api/mp/GetRunBegin?token=${'B'.repeat(24)}`
-  assert.ok(assertNoCredentials([jwtLike]).hits.includes('JWT 样式串'))
-  assert.ok(assertNoCredentials([tokenField]).hits.includes('token 字段明文'))
-  assert.ok(assertNoCredentials([tokenQuery]).hits.includes('token= 查询串'))
+  /**
+   * ⚠️ 2026-09-22 闸门复验第二轮：JWT 与"载明是凭证"的判定现在**全部**由 `credentialScan` 的
+   * 同一个函数负责（`hasUnmaskedCredential`）⇒ 命中原因是统一的「未掩的凭证形态（与掩码侧同一判据）」。
+   * **判据本身没放松**（三类仍然必须命中，见下）。
+   */
+  const jwtHits = assertNoCredentials([jwtLike]).hits
+  assert.ok(jwtHits.length > 0, `JWT 必须命中（实际 ${JSON.stringify(jwtHits)}）`)
+  assert.ok(assertNoCredentials([tokenField]).hits.length > 0, 'token 字段明文必须命中')
+  assert.ok(assertNoCredentials([tokenQuery]).hits.length > 0, 'token= 查询串必须命中')
   // 多段文本一起过时，命中原因要**去重**（否则错误信息会刷一长串同样的类别）
   const merged = assertNoCredentials([jwtLike, jwtLike, tokenField])
   assert.equal(merged.hits.length, new Set(merged.hits).size)
@@ -363,17 +413,27 @@ test('🔴 红线（审计 B3 反例）：**被 JSON 转义**的 token 字段 / 
   assert.equal(escapedTokenField.includes('"token":"'), false, '前提：原文里没有未转义的 “token”:” 形态（所以旧判据必然漏）')
   const verdict = assertNoCredentials([escapedTokenField])
   assert.equal(verdict.ok, false, '转义后的 token 字段明文必须被判命中（否则红线形同虚设）')
-  assert.ok(verdict.hits.includes('token 字段明文'), `命中原因要有「token 字段明文」，实际：${verdict.hits.join('、')}`)
+  assert.ok(verdict.hits.length > 0, `转义后的 token 字段必须命中，实际：${JSON.stringify(verdict.hits)}`)
+  // 归一化后的形态（还原转义）也必须能被**掩码侧**掩掉 —— 否则红线拦下它只会导致"文件被剔"
+  assert.ok(maskTokenLike(`body={"token":"${token34}"}`).includes('[token len=34]'), '掩码侧也要认得这种字段形态')
 
   // 转义的控制字符同样不许成为漏网通道：`Bearer\t<长串>` / `Bearer\n<长串>`
   const bearerWithTab = `日志：Authorization: Bearer\\t${'Ab3kZ9_x-y.'.repeat(6)}`
-  assert.ok(assertNoCredentials([bearerWithTab]).hits.includes('Bearer 凭证'), 'Bearer 后跟转义制表符也要命中')
+  assert.ok(assertNoCredentials([bearerWithTab]).hits.length > 0, 'Bearer 后跟转义制表符也要命中')
   const bearerWithNewline = `日志：Bearer\\n${'Ab3kZ9_x-y.'.repeat(6)}`
-  assert.ok(assertNoCredentials([bearerWithNewline]).hits.includes('Bearer 凭证'), 'Bearer 后跟转义换行也要命中')
+  assert.ok(assertNoCredentials([bearerWithNewline]).hits.length > 0, 'Bearer 后跟转义换行也要命中')
 
   // 反向：正常文本（含被掩码的记号）不得因为"多跑一遍还原"就变成命中
   assert.equal(assertNoCredentials(['{"token":"[masked len=40]"}']).ok, true)
-  assert.equal(assertNoCredentials([`{"note":"长度 34 的字符串 ${token34}"}`]).ok, true, '没有 token 字段名就不该判命中')
+  /**
+   * ⚠️ 2026-09-22 闸门复验后这里**换了夹具**：反例原先用 `token34`（34 位混合大小写+数字）配 `"note"` 字段，
+   * 断言"没有 token 字段名就不该命中"。但裸凭证判据现在（按验收要求）把 **≥36 的非重复 base64url 片段**
+   * 一律当凭证，32~35 位含数字/大小写混合的也当凭证 —— 而 34 位混合串恰好落在那一档里，
+   * **它本来就该被当凭证**（没有字段名也认不出来是什么，宁可拦）。
+   * 所以这里改成"**明显不像凭证**的长串"来验同一个意图：字段名不是 token 时，正常文本不该被误判。
+   */
+  assert.equal(assertNoCredentials([`{"note":"长度 34 的说明文字 abcdefghijklmnopqrstuvwxyz"}`]).ok, true, '没有 token 字段名的普通文本不该判命中')
+  assert.equal(assertNoCredentials([`{"note":"这是中文说明，夹着数字 2026-09-22 与短码 A1b2"}`]).ok, true)
 })
 
 /**

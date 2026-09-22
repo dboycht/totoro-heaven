@@ -25,8 +25,8 @@
  */
 import { MP_API_PREFIX, MP_HOST, MP_PATH_PREFIXES, MP_UPSTREAM_HEADER } from '../../../src/mp/types'
 import { summarizeUpstream } from '../../../utils/mp/logFormat'
-import { knownValuePairs, summarizeRespShape, summarizeResponseBody, unpackNote } from '../../../utils/mp/responseRecord'
-import { logError, logInfo, summarizeRequestBody, logWarn } from '../../utils/logger'
+import { RESP_BODY_MAX_BYTES, convergeLogLine, knownValuePairs, summarizeRespShape, summarizeResponseBody, unpackNote } from '../../../utils/mp/responseRecord'
+import { logError, logRawLine, summarizeRequestBody, logWarn } from '../../utils/logger'
 import { fingerprintOf } from '../../utils/tokenScanState'
 
 // ⚠️ 2026-09-17（D 轮）收口：**不再在本文件重复声明**前缀数组 —— 唯一来源是
@@ -173,31 +173,73 @@ export default defineEventHandler(async (event) => {
    * ⚠️ 2026-09-22 审计修正：`upstream`（信封标量里的 `msg`/`message` 是自由文本）与
    * `respShape.envelope` **也必须**用这张对照表脱敏，否则同一行里会出现"respBody 掩了、envelope 没掩"。
    */
-  const known = knownValuePairs(safeParseJson(body))
-  const upstream = parsed !== undefined ? summarizeUpstream(parsed, known) : { kind: 'non-json', bytes: text.length }
-  const respShape = parsed !== undefined ? summarizeRespShape(parsed, {}, known) : undefined
-  const respBody = summarizeResponseBody(text, parsed, known, undefined, res.headers.get('content-type') || '')
-  const unpack = parsed !== undefined ? unpackNote(parsed) : undefined
-  const line = {
-    endpoint: suffix,
-    http: res.status,
-    ms: Date.now() - startedAt,
-    bytes: text.length,
-    auth: authFp,
-    upstream,
-    /** 🆕 响应**结构**摘要（只记键名与数组长度，不记值） */
-    ...(respShape ? { respShape } : {}),
-    /** 🆕 响应**内容**（已脱敏；超 32KB 会瘦身/截断并注明） */
-    respBody,
-    /** 🆕 解包退化留痕（负载疑似藏在信封里时就写 `suspect: …`；正常时写 `ok`） */
-    ...(unpack ? { unpack: unpack.status === 'suspect' ? `suspect: ${unpack.hint}` : 'ok', ...(unpack.status === 'suspect' ? { unpackDetail: { payloadKeys: unpack.payloadKeys, envelopeField: unpack.envelopeField } } : {}) } : {}),
-    body: summarizeRequestBody(suffix, body),
+  /**
+   * 🔴 **整段响应记录都在 try/catch 里**（闸门复验第二轮必修）：
+   * ① 老实现把 `knownValuePairs()` / `summarizeUpstream()` **留在 try 之外** ⇒ 它们抛错照样 500；
+   * ② 记录失败**绝不能影响上游数据返回** —— 只写一条 warn，然后照常 `return parsed/text`；
+   * ③ 行文本由 `convergeLogLine()` 统一产出：按**整行**（含 `{t,level,cat,msg}` 包装）字节收敛，
+   *    **每降一档都复检**；`respShape` 与 `respBody` 都在收敛范围内
+   *    （复验实测：只缩 respBody 会得到"已省略响应内容"却仍有 44 KB 的行）。
+   */
+  const LINE_MAX_BYTES = RESP_BODY_MAX_BYTES + 4096
+  const t0 = Date.now()
+  const nowIso = new Date().toISOString()
+  let lineText = ''
+  let bizFail = false
+  try {
+    /**
+     * 🧪 **故障注入**（闸门复验要求"加一条'记录环节抛错不影响响应'的断言"）：
+     * 只有显式设置 `TOTORO_FAULT_RECORD=1` 时才抛 —— 用来**实测**"记录环节炸了，路由照样把上游数据返给用户"。
+     * 生产/日常不会有人设这个变量；即便设了，影响也只是"日志少一条"。
+     */
+    if (process.env.TOTORO_FAULT_RECORD === '1') throw new Error('注入的故障：响应记录环节（仅 TOTORO_FAULT_RECORD=1 时）')
+    const known = knownValuePairs(safeParseJson(body))
+    const upstream = parsed !== undefined ? summarizeUpstream(parsed, known) : { kind: 'non-json', bytes: text.length }
+    const respShape = parsed !== undefined ? summarizeRespShape(parsed, {}, known) : undefined
+    const respBody = summarizeResponseBody(text, parsed, known, undefined, res.headers.get('content-type') || '')
+    const unpack = parsed !== undefined ? unpackNote(parsed) : undefined
+    const entry = {
+      t: nowIso,
+      level: (res.status >= 400 || (parsed === undefined && text.length > 0) ? 'error' : 'info') as 'info' | 'warn' | 'error',
+      cat: 'proxy',
+      msg: `${method} ${suffix}`,
+      data: {
+        endpoint: suffix,
+        http: res.status,
+        ms: t0 - startedAt,
+        bytes: text.length,
+        auth: authFp,
+        upstream,
+        /** 🆕 响应**结构**摘要（只记键名与数组长度，不记值；**自带上限**） */
+        ...(respShape ? { respShape } : {}),
+        /** 🆕 响应**内容**（已脱敏；超上限会按字节预算逐键填充并在 note 里注明） */
+        ...(respBody ? { respBody } : {}),
+        /** 🆕 解包退化留痕（负载疑似藏在信封里时就写 `suspect: …`；正常时写 `ok`） */
+        ...(unpack ? { unpack: unpack.status === 'suspect' ? `suspect: ${unpack.hint}` : 'ok', ...(unpack.status === 'suspect' ? { unpackDetail: { payloadKeys: unpack.payloadKeys, envelopeField: unpack.envelopeField } } : {}) } : {}),
+        body: summarizeRequestBody(suffix, body),
+      } as Record<string, unknown>,
+    }
+    bizFail = upstream && typeof upstream === 'object' && 'status' in upstream && String((upstream as Record<string, unknown>).status) !== '00'
+    if (bizFail && entry.level === 'info') entry.level = 'warn'
+    const converged = convergeLogLine(entry, LINE_MAX_BYTES)
+    lineText = converged.text
+    // 收敛后**复检**（`convergeLogLine` 内部已保证；这里再核一次，核不过就只写元数据）
+    if (Buffer.byteLength(lineText, 'utf8') > LINE_MAX_BYTES) {
+      lineText = JSON.stringify({ t: nowIso, level: 'warn', cat: 'proxy', msg: `${method} ${suffix}`, data: { endpoint: suffix, http: res.status, ms: t0 - startedAt, bytes: text.length, auth: authFp, note: '日志行收敛失败，只保留元数据' } })
+    }
+    if (converged.degraded.length) {
+      logWarn('proxy', `${method} ${suffix} 日志行已降级收敛`, { degraded: converged.degraded, lineBytes: Buffer.byteLength(lineText, 'utf8') })
+    }
+  } catch (err) {
+    // 记录环节任何异常都不许影响上游返回：退化成"只有元数据"的一行
+    logWarn('proxy', `${method} ${suffix} 响应记录失败（不影响上游返回）`, {
+      error: err instanceof Error ? err.message : String(err),
+      upstreamBytes: text.length,
+    })
+    lineText = JSON.stringify({ t: nowIso, level: 'warn', cat: 'proxy', msg: `${method} ${suffix}`, data: { endpoint: suffix, http: res.status, ms: t0 - startedAt, bytes: text.length, auth: authFp, note: '响应记录失败（详见上一条 warn）' } })
   }
-  // 上游明确的业务失败或网络层错误 → warn/error，正常 → info（便于在日志里一眼筛出问题）
-  const bizFail = upstream && typeof upstream === 'object' && 'status' in upstream && String((upstream as Record<string, unknown>).status) !== '00'
-  if (res.status >= 400 || (parsed === undefined && text.length > 0)) logError('proxy', `${method} ${suffix}`, line)
-  else if (bizFail) logWarn('proxy', `${method} ${suffix}`, line)
-  else logInfo('proxy', `${method} ${suffix}`, line)
+  // 写**已收敛好的整行文本**（不再让 logger 包一层 —— 那会改变被量的对象）
+  logRawLine(bizFail ? 'warn' : 'info', 'proxy', lineText)
 
   setResponseStatus(event, res.status)
   setResponseHeader(event, 'Content-Type', res.headers.get('content-type') || 'application/json; charset=utf-8')
