@@ -50,6 +50,18 @@ export const VERSION_ADVICE = {
 } as const
 
 /** 版本列表（最新在前） */
+  {
+    version: '1.2.5',
+    date: '2026-09-22',
+    channel: 'stable',
+    title: '开发中（尚无已确认的新需求）',
+    planned: true,
+    highlights: [
+      '本版仍在开发中，还没有可以对外说明的新内容；',
+      '定版后会在此处补上完整的更新日志。',
+    ],
+    note: '开发中的条目，不在版本页展示；对外推荐正式版为 1.2.4。',
+  },
 export const VERSION_ENTRIES: VersionEntry[] = [
   {
     version: '1.2.4',
