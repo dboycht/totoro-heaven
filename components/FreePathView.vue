@@ -30,7 +30,6 @@ import {
   curveLengthM,
   freePathPoints,
   freePathShapeText,
-  freeShapePlaceholderRing,
   lineLengthM,
   normalizeFreePathTrips,
   planFreePathTrips,
@@ -41,6 +40,17 @@ import {
 import { resolveFreePathGeometry } from '~/utils/mp/freePathGeometry'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import { distanceMeters, type LatLng } from '~/utils/mp/routeSimilarity'
+// 🆕 2026-09-22（用户澄清"定位 = 定位我们在的位置"）：失败原因 → 人话 + 降级链的选择，都在这个纯模块里
+import {
+  geoLocatedText,
+  geolocationFailure,
+  locateFallbackNotice,
+  pickLocateFallback,
+  type GeoFailure,
+  type LocateFallbackCandidate,
+} from '~/utils/mp/geolocation'
+// 🆕 2026-09-22（审计 B1）：保存形状的报文构造（**显式清掉起跑点**）与那句如实提示，抽成纯函数 + 单测
+import { buildFreeShapeSave, startClearedNote } from '~/utils/mp/freePathSave'
 // 「改回内外双圈」要判"记录上现存的这两圈到底合不合法" ⇒ 复用跑道编辑页同一套纯函数判据
 import { validateRings } from '~/utils/mp/trackEditor'
 import { LOCAL_FREE_LINE_ID, LOCAL_FREE_LINE_NAME, localFreeTrackLine } from '~/utils/mp/trackLibrary'
@@ -336,14 +346,23 @@ const seed = ref(20260917)
  *   此前预览直接用 `expandFreePathTrajectory`（**没套起跑点变换**），而跑步页套了 `applyStartToLoop`
  *   ⇒ 只要那条记录带 `start.offsetM > 0`，"预览的形状"与"真跑的形状"就是两条不同的线（所见非所跑）。
  *   现在两处同源：同一趟数（1 趟，审计 B2）、同一个圆角开关（关）、同一个保点旋转。
+ *
+ * ⚠️ 2026-09-22（终检口径提示）：预览里程**固定 1.5 km**，**不跟随**上面的"目标里程/趟数"。
+ *   为什么这么选（而不是按真实目标里程出预览）：
+ *     · 真实目标里程可达 100 km（`FREE_PATH_MAX_TARGET_KM`）⇒ 预览会生成上万点、地图卡顿，
+ *       而它**只需要证明"轨迹贴着形状"**（审计 B1 的所见即所跑），不需要画满全程；
+ *     · 固定值 ⇒ 预览**稳定可比**（同一个形状每次画出来一模一样，便于用户/探针对照）。
+ *   代价：**圈数会明显多于"共 N 圈"**（小圈尤其明显）⇒ 界面上必须**如实写明**"预览固定 1.5 km，
+ *   不代表实际圈数"（见模板里那行小字），否则测试用户会误判"轨迹与形状不一致"。
  */
+const PREVIEW_TARGET_KM = 1.5
 const freeTrajectory = computed<N[]>(() => {
   if (!draftFreeUsable.value) return []
   const resolved = resolveFreePathGeometry(draftFreeShape.value, hasStart.value ? entryStart.value : null)
   if (!resolved) return []
   try {
     const g = generateCorridorRoute(resolved.geometry, {
-      targetKm: 1.5,
+      targetKm: PREVIEW_TARGET_KM,
       stepM: 5,
       drift: true,
       seed: seed.value,
@@ -394,35 +413,111 @@ const clearFreeShape = () => {
 }
 
 /**
- * **定位**（用户原话："点击定位按钮，相关的地图移动到定位位置"）—— 审计 B10。
+ * **定位 = 定位"我们在的位置"**（2026-09-22 用户澄清）。
  *
- * 用户说这句话时手上可能**还什么都没画**，所以这里给一条**逐级兜底**的定位链，
- * 并**如实说明这次用的是哪个来源**（不猜、不装作定位成功）：
- *   ① 你正在画的非官方路径 → ② 本任务下发的官方路线（若真有）→ ③ 本机路线库里已保存的几何。
- * 三级都空（全新状态）⇒ 明确告诉用户"先画一笔"，并说明这时确实没有可定位的位置。
+ * ## 主行为：浏览器定位
+ * 点「定位（我的位置）」⇒ `navigator.geolocation.getCurrentPosition(...)`（高精度、10 秒超时、不缓存），
+ * **成功**就把地图**居中并缩放到 `GEO_ZOOM`** 到那个坐标，在地图上放"你在这里"标记 + **精度圈**
+ * （半径 = `coords.accuracy` 米），并**如实报出精度**（`geoLocatedText`）。
+ *
+ * ## 降级：只有在浏览器定位不可用时才走
+ * 原因分情形说人话（拒绝授权 / 位置不可用 / 超时 / 浏览器不支持 / **非安全上下文**，见纯模块
+ * `utils/mp/geolocation.ts`），然后按**优先级链**退回：你正在画的路径 → 本任务下发的官方路线 →
+ * 本机路线库里已保存的几何；提示里必须同时说清"为什么"与"退到了哪一级"（`locateFallbackNotice`）。
+ *
+ * ## 隐私（与需求一致）
+ * 坐标**只在本页内存里**用于地图居中与画标记：不写 localStorage、不进日志、不进提交报文，
+ * 也没有任何"自动上传位置"的行为。
  */
-const freeLocateCandidates = computed<{ pts: N[]; label: string }[]>(() => {
-  const out: { pts: N[]; label: string }[] = []
-  if (freeShapePath.value.length >= 2) out.push({ pts: [...freeShapePath.value], label: '你正在画的非官方路径' })
-  if (officialPts.value.length >= 2) out.push({ pts: officialPts.value, label: '本任务下发的官方路线' })
+const GEO_ZOOM = 17
+/** 上一次成功读到的位置（内存态；`accuracyM <= 0` 表示浏览器没给精度） */
+const myPos = ref<N & { accuracyM: number } | null>(null)
+/** 上一次失败的原因（内存态；成功一次就清掉） */
+const geoFailure = ref<GeoFailure | null>(null)
+/** 正在请求定位（按钮转圈，防止用户连点） */
+const geoBusy = ref(false)
+
+/** 精度圈的**像素半径**：把"北偏 accuracy 米"的点按同一套投影算回屏幕，取 y 方向差 */
+const accuracyRadiusPx = computed(() => {
+  const p = myPos.value
+  if (!p || !(p.accuracyM > 0)) return 0
+  const dLat = p.accuracyM / 111320
+  return Math.abs(toPx({ latitude: p.latitude - dLat, longitude: p.longitude }).y - toPx(p).y)
+})
+
+/**
+ * **降级**（唯一出口）：如实说明失败原因 + 退到链上第一个可用的几何；一级都没有就明说"先画一笔"。
+ * ⚠️ 这里**不再**是主行为 —— 只有浏览器定位不可用时才被调用。
+ */
+const degradeToFallback = (failure: GeoFailure) => {
+  geoFailure.value = failure
+  const choice = pickLocateFallback(freeLocateCandidates.value)
+  if (choice) focusOn(choice.pts)
+  showSnackbar(locateFallbackNotice(failure, choice), 'warning')
+}
+
+/** 「定位（我的位置）」：先问浏览器要位置；不可用/被拒/超时 ⇒ 降级（见 `degradeToFallback`） */
+const locateMe = () => {
+  const geo = typeof navigator === 'undefined' ? undefined : navigator.geolocation
+  const supported = Boolean(geo && typeof geo.getCurrentPosition === 'function')
+  /** ⚠️ 浏览器只在**安全上下文**（https / localhost / 127.0.0.1）里允许定位；换普通域名会被直接禁掉 */
+  const secure = typeof window === 'undefined' ? true : window.isSecureContext !== false
+  /** `!geo` 单列一条：既短路，也让 TS 把 `geo` 收窄成"一定有"（否则下面调用处报 possibly undefined） */
+  if (!geo || !supported || !secure) {
+    degradeToFallback(geolocationFailure(undefined, { supported, secure }))
+    return
+  }
+  geoBusy.value = true
+  try {
+    geo.getCurrentPosition(
+      (pos) => {
+        geoBusy.value = false
+        const latitude = Number(pos?.coords?.latitude)
+        const longitude = Number(pos?.coords?.longitude)
+        const rawAccuracy = Number(pos?.coords?.accuracy)
+        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+          // 拿到了"成功"回调却没有可用坐标：当作失败降级，绝不假装定位成功
+          degradeToFallback(geolocationFailure(undefined))
+          return
+        }
+        const accuracyM = Number.isFinite(rawAccuracy) && rawAccuracy > 0 ? rawAccuracy : 0
+        /** 坐标**只放内存**（见上面"隐私"一段） */
+        myPos.value = { latitude, longitude, accuracyM }
+        geoFailure.value = null
+        center.value = { latitude, longitude }
+        zoom.value = GEO_ZOOM
+        showSnackbar(geoLocatedText(accuracyM))
+      },
+      (err) => {
+        geoBusy.value = false
+        degradeToFallback(geolocationFailure((err as GeolocationPositionError | undefined)?.code, { supported: true, secure }))
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
+    )
+  } catch {
+    // 某些环境（老浏览器 / 被企业策略拦截）会在**调用时**直接抛 ⇒ 按"浏览器不支持"降级，不让页面炸
+    geoBusy.value = false
+    degradeToFallback(geolocationFailure(undefined, { supported: false }))
+  }
+}
+
+/**
+ * **降级用的定位链**（按优先级排列，只在浏览器定位不可用时被消费）：
+ *   ① 你正在画的非官方路径 → ② 本任务下发的官方路线（若真有）→ ③ 本机路线库里已保存的几何。
+ * 三级都空（全新状态）⇒ `pickLocateFallback` 返回 `null`，提示里明确说"先画一笔"。
+ */
+const freeLocateCandidates = computed<LocateFallbackCandidate[]>(() => {
+  const out: LocateFallbackCandidate[] = []
+  if (freeShapePath.value.length >= 2) out.push({ level: 'draft', pts: [...freeShapePath.value], label: '你正在画的非官方路径' })
+  if (officialPts.value.length >= 2) out.push({ level: 'official', pts: officialPts.value, label: '本任务下发的官方路线' })
   const libPts: N[] = []
   for (const e of libEntries.value) {
     libPts.push(...freePathPoints(e.freeShape).map(num))
     libPts.push(...(e.outer ?? []).map(num))
   }
-  if (libPts.length >= 2) out.push({ pts: libPts, label: '本机路线库里已保存的几何' })
+  if (libPts.length >= 2) out.push({ level: 'library', pts: libPts, label: '本机路线库里已保存的几何' })
   return out
 })
-const locateForFreePath = () => {
-  const cands = freeLocateCandidates.value
-  if (!cands.length) {
-    showSnackbar('还没有任何可定位的几何：请先在地图上画出这条非官方路径（画之前确实没有"该定位到哪里"这个位置）', 'warning')
-    return
-  }
-  const hit = cands[0]!
-  focusOn(hit.pts)
-  showSnackbar(`已定位到${hit.label}`)
-}
 /** 地图点击（**画非官方路径时唯一的加点入口**）—— 用户原话里的"直接在地图上点出路径" */
 const onFreeMapClick = (p: N) => {
   if (freeMode.value === 'curve') {
@@ -481,31 +576,40 @@ const loadFreeDraft = (raw: FreePathShape | null | undefined) => {
  *    列表里看不到它，而旧版**任何一次写操作**都会把"不含它"的整份 `entries` 写回 localStorage
  *    ⇒ **把用户画的非官方路径永久删掉**。补到 3 点（直线型是 A/中点/B）就能让旧版收下这条记录。
  *
+ * ⭐ 2026-09-22（审计 B1，真 bug）：报文里**显式传 `start: null`** —— 形状变了，起跑点就失效。
+ *    原先**没传** `start`，而 `upsert` 的口径是「`undefined` = 沿用旧值」⇒
+ *    在「跑道编辑」里按**旧几何**设过的 `offsetM` 会被**悄悄沿用到新形状**上
+ *    （`applyStartToLoopKeepingVertices` 只按模绕回、不报错 ⇒ 用户以为起点还在原处）。
+ *    报文构造与这句提示都在纯模块 `utils/mp/freePathSave.ts`（有单测钉住，防"顺手不传"再回归）。
+ *
  * ⚠️ 本页**不传** `laneNo` / `laneCount`：那两个是「跑道编辑」里双圈几何的选项，
  *    `upsert` 的"不传 = 沿用旧值"正是我们要的（本页不去动它，也不假装知道）。
  */
 const saveFreeShape = () => {
   const shape = draftFreeShape.value
-  if (!usableFreePathShape(shape)) {
+  const payload = buildFreeShapeSave({
+    shape,
+    lineId: LOCAL_FREE_LINE_ID,
+    lineName: String(localFreeLine.value?.lineName ?? entry.value?.lineName ?? LOCAL_FREE_LINE_NAME),
+  })
+  if (!payload) {
     showSnackbar('还存不了非官方路径：至少 2 个不重合的点（圈型 3 点以上才是真正的圈），直线型要选好起点和终点', 'warning')
     return
   }
-  const placeholder = freeShapePlaceholderRing(shape).map(num)
-  const saved = lib.upsert({
-    lineId: LOCAL_FREE_LINE_ID,
-    lineName: String(localFreeLine.value?.lineName ?? entry.value?.lineName ?? LOCAL_FREE_LINE_NAME),
-    // 占位几何（≥3 点，见函数头注释）；跑图**不看它**，只认 freeShape
-    outer: placeholder,
-    inner: placeholder,
-    freeShape: shape,
-  })
+  /** 这次保存会不会**真的清掉**一个原先存在的起跑点（提示里如实说，见 `startClearedNote`） */
+  const hadStartAtSave = hasStart.value
+  const saved = lib.upsert(payload)
   if (!saved) {
     showSnackbar('保存被拒：这条记录既没有合法的内外圈、也没有可用的非官方路径形状', 'error')
     return
   }
   const { entry: savedEntry, persisted } = saved
   const detail = `本机跑道 · 第 ${savedEntry.editCount ?? 1} 次保存 · ${freePathShapeText(savedEntry.freeShape) ?? '形状未存上'}`
-  showSnackbar(`【测试】非官方路径已存入本机路线库（${detail}）${persisted ? '' : '（但本机存储写入失败，刷新后可能丢失）'}`, persisted ? undefined : 'warning')
+  const clearedStart = startClearedNote(hadStartAtSave)
+  showSnackbar(
+    `【测试】非官方路径已存入本机路线库（${detail}）${clearedStart}${persisted ? '' : '（但本机存储写入失败，刷新后可能丢失）'}`,
+    persisted ? undefined : 'warning',
+  )
 }
 
 /**
@@ -559,9 +663,10 @@ const clearFreeShapeOnEntry = () => {
 /**
  * **快速定位**（用户要求）：把地图移到给定点集的范围，并挑一个刚好装得下的缩放级。
  * 不传参数时：优先用"你正在画的那条路径"，否则用这个任务下发的官方路线。
+ * 入参用**契约层坐标**（`P`，允许字符串）——降级链给回来的就是 `LatLng[]`，这里统一过一遍 `num()`。
  */
-const focusOn = (ptsIn?: N[]) => {
-  const pts = ptsIn ?? (freeShapePath.value.length >= 2 ? [...freeShapePath.value] : officialPts.value.map(num))
+const focusOn = (ptsIn?: P[]) => {
+  const pts: N[] = (ptsIn ?? (freeShapePath.value.length >= 2 ? freeShapePath.value : officialPts.value)).map(num)
   if (pts.length < 2) {
     showSnackbar('这条线路还没有可定位的点', 'warning')
     return
@@ -710,8 +815,26 @@ const pathOf = (pts: P[], close = false) => {
                   stroke="#fff"
                   stroke-width="1.2"
                 />
-                <!-- 非官方路径的轨迹预览（与跑步页同一套算法：展开 → 生成） -->
+                <!-- 非官方路径的轨迹预览（与跑步页同一套算法：展开 → 生成；里程固定 1.5 km） -->
                 <path v-if="freeTrajectory.length > 1" :d="pathOf(freeTrajectory)" fill="none" stroke="#f59e0b" stroke-width="1.4" opacity="0.85" />
+                <!--
+                  🆕 2026-09-22（用户澄清"定位 = 定位我们在的位置"）：**你在这里** + **精度圈**
+                  （精度半径按同一套投影换算成像素 ⇒ 缩放/平移时圈也跟着对得上）。
+                  坐标只在本页内存里用于居中与画这个标记：不落盘、不进日志、不进提交报文。
+                -->
+                <template v-if="myPos">
+                  <circle
+                    :cx="toPx(myPos).x"
+                    :cy="toPx(myPos).y"
+                    :r="accuracyRadiusPx"
+                    fill="#38bdf8"
+                    fill-opacity="0.18"
+                    stroke="#38bdf8"
+                    stroke-width="1"
+                  />
+                  <circle :cx="toPx(myPos).x" :cy="toPx(myPos).y" r="6" fill="#0ea5e9" stroke="#fff" stroke-width="2" />
+                  <text :x="toPx(myPos).x + 9" :y="toPx(myPos).y - 8" fill="#e0f2fe" font-size="12" font-weight="bold">你在这里</text>
+                </template>
               </svg>
             </div>
           </v-card-text>
@@ -723,6 +846,9 @@ const pathOf = (pts: P[], close = false) => {
                   ? '依次点出这条直路的起点与终点'
                   : '先在右侧选一个形状（圈型 / 直线型）'
             }}</b>　画好的点<b>不可拖动</b>：要改就「撤销上一个点」或「清空重画」
+            <template v-if="myPos">
+              <br />蓝点=你在这里（半透明圆 = 浏览器给的精度范围 ±{{ myPos.accuracyM > 0 ? Math.round(myPos.accuracyM) : '?' }} m）
+            </template>
           </v-card-text>
         </v-card>
       </v-col>
@@ -739,9 +865,10 @@ const pathOf = (pts: P[], close = false) => {
             </div>
 
             <!--
-              ① 定位（用户原话："点击**定位**按钮，相关的地图**移动到定位位置**"）
-              ⚠️ 审计 B10：用户点它时可能**还什么都没画** ⇒ 这里走逐级兜底链（见 `locateForFreePath`），
-                 并且**如实告诉用户这次用的是哪个来源**，不再出现"点了没反应"。
+              ① 定位（2026-09-22 用户澄清："定位是**定位我们在的位置**"）
+              ⇒ 主行为是**浏览器定位**（成功后居中到当前位置 + 画"你在这里"+ 精度圈 + 如实报精度）；
+                 只有浏览器定位不可用（拒绝授权 / 位置不可用 / 超时 / 浏览器不支持 / 非安全上下文）时，
+                 才**降级**到下面那条链，并在提示里说清"为什么 + 退到了哪一级"。
             -->
             <v-btn
               block
@@ -750,12 +877,21 @@ const pathOf = (pts: P[], close = false) => {
               variant="tonal"
               class="mb-1"
               prepend-icon="mdi-crosshairs-gps"
-              @click="locateForFreePath"
+              :loading="geoBusy"
+              @click="locateMe"
             >
-              定位
+              定位（我的位置）
             </v-btn>
-            <div class="text-caption text-medium-emphasis mb-3">
-              定位顺序：你正在画的路径 → 本任务下发的官方路线（若有）→ 本机路线库里已保存的几何（会在提示里说明用了哪个）。
+            <div class="text-caption text-medium-emphasis mb-2">
+              会向浏览器申请一次定位权限，用于把地图移到你当前所在位置（只在本页内存里用来居中，不落盘、不上传）。
+              <br />拒绝也能用：会退回到你正在画的路径 / 官方路线 / 本机已保存的几何。
+            </div>
+            <div v-if="myPos" class="text-caption mb-2">
+              你在这里：<b>{{ myPos.latitude.toFixed(6) }}, {{ myPos.longitude.toFixed(6) }}</b>
+              <template v-if="myPos.accuracyM > 0">　·　精度 <b>±{{ Math.round(myPos.accuracyM) }} m</b></template>
+            </div>
+            <div v-if="geoFailure" class="text-caption text-warning mb-2">
+              上次定位失败：{{ geoFailure.reason }}（{{ geoFailure.hint }}）
             </div>
 
             <!-- ② 形状选择：圈型 / 直线型（再点一次已选中的那个 = 退出绘制） -->
@@ -790,8 +926,21 @@ const pathOf = (pts: P[], close = false) => {
                 <!--
                   🆕 审计 B1：圈型**保留起跑点/绕向**，且用的是"保点旋转"（只插一个点、保留你点的每个折角，
                   几何总长与形状都不变）；直线型没有"沿弧长旋转"的语义，如实忽略起跑点。
+                  ⭐ 但**保存形状会清掉起跑点**（形状变了，旧 offsetM 是按旧几何量的；见 saveFreeShape 的说明）：
+                     有起跑点时这里必须把这件事说出来，否则用户会以为起点还在原处。
                 -->
-                <br />{{ freeMode === 'curve' ? '圈型会保留本机记录上的起跑点/绕向（在「跑道编辑」里设；用保点旋转，不会改掉你画的形状）' : '直线型忽略起跑点设置（一条线段没有弧长可旋转）' }}
+                <template v-if="freeMode === 'curve'">
+                  <br />
+                  <template v-if="hasStart">
+                    圈型会保留本机记录上的起跑点/绕向（在「跑道编辑」里设；用保点旋转，不会改掉你画的形状）。
+                    <br />⚠️ 但<b>保存这条形状会清掉起跑点</b>（形状变了，旧起跑点是按旧形状量的）——
+                    保存后请回「<b>跑道编辑</b>」按新形状重设。
+                  </template>
+                  <template v-else>圈型当前没有起跑点设置（起跑点在「跑道编辑」里设）。</template>
+                </template>
+                <template v-else>
+                  <br />直线型忽略起跑点设置（一条线段没有弧长可旋转）。
+                </template>
               </div>
               <v-btn block size="small" variant="tonal" class="mb-2" prepend-icon="mdi-undo" :disabled="freeDraftEmpty" @click="undoFreePoint">
                 撤销上一个点（非官方路径）
@@ -835,6 +984,15 @@ const pathOf = (pts: P[], close = false) => {
               <v-alert v-if="!draftFreeUsable" type="warning" variant="tonal" density="compact" class="mb-2">
                 还不能跑：{{ freeMode === 'curve' ? '圈型至少 2 个不重合的点（3 点以上才是真正的圈）' : '直线型要选好起点与终点（两点不能重合）' }}。
               </v-alert>
+              <!--
+                ⚠️ 2026-09-22（终检口径提示）：预览里程**固定 1.5 km**，与上面的"目标里程/趟数"无关
+                ⇒ 小圈型会画出好几圈，看着像"圈数与上面写的不一致"。这里**如实写明**，
+                免得测试用户误判"轨迹与形状不一致"（预览只负责证明"轨迹贴着形状"）。
+              -->
+              <div class="text-caption text-medium-emphasis mb-2">
+                地图上橙色那条是<b>轨迹预览</b>：固定画 <b>1.5 km</b> 只为看清"轨迹是否贴着形状"，
+                <b>不代表实际圈数/里程</b>（实际按上面的目标里程与趟数生成）。
+              </div>
               <v-btn
                 block
                 size="small"

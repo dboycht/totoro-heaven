@@ -1036,6 +1036,13 @@ const finishAndExport = async () => {
      * 判据用**与导出前同一份**纯函数 `diagWindowMatch()`（服务端 409 闸门也是它）——
      * 两处口径必须一致，否则一严一松就等于留了个洞。
      * 拿不到头（老服务端/中间层）时不阻断，只在事件日志里留痕。
+     *
+     * ⚠️ 2026-09-22 终检审计修正：`reportedInstanceId` 必须传**本页快照采集那一刻见过的实例**
+     * （也就是 `snapshot.serverInstanceId`），不能传 `serverInstanceId.value`（那是"此刻"的值）——
+     * 两个参数喂同一个 ref 会让契约层 `reportedInstance !== instance` 那条判据**恒假**，
+     * "本程序重启过"这句提示永远说不出来（只能落成"窗口被换掉"）。
+     * 用快照里那个历史值才有意义：服务端重启后 `X-Diag-Window` 若还能对上窗口 id（理论边界），
+     * 实例号也会对不上 ⇒ 如实说"重启过"。
      */
     const appliedWindow = res.headers.get('x-diag-window') || ''
     const appliedFlag = res.headers.get('x-diag-window-applied')
@@ -1043,8 +1050,10 @@ const finishAndExport = async () => {
       const respMismatch = diagWindowMatch({
         clientWindowId,
         respondedWindowId: appliedWindow,
+        /** 服务端**此刻**的实例 */
         serverInstanceId: serverInstanceId.value,
-        reportedInstanceId: serverInstanceId.value,
+        /** 本页快照采集那一刻见过的实例（历史值，别传"此刻"那个） */
+        reportedInstanceId: String(snapshot.serverInstanceId ?? ''),
       })
       if (respMismatch) {
         exportError.value = `导出异常：${respMismatch.detail}。请把这个情况告诉开发者（包里 manifest 的 recordWindow 有完整记录）。`

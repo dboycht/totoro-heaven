@@ -72,6 +72,12 @@ export interface DiagLogFile {
  * `logFiles` / `logBytes` / `logFilesTruncated` 同样把被剔文件算了进去。
  * 维护者据此判断"日志齐不齐"会被带偏（诊断包最忌讳的就是：**账与内容不自洽**）。
  *
+ * ⚠️ 2026-09-22 终检审计补充（B3）：**"原始字节数"与"包内字节数"必须分开写**。
+ * `.log` 进包时只保留**窗口内的行**（常常只有几行），而 `bytes` 记的是文件**截断前**的真实大小 ⇒
+ * 顶层只有一个 `logBytes` 时，维护者看到"170 KB"会以为包里真有 170 KB 日志（其实包里可能只有 1 行）。
+ * 现在三件套齐全：`readBytes`（候选文件读了多少）/ `inPackageBytes`（进包文本的真实字节）/
+ * `originalBytes`（进包文件截断前的原始大小，仍保留，用来说明"截断有没有发生"）。
+ *
  * 判据（可执行）：返回的每个数字都**只统计 `safeNames` 里的文件**；被剔的那部分单独放 `excluded`。
  * 纯函数（无 IO），有单测 `tests/mp/diagLogs.test.ts`。
  */
@@ -84,8 +90,10 @@ export interface DiagLineAccountFile {
 export interface DiagLineAccount {
   /** 真正进包的文件数 */
   files: number
-  /** 真正进包文件的原始字节数之和（各自截断前的真实大小） */
-  bytes: number
+  /** 真正进包文本的**字节数**（窗口过滤 + 字节截断之后的 `scope.text`，= 包内实际大小） */
+  inPackageBytes: number
+  /** 进包文件在**截断前**的原始大小之和（≥ `inPackageBytes`；差值即"被窗口过滤/被截断丢掉的部分"） */
+  originalBytes: number
   /** 真正进包文件里**保留下来**的日志行数 */
   keptLines: number
   /** 窗口外被剔除的行数（只统计进包文件） */
@@ -103,7 +111,8 @@ export function summarizeDiagLineAccount(all: DiagLineAccountFile[], safeNames: 
   const outPack = all.filter((f) => !safe.has(f.name))
   return {
     files: inPack.length,
-    bytes: inPack.reduce((s, f) => s + f.bytes, 0),
+    inPackageBytes: inPack.reduce((s, f) => s + Buffer.byteLength(f.scope.text, 'utf8'), 0),
+    originalBytes: inPack.reduce((s, f) => s + f.bytes, 0),
     keptLines: inPack.reduce((s, f) => s + f.scope.kept, 0),
     droppedLines: inPack.reduce((s, f) => s + f.scope.outOfWindow, 0),
     unparsableLines: inPack.reduce((s, f) => s + f.scope.unparsable, 0),

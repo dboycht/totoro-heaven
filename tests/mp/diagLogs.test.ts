@@ -189,29 +189,39 @@ test('summarizeDiagLineAccount：账只算进包文件，被红线剔除的那�
   // 红线只剔掉中间那个（它的 5 行**不能**出现在账里）
   const safeNames = ['app-2026-09-20.log', 'app-2026-09-22.log']
   const acc = summarizeDiagLineAccount(all, safeNames)
-  assert.deepEqual(acc, {
-    files: 2,
-    bytes: 1200, // 500 + 700，**不含**被剔那份的 9000
-    keptLines: 6, // 2 + 4，**不含**被剔那份的 5
-    droppedLines: 3, // 只有进包文件里"窗口外"的那些
-    unparsableLines: 0,
-    truncatedFiles: 0, // 被截断的正是被剔那份 ⇒ 不该算进去
-    excluded: { files: 1, lines: 5 },
-  })
+  assert.equal(acc.files, 2)
+  assert.equal(acc.originalBytes, 1200, '进包文件的**原始**大小 = 500 + 700（不含被剔那份的 9000）')
+  assert.equal(acc.keptLines, 6, '保留行数 = 2 + 4（不含被剔那份的 5）')
+  assert.equal(acc.droppedLines, 3, '只有进包文件里"窗口外"的那些')
+  assert.equal(acc.unparsableLines, 0)
+  assert.equal(acc.truncatedFiles, 0, '被截断的正是被剔那份 ⇒ 不该算进去')
+  assert.deepEqual(acc.excluded, { files: 1, lines: 5 })
+  /**
+   * 🆕（终检审计 B3）**"原始字节"与"包内字节"必须分开**：
+   * 窗口过滤后包里往往只剩几行，而原始大小是几十 KB —— 只报一个数会让维护者误判包的大小。
+   */
+  assert.ok(acc.inPackageBytes > 0 && acc.inPackageBytes < acc.originalBytes, `包内字节(${acc.inPackageBytes}) 必须 < 原始字节(${acc.originalBytes})`)
+  assert.equal(
+    acc.inPackageBytes,
+    Buffer.byteLength(all[0]!.scope.text, 'utf8') + Buffer.byteLength(all[2]!.scope.text, 'utf8'),
+    '包内字节 = 进包文件**过滤后**文本的真实字节数',
+  )
 
   // 没有文件被剔时：账 = 全部
   const accAll = summarizeDiagLineAccount(all, all.map((f) => f.name))
   assert.equal(accAll.files, 3)
-  assert.equal(accAll.bytes, 10200)
+  assert.equal(accAll.originalBytes, 10200)
   assert.equal(accAll.keptLines, 11)
   assert.equal(accAll.droppedLines, 4)
   assert.equal(accAll.truncatedFiles, 1)
   assert.deepEqual(accAll.excluded, { files: 0, lines: 0 })
+  assert.ok(accAll.inPackageBytes > 0 && accAll.inPackageBytes < accAll.originalBytes)
 
   // 全部被剔时：账必须清零（zip 里只有 manifest + snapshot），被剔行数仍要看得出来
   const accNone = summarizeDiagLineAccount(all, [])
   assert.equal(accNone.files, 0)
-  assert.equal(accNone.bytes, 0)
+  assert.equal(accNone.originalBytes, 0)
+  assert.equal(accNone.inPackageBytes, 0, '一个文件都没进包 ⇒ 包内字节必须是 0（不能报原始大小）')
   assert.equal(accNone.keptLines, 0)
   assert.deepEqual(accNone.excluded, { files: 3, lines: 11 })
 })

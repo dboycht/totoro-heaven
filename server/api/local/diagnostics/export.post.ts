@@ -259,12 +259,20 @@ export default defineEventHandler(async (event) => {
     diagnostics: {
       logDays: DIAG_LOG_DAYS,
       logMaxBytesPerFile: DIAG_LOG_MAX_BYTES,
-      /** 进包文件数 / 字节 / 被截断数（**不含被红线剔除的文件**，见下面 `lines.excludedLogsLines`） */
+      /** 进包文件数（**不含被红线剔除的文件**，见下面 `lines.excludedLogsLines`） */
       logFiles: account.files,
-      logBytes: account.bytes,
+      /**
+       * ⚠️ 两个字节数**必须分开看**（2026-09-22 终检审计 B3）：
+       *   · `logBytesInPackage` = 包内 `.log` **实际内容**的字节数（窗口过滤后往往只有几行）；
+       *   · `logBytesOriginal` = 这些文件**截断前**的原始大小（说明"这一天本来记了多少"）。
+       * 以前只有一个 `logBytes`（值 = 原始大小）⇒ 维护者看到 170 KB 会误以为包里真有 170 KB 日志。
+       */
+      logBytesInPackage: account.inPackageBytes,
+      logBytesOriginal: account.originalBytes,
       logFilesTruncated: account.truncatedFiles,
-      /** 读到的候选文件数（含被剔除的），便于对照"为什么进包数更少" */
+      /** 读到的候选文件数 / 字节数（含被剔除的），便于对照"为什么进包数更少、包里为什么更小" */
       logFilesRead: logFiles.length,
+      logBytesRead: logFiles.reduce((s, f) => s + f.bytes, 0),
       /** 🆕 按窗口过滤后的行数账（`filteredByWindow=false` 时 kept 就是全部非空行） */
       lines: {
         filteredByWindow: Boolean(win),

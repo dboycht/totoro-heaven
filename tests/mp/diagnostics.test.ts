@@ -312,6 +312,30 @@ test('diagnostics：diagWindowMatch —— 一致放行；不一致分"没窗口
 })
 
 /**
+ * 🔴 2026-09-22（终检审计 B2）：**响应头核对必须用"快照采集那一刻"的实例号**，
+ * 不能把同一个 ref（"此刻"的实例号）同时喂给两个语义不同的参数 ——
+ * 那样 `reportedInstance !== instance` 恒假，"本程序重启过"这句提示永远说不出来。
+ *
+ * 这一条把组件里那个**具体调用形状**钉住（组件无法做单测，所以在契约层验判据输入）：
+ *   · 正确写法（快照里的历史实例 A vs 此刻的实例 B）⇒ `instance-changed`，文案必须含"重启"；
+ *   · 旧写法（两个参数都传"此刻"）⇒ 只会得到 `overwritten`（即旧 bug 的表现）。
+ */
+test('diagnostics：重启场景下 diagWindowMatch 必须说"重启过"（审计 B2：两个参数不许喂同一个值）', () => {
+  const instA = '1790052405348-872f9ed134b37830' // 采集快照那一刻的实例
+  const instB = '1790053310004-e3138b9cc94e1995' // 服务端重启后的新实例
+  const base = { clientWindowId: 'w-1', respondedWindowId: 'w-2' }
+  // ✅ 正确：reportedInstanceId = 快照里的历史值
+  const good = diagWindowMatch({ ...base, serverInstanceId: instB, reportedInstanceId: instA })
+  assert.equal(good?.reason, 'instance-changed')
+  assert.match(good!.detail, /重启/, '文案必须明确说"本程序重启过"')
+  // ❌ 旧写法：同一个值喂两个参数 ⇒ 永远只能是 overwritten
+  const bad = diagWindowMatch({ ...base, serverInstanceId: instB, reportedInstanceId: instB })
+  assert.equal(bad?.reason, 'overwritten', '这是旧实现的表现（判据退化成"窗口被换掉"）—— 组件已改成传快照里的历史值')
+  // 窗口 id 一致时无论如何都放行（把"放行条件"钉住）
+  assert.equal(diagWindowMatch({ clientWindowId: 'w-1', respondedWindowId: 'w-1', serverInstanceId: instB, reportedInstanceId: instA }), null)
+})
+
+/**
  * 🆕 2026-09-22（审计 B6）：坐标开关**只认显式布尔**，不许 fail-open。
  * 判据：`{}` / `{"includeGeometry":0}` / `"false"` 都**不算"关闭坐标"**。
  */
