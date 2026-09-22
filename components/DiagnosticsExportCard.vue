@@ -86,7 +86,7 @@
         </div>
       </v-alert>
 
-      <!-- 🆕 2026-09-22（审计 B8）：服务端状态相关的提示**必须真的显示出来** ——
+      <!-- 🆕 2026-09-22（审计 B8）：服务端状态相关的提示必须真的显示出来 ——
            以前 serverMessage 写了 5 处、模板从不渲染，失败原因用户根本看不见（只有标题旁一个小 chip） -->
       <v-alert v-if="serverMessage" :type="serverOk === false ? 'error' : 'warning'" variant="tonal" density="comfortable" class="mb-3">
         {{ serverMessage }}
@@ -176,6 +176,7 @@ import {
   maskPhone,
   maskDigitRuns,
   tokenFingerprint,
+  type DiagLastKnown,
   type DiagSnapshot,
   type DiagWindow,
 } from '~/utils/mp/diagnostics'
@@ -187,6 +188,12 @@ import { MP_DEFAULT_BASE_URL } from '~/src/wrappers/MpApiWrapper'
 // 路线库的键名/归一化都在纯逻辑层（不自己再声明一份键名）
 import { TRACK_LIBRARY_KEY, normalizeLibrary } from '~/utils/mp/trackLibrary'
 import type { TrackRouteEntry } from '~/utils/mp/trackLibrary'
+// 🆕 2026-09-22：任务本体可能被"缓存包装 / API 信封"包了几层 —— 取值判据在纯逻辑层（有单测）
+import { extractTaskFromCachePayload, looksLikeTask } from '~/utils/mp/realCache'
+// 🆕 2026-09-22：「最近一次成功读取时的状态」（纯诊断证据，**不参与放行判断**）
+import { buildLastKnown, lastKnownSummary, readLastKnown } from '~/utils/mp/diagLastKnown'
+// 🆕 2026-09-22（审计可疑 6）：坐标字段名**只有一份**（与服务端剥 respBody 坐标共用）
+import { COORD_KEYS } from '~/utils/mp/responseRecord'
 
 const logs = useEventLog()
 const showSnackbar = useNotice()
@@ -196,6 +203,12 @@ const appConfig = useAppConfig()
 const mpSession = useMpSession()
 const real = useRealState()
 const { task, profile, switches, cameraFlag, cameraFlagLineId, cameraFlagError } = real
+/**
+ * 🆕（审计 B7）演示模式标记：演示数据**不该**被当成本机真实读取的证据（老实现没传它 ⇒ 会被记成 `ready`）。
+ * `demoMode` 由 `useMpDemo()` 持有（`composables/demo/state.ts`；`useRealState()` 不导出它）。
+ */
+const demo = useMpDemo()
+const demoActive = demo.demoMode
 const realData = useMpReal()
 const gate = realData.gateStatus
 
@@ -279,6 +292,11 @@ const POLL_TIMEOUT_MS = 8_000
 const POLL_INTERVAL_MS = 10_000
 /** 是否已经成功读回过一次服务端状态（用来区分"首次恢复"与"轮询发现变了"） */
 let stateLoadedOnce = false
+/**
+ * 🆕 2026-09-22：「最近一次成功读取时的状态」的**界面态**（用于预览文案）。
+ * 采集口只有一处（`captureLastKnown()`），挂载时先读一次 `localStorage`（刷新后仍能显示上次的证据）。
+ */
+const lastKnownForPreview = ref<DiagLastKnown | null>(null)
 /**
  * 🔴（审计 B4 的实测加强版）**本页这一次记录**的窗口 id。
  *
@@ -503,6 +521,8 @@ const stopOnly = async () => {
 
 // 挂载（含**刷新后重新挂载**）时：先把服务端状态读回来（"已记录多久"由服务端给，不归零），再走秒 + 起轮询
 onMounted(() => {
+  /** 🆕 刷新后先把"最近已知状态"从 localStorage 读回来（预览要能显示上次读到过什么） */
+  lastKnownForPreview.value = readLastKnown()
   void refreshRecordState()
   startTimer()
   // 🆕（审计 B4）轮询：另一个标签页换了窗口 / 服务端重启了，界面要在**导出之前**就跟上真相
@@ -565,16 +585,48 @@ const manifest = computed(() =>
     window: serverWindow.value ? { id: serverWindow.value.id, startedAt: serverWindow.value.startedAt, endedAt: serverWindow.value.endedAt } : null,
   }),
 )
-/** 预览里额外补一条"日志"说明（`diagManifestEntries` 没有日志文件名时不会自己列） */
+/** 预览里额外补两条说明（`diagManifestEntries` 没有日志文件名时不会自己列） */
 const manifestPreview = computed(() => {
   const items = manifest.value.slice()
   const at = items.findIndex((e) => e.name === '(说明)')
-  items.splice(at < 0 ? items.length : at, 0, {
-    name: `${DIAG_LOG_DIR}/app-<日期>.log`,
-    note: serverWindow.value
-      ? `服务端文件日志，只保留记录窗口 ${serverWindow.value.id} 内的行（由服务端读取并筛选，最多回看 ${DIAG_LOG_DAYS} 天）`
-      : `服务端文件日志：本次运行没有记录窗口 ⇒ 服务端按最近 ${DIAG_LOG_DAYS} 天全量收录并在包内清单写明`,
-  })
+  items.splice(at < 0 ? items.length : at, 0, ...[
+    {
+      name: `${DIAG_LOG_DIR}/app-<日期>.log`,
+      note: serverWindow.value
+        ? `服务端文件日志，只保留记录窗口 ${serverWindow.value.id} 内的行（由服务端读取并筛选，最多回看 ${DIAG_LOG_DAYS} 天）`
+        : `服务端文件日志：本次运行没有记录窗口 ⇒ 服务端按最近 ${DIAG_LOG_DAYS} 天全量收录并在包内清单写明`,
+    },
+    /**
+     * 🆕 2026-09-22「全记录」（用户原话）：如实告诉用户"日志里现在多了什么、脱敏到哪一步"。
+     * 这一条必须与 `utils/mp/responseRecord.ts` 的落盘口径逐句对应（脱敏四步那条链）。
+     *
+     * ⚠️ 文案里**不许出现 markdown 星号**（Vue 不渲染 markdown，用户会看到字面的 `**`）——
+     * 审计 B11 实测这里漏过；`tests/mp/uiText.test.ts` 现在也会扫本组件的 note 字面量。
+     */
+    {
+      name: `（日志内容说明：每个请求的 respShape / respBody / unpack）`,
+      note:
+        '服务端日志现在包含每个上游请求的响应结构摘要（顶层与嵌套键名、数组长度、状态码）与脱敏后的响应内容' +
+        '（单条最多 32 KB，超出会按字节预算逐键填充并在 note 里注明截断与原始大小）；' +
+        '响应里不含 token 明文（按字段名掩码 + 凭证样式串只留长度），学号/姓名/手机号已打码；' +
+        `${includeGeometry.value ? '坐标（经纬度）会随响应内容一起记录（上面的开关是打开的）' : '坐标（经纬度）已在导出时按上面的开关剔除'}` +
+        '——注意：服务端日志始终会记录坐标（除非导出时按上面这个开关剔除），' +
+        '所以关掉开关的含义是"导出包里不含坐标"，而不是"本机不再记录坐标"；' +
+        '若上游响应是"负载藏在信封里"的形状，还会写明 `unpack: suspect: <建议路径>`。',
+    },
+    /**
+     * 🆕 2026-09-22（用户原话："你刚刚说刷新后就丢了，我们直接丢之前记录下来不行吗"）：
+     * 如实说明包里多了"最近一次成功读取时的状态"，并且明确写出它不用于放行 ——
+     * 否则维护者可能拿它当"当前能不能提交"的依据（那正是最危险的误用）。
+     */
+    {
+      name: `（最近已知状态：${lastKnownForPreview.value ? '有' : '无'}）`,
+      note: lastKnownForPreview.value
+        ? `包含最近一次成功读取时的状态（含开跑开关原值、摄像头杆 flag、当时的门禁终值）：${lastKnownSummary(lastKnownForPreview.value)} ` +
+          '—— 这是历史证据，用于排查"读到过什么、后来为什么跑不了"；它不代表当前是否可提交，真实提交前必须重新读取（开关可能已变）。'
+        : '这次快照里没有「最近已知状态」（本机还没成功读取过真实账号与任务，或那份记录已被清空）—— 读取成功后会自动记下。',
+    },
+  ])
   return items
 })
 const logDays = DIAG_LOG_DAYS
@@ -614,7 +666,11 @@ const isPlainObject = (v: unknown): v is Record<string, unknown> =>
  * ⚠️ `runPointList` **不在**名单里：它是"线路列表"，剥掉它等于抹掉"任务里到底有几条线路"这个
  *    最关键的证据（issue #12 的问题恰恰是"没有线路可选"）。所以只剥**坐标本体**，保留线路条目。
  */
-const COORD_KEYS = new Set(['latitude', 'longitude', 'lat', 'lng', 'pointList', 'sunrunPathPointList', 'routeItudes'])
+/**
+ * 🔴 2026-09-22 审计（可疑 6）：名单**只有一份**，定义在 `utils/mp/responseRecord.ts`（服务端剥 `respBody`
+ * 坐标用的是同一份）。这里 import 进来 —— 原先界面自己抄了一份、注释却写"同一份名单"，
+ * 两边各改一边时"关掉坐标开关"就会只剥掉一半（隐私开关半失效）。
+ */
 
 /** 递归剥掉坐标字段（返回**新对象**，不改原对象；非对象原样返回） */
 function stripGeometry(value: unknown): unknown {
@@ -829,11 +885,32 @@ function buildSnapshot(): DiagSnapshot {
    * 若先在 raw 上剥坐标再算摘要，关掉开关时 `pointCount` 会全变 0，"到底下发了几条线路、每条几个点"
    * 这条最关键的证据就没了（关开关不等于把证据清零）。
    */
-  const rawTask: Record<string, unknown> | null = (() => {
+  /**
+   * 🔴 2026-09-22（真实用户诊断包暴露的**我们自己的** bug）：取任务本体。
+   *
+   * 故障：此前只做 `payload.task` 一层读取。真实用户的缓存里 `task` 是**API 响应信封**
+   * （`{code, data:{runPointList:[…]}, sunrunTaskList:[…]}`）⇒ 顶层 `runPointList` 读成 0 条，
+   * `shapeLine` 得出 `route=free(0)` 的错误结论，"任务到底有没有线路"这个核心证据被读反。
+   *
+   * 现在的口径（顺序即优先级）：
+   *   ① **内存里的真实任务**（`useMpReal()` 的 `task`，即 `composables/real/data.ts` 里那份，最可信）；
+   *   ② 缓存：`extractTaskFromCachePayload()`（纯函数、有单测）——
+   *      先 `cache.task`（兼容"旧缓存直接存任务"），再逐层解 `data/obj/body` 与任务数组，
+   *      每层都要求"看起来像任务"才收。
+   *
+   * `raw` 里写的就是**这个任务对象**（不是信封、不是包装），摘要/线路/`shapeLine` 全部基于它，
+   * 三者因此必然自洽；取自哪里另记 `taskSource` 进 manifest 便于排查。
+   */
+  const { rawTask, taskSource } = ((): { rawTask: Record<string, unknown> | null; taskSource: string } => {
+    // ① 内存里的真实任务（最可信；`buildSnapshot` 只在浏览器里跑，那里 `task` 就是 `paper.data`）
+    if (isPlainObject(task.value) && looksLikeTask(task.value)) {
+      return { rawTask: task.value as unknown as Record<string, unknown>, taskSource: 'memory(useMpReal.task)' }
+    }
+    // ② 缓存（可能被包了好几层：`{at,task}` 包装、或 `{code,data}` 信封）
     const payload = readJson(TASK_CACHE_KEY)
-    if (!isPlainObject(payload)) return null
-    const t = payload.task
-    return isPlainObject(t) ? t : null
+    if (!isPlainObject(payload)) return { rawTask: null, taskSource: 'none' }
+    const r = extractTaskFromCachePayload(payload)
+    return { rawTask: r.task, taskSource: r.task ? r.source : 'none' }
   })()
   // 敏感原值对照表：**同一份快照里的所有文本共用这一张**（时间线文案 + 任务原文）
   const pairs = sensitivePairs()
@@ -842,6 +919,15 @@ function buildSnapshot(): DiagSnapshot {
   /** 时间线：按**记录窗口**过滤 + 上限兜底（判据在契约层纯函数里） */
   const timeline = timelineOf(pairs)
   const win = serverWindow.value
+  /**
+   * 🆕 2026-09-22（用户原话："刷新后就丢了，我们直接丢之前记录下来不行吗"）：
+   * **最近一次成功读取时的状态** —— 用**当前实时状态**重建一份（实时有值就是"刚刚读到"，实时为空就退回
+   * `localStorage` 里那份历史证据）。为什么在这里也重建：
+   *   · 用户在**没刷新**的情况下导出时，"最近已知"其实就是"此刻"（重建比读旧值更准）；
+   *   · 顺带把这份证据**写回 localStorage**，与 `data.ts` 的写入是同一条口径（同一 `buildLastKnown`）。
+   * 🔴 **不参与任何放行判断**（门禁只认实时 `switches`/`cameraFlag`），这一点写在 `diagLastKnown.ts` 文件头。
+   */
+  const lastKnown = captureLastKnown()
 
   return {
     collectedAt: now.toISOString(),
@@ -863,6 +949,8 @@ function buildSnapshot(): DiagSnapshot {
     },
     task: {
       present: Boolean(rawTask),
+      /** 🆕 任务本体取自哪里（`memory(useMpReal.task)` / `cache.task` / `cache.data(obj,runPointList)` / `none`） */
+      source: taskSource,
       // 摘要与线路清单**永远**从原始对象算（含点数）——与坐标开关无关
       summary: taskSummaryOf(rawTask),
       lines: taskLineSummaries(rawTask),
@@ -885,7 +973,63 @@ function buildSnapshot(): DiagSnapshot {
     window: win ? { id: win.id, startedAt: win.startedAt, endedAt: win.endedAt, includeGeometry: win.includeGeometry } : null,
     /** 🆕 采集时界面见过的服务端实例（服务端据此把提示语写准："程序重启过" vs "窗口被换掉"） */
     serverInstanceId: serverInstanceId.value,
+    /**
+     * 🆕 2026-09-22：**最近一次成功读取时的状态**（含开关原值 / 摄像头杆 flag / 当时的门禁终值）。
+     * 专门用来回答"他读到过什么、后来为什么跑不了"这类现场问题（刷新会丢实时态，这份不会）。
+     * 🔴 它**不参与放行判断**；真实提交前必须重新读取（开关可能已变）。
+     */
+    lastKnown,
   }
+}
+
+/**
+ * 采集「最近已知状态」：**当前实时态优先**（实时有值 = 刚刚读到），实时为空则退回 `localStorage` 里那份历史证据。
+ * 顺带把结果写回 `localStorage`（与 `data.ts` 成功读取后的写入同一口径 —— 同一个 `buildLastKnown`）。
+ *
+ * 🔴 2026-09-22 审计 B7（**正是这条功能要救的现场**）：
+ * 老实现**每次都写盘**，于是"刷新后导出"会把 17:10 那份**好证据**（开关均无阻碍）覆盖成
+ * "有 task、无 switches"的新记录 —— 连 `at` 都被盖成导出时刻、`gateAllow` 记成
+ * `false / camera_unknown / 尚未选择跑步线路`（**与用户真实经历相反**）。
+ * 现在：**只读不写**（写盘只在 `composables/real/data.ts` 真实读取成功那一刻发生）。
+ * 拿到实时态时**只用它显示**（比旧值新、更准），但**绝不落盘覆盖**历史证据。
+ *
+ * 另外补齐 `lineId` / `lineRequired` / `demoMode`（老实现没传 ⇒ 演示数据会被记成 `ready`、
+ * 当时的门禁终值会因为"没选线路"而算成 `camera_unknown`）。
+ */
+function captureLastKnown(): DiagLastKnown | null {
+  const stored = readLastKnown()
+  const session = mpSession.session.value
+  const userInfo = mpSession.userInfo.value
+  const prof = profile.value
+  const rawTask = isPlainObject(task.value) ? (task.value as unknown as Record<string, unknown>) : null
+  const lineId = String(cameraFlagLineId.value || '')
+  const built = buildLastKnown({
+    task: rawTask,
+    schoolCode: String(prof?.schoolCode ?? userInfo?.schoolCode ?? ''),
+    schoolName: String(prof?.schoolName ?? userInfo?.schoolName ?? ''),
+    campusId: String(prof?.campusId ?? userInfo?.schoolCampusCode ?? ''),
+    campusName: String(prof?.campusName ?? userInfo?.schoolCampusName ?? ''),
+    snCode: String(prof?.snCode ?? userInfo?.snCode ?? ''),
+    studentName: String(prof?.studentName ?? userInfo?.studentName ?? userInfo?.name ?? ''),
+    phone: String(userInfo?.phone ?? ''),
+    hasToken: Boolean(mpSession.token.value ?? session?.token),
+    switches: switches.value,
+    cameraFlag: cameraFlag.value,
+    cameraFlagLineId: lineId,
+    cameraFlagError: String(cameraFlagError.value ?? ''),
+    lineId,
+    // 任务没下发线路 ⇒ 门禁那条"未选线路"不拦（与真实提交口径一致，别把历史值算错）
+    lineRequired: rawTask ? (Array.isArray(rawTask.runPointList) ? rawTask.runPointList.length > 0 : false) : undefined,
+    demoMode: demoActive.value,
+  })
+  /**
+   * 显示口径：**实时比已存"更新"且"证据更完整"时才用它**，否则用历史那份（它才是"读到过"的真正记录）。
+   * "更完整"= 开关或摄像头杆是实时读到的（实时什么都没有时 `buildLastKnown` 返回 null）。
+   */
+  const live: DiagLastKnown | null = built && (built.switches || built.cameraFlag !== null) ? built : null
+  const picked = live && (!stored || live.atMs >= stored.atMs) ? live : stored
+  lastKnownForPreview.value = picked
+  return picked
 }
 
 // ---- 落盘（触发浏览器保存） ----

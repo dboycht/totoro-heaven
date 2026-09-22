@@ -12,9 +12,13 @@ import { MpApiWrapper, MP_DEFAULT_BASE_URL } from '~/src/wrappers/MpApiWrapper'
 import type { MpRunLine, MpSunrunTask } from '~/src/mp/types'
 import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
 import { routeRequirementOf } from '~/utils/mp/taskShape'
-import { maskToken, normalizeCachePayload, serializeCachePayload, type RealCachePayload } from '~/utils/mp/realCache'
+import { looksLikeEnvelope, maskToken, normalizeCachePayload, restorePatchOf, serializeCachePayload, shouldAutoRestoreFromCache, type RealCachePayload } from '~/utils/mp/realCache'
+// 🆕 2026-09-22（issue #12 的正解）：`getSunrunPaper` 的**解包兜底**（规格没命中时任务本体可能在别的层）
+import { resolvePaperTask, type PaperTaskResolution } from '~/utils/mp/taskUnpack'
 import { TOKEN_EXPIRED_HINT } from '~/utils/mp/tokenScan'
 import { looksLikeTokenExpired } from '~/src/mp/envelope'
+// 🆕 2026-09-22：成功读取后写一份「最近已知状态」（**纯诊断证据，不参与放行**，见该模块文件头）
+import { buildLastKnown, clearLastKnown, saveLastKnown } from '~/utils/mp/diagLastKnown'
 import {
   evaluateRunGate,
   findVerifiedSchool,
@@ -28,7 +32,7 @@ import { TASK_CACHE_KEY, useRealState } from './state'
 export function useMpRealData() {
   // `setToken` 用于「恢复上次会话」时把缓存里的 token 写回会话（重建会话并落盘）
   const { session, clearSession, setToken } = useMpSession()
-  const { setTask, setLines, task: currentTask, run, disableDemo, clearLocalData } = useMpDemo()
+  const { setTask, setLines, task: currentTask, run, demoMode, disableDemo, clearLocalData } = useMpDemo()
 
   const {
     profile,
@@ -47,6 +51,8 @@ export function useMpRealData() {
     cachePaperName,
     cacheHasToken,
     cacheTokenMask,
+    /** 🆕 2026-09-22：这次的任务是不是"从本机缓存自动恢复"来的（0 = 不是） */
+    restoredAt,
     // 下面这几个是**提交期**状态；只读侧只在「一键清空本机数据」时负责复位
     phase,
     phaseMessage,
@@ -57,7 +63,9 @@ export function useMpRealData() {
     clockTick,
   } = useRealState()
 
-  // 只在客户端读一次缓存的元信息（用于是否显示"恢复上次任务"入口）——**不自动恢复数据**
+  // 只在客户端读一次缓存的元信息（用于显示"恢复上次任务"入口 / 自动恢复的判据）
+  // ⚠️ 注意：本行**只同步界面状态**，不动任务；真正的自动恢复入口是下面的 `autoRestoreFromCache()`
+  //    （由跑步页 / 跑道编辑页 / 非官方路径页在挂载时调用 —— 2026-09-22 真实用户实测后新增）。
   if (import.meta.client) syncCacheState()
 
   /**
@@ -88,14 +96,52 @@ export function useMpRealData() {
       return
     }
     setLines(list)
-    // 选线优先级：① 显式指定（恢复缓存时）且仍有效 → 用它；② 与本人校区同名的线路；
-    // ③ 按坐标分组的本校区第一条（不再盲选数据里的第一条 —— 实测数据第一条常在别的校区）。
+    // 选线优先级：① 显式指定（恢复缓存时）且仍有效 → 用它；
+    //               ② **当前已选且仍在这条任务的线路里** → 保持不动（刷新后从缓存恢复的场景；
+    //                  与跑步页那个 watch 的既有口径一致："已选线路仍在新列表里 → 保持不动"）；
+    //               ③ 与本人校区同名的线路；④ 按坐标分组的本校区第一条
+    //                  （不再盲选数据里的第一条 —— 实测数据第一条常在别的校区）。
     const campus = profile.value?.campusName || profile.value?.campusId || ''
     const valid = (id?: string) => (id && list.some((l) => String(l.pointId) === String(id)) ? String(id) : '')
     const preferred = campus ? list.find((l) => String(l.pointName ?? '').includes(campus)) : undefined
     const fallback = groupRoutesByCampus(list, campus).defaultLineId
-    const chosen = valid(overrideLineId) || preferred?.pointId || fallback
+    const chosen = valid(overrideLineId) || valid(String(run.value.lineId || '')) || preferred?.pointId || fallback
     if (chosen) run.value.lineId = chosen
+  }
+
+  /**
+   * 🆕 2026-09-22（issue #12）：把"**解包退化**"这件事**同时**留痕到**应用内日志**与**服务端日志**。
+   *
+   * 为什么两边都要：
+   *   · 应用内日志（`useEventLog`）会进诊断包的 `timeline` —— 用户导包时能带上；
+   *   · 服务端日志（`%TEMP%\totoro-heaven-runtime\logs\app-*.log`）是诊断包的**主力证据**
+   *     （用户不发 timeline 也能看到），而浏览器写不了它 ⇒ 走一个只在本机可用的极小接口
+   *     `POST /api/local/task-unpack`（见 `server/api/local/task-unpack.post.ts`）。
+   * ⚠️ 这是"尽力而为"的留痕：**失败只记一条 warn，绝不影响读取任务**（读取路径不该被日志拖垮）。
+   */
+  function noteUnpackDegraded(where: string, r: PaperTaskResolution, extra: Record<string, unknown> = {}): void {
+    const info = {
+      where,
+      source: r.source,
+      lineCount: r.lineCount,
+      adoptedFrom: r.adoptedFrom || '(none)',
+      candidates: r.candidates.join('>'),
+      ...extra,
+    }
+    // ① 应用内日志（诊断包 timeline 会带上它）
+    logWarn('real', `unpack degraded: sunrunPaper via ${r.source}`, info)
+    // ② 服务端日志（只在本机、只发这几个非敏感字段）
+    if (!import.meta.client) return
+    void fetch('/api/local/task-unpack', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: 'sunrunPaper', ...info }),
+    }).catch((err: unknown) => {
+      // 尽力而为：留痕失败不影响任务读取，但**不静默**（R8：可吞的异常要留痕）
+      logWarn('real', '解包退化留痕到服务端失败（不影响读取）', {
+        message: err instanceof Error ? err.message : String(err),
+      })
+    })
   }
 
   /**
@@ -162,15 +208,47 @@ export function useMpRealData() {
       { stuNumber: profile.value.snCode, campusId: profile.value.campusId, token },
       options,
     )
-    if (!paper.ok || !paper.data) {
+    /**
+     * 🆕 2026-09-22（issue #12 的**正解**）：**解包兜底** —— 见 `utils/mp/taskUnpack.ts`。
+     *
+     * 规格（`getSunrunPaperResponseList#0`）没命中时（真实用户的响应就是这样），任务本体可能在
+     * `data` / `sunrunTaskList[0]` / 顶层自己；不兜底就会把"有 1 条线路"读成"没线路"
+     * （线路下拉为空 / 门禁说"尚未选择跑步线路" / 用户在「非官方路径」页白画）。
+     *
+     * ⚠️ 三条口径（**不许放松**）：
+     *   ① 兜底只影响"**任务读没读到**"；开关 / 摄像头杆的"未知 ≠ 关闭"一个字不改；
+     *   ② **明确失败（登录过期 / 业务失败）一律照旧报错** —— 绝不拿兜底把失败掩盖成成功；
+     *   ③ 走了兜底**必须留痕**（应用内日志 + 服务端日志各一行），否则以后没人知道我们退化过。
+     */
+    const unpacked = resolvePaperTask(paper.raw)
+    if (unpacked.degraded && unpacked.task) {
+      noteUnpackDegraded('read', unpacked, {
+        envelope: looksLikeEnvelope(paper.raw),
+        verdict: paper.kind,
+        specData: paper.data ? '(有)' : '(无)',
+      })
+    }
+    const taskBody = unpacked.task
+    /** 明确失败（登录态失效 / 业务失败）绝不用兜底掩盖；其余情况只要**解包拿到任务本体**就算成功 */
+    const definiteFailure = paper.kind === 'expired' || paper.kind === 'business'
+    if (!taskBody || definiteFailure) {
       status.value = 'error'
       error.value = `读取任务失败：${paper.message}（任务可能尚未下发）`
-      logError('real', '读取任务失败', { message: paper.message })
+      logError('real', '读取任务失败', {
+        message: paper.message,
+        kind: paper.kind,
+        unpackSource: unpacked.source,
+        unpackCandidates: unpacked.candidates.join('>'),
+      })
       return false
     }
-    task.value = paper.data as MpSunrunTask
+    task.value = taskBody
     loadedAt.value = Date.now()
     status.value = 'ready'
+    /**
+     * 🆕 2026-09-22：**真的联网读成功了** ⇒ 清掉"本次是缓存恢复来的"标记（否则界面会一直挂着那句话）。
+     */
+    restoredAt.value = 0
     logInfo('real', '读到任务与线路', {
       paperName: task.value.paperName,
       lines: task.value.runPointList?.length ?? 0,
@@ -214,6 +292,44 @@ export function useMpRealData() {
     const selectedId = String(run.value.lineId || (task.value.runPointList ?? [])[0]?.pointId || '')
     if (selectedId) await refreshCameraFlag(selectedId, true)
 
+    /**
+     * 🆕 2026-09-22（用户原话："你刚刚说刷新后就丢了，我们直接丢之前记录下来不行吗"）：
+     * **成功读取后立刻把"最近已知状态"写进 localStorage**（诊断证据）。
+     *
+     * 为什么在这里：这一刻刚好是"任务 + 开关 + 摄像头杆"三样都拿到手的时刻；
+     * 用户随后刷新/关页会丢掉 `useState` 内存态，而这份证据能让诊断包说清
+     * "最近一次读到开关是 <时刻>：<当时的判定>"（正是"读取后又跑不了"那个现场的证据）。
+     *
+     * 🔴 **它不参与任何放行判断**：门禁读的是 `switches.value` / `cameraFlag.value`（实时态），
+     *    不是这份 `localStorage`。`evaluateRunGate()` / `submitRealRun()` 一个字都没改。
+     *    旧值可以随时被学校改掉 ⇒ 用旧值放行等于用昨天的事实做今天的决定。
+     */
+    if (import.meta.client) {
+      const snapshot = buildLastKnown({
+        task: task.value as unknown as Record<string, unknown> | null,
+        schoolCode: profile.value.schoolCode,
+        schoolName: profile.value.schoolName,
+        campusId: profile.value.campusId,
+        campusName: profile.value.campusName,
+        snCode: profile.value.snCode,
+        studentName: profile.value.studentName,
+        hasToken: Boolean(token),
+        tokenFingerprint: '',
+        switches: switches.value,
+        cameraFlag: cameraFlag.value,
+        cameraFlagLineId: cameraFlagLineId.value,
+        cameraFlagError: cameraFlagError.value,
+        lineId: String(run.value.lineId || selectedId || ''),
+        /** 任务下发了线路 ⇒ 门禁那条"未选线路"适用；没下发 ⇒ 不适用（与 `routeRequirementOf()` 同口径） */
+        lineRequired: (task.value.runPointList ?? []).length > 0,
+        demoMode: demoMode.value,
+      })
+      if (snapshot && !saveLastKnown(snapshot)) {
+        // 写不进去（配额/隐私模式）只留一行日志：诊断证据丢了不影响任何业务
+        logWarn('ui', '「最近已知状态」写盘失败（诊断证据，不影响业务）', { at: snapshot.at })
+      }
+    }
+
     // 门禁终值（日志）：方便事后核对"为什么拦住 / 为什么放行"
     const gate = gateStatus.value
     if (gate.allow) logInfo('gate', '门禁通过（三类开关均无阻碍）', { blockedBy: gate.blockedBy ?? '' })
@@ -241,6 +357,84 @@ export function useMpRealData() {
     // 「恢复」能否真正重建会话，取决于缓存里有没有 token（界面据此改文案；只放布尔与掩码，不放完整 token）
     cacheHasToken.value = Boolean(p?.token)
     cacheTokenMask.value = p?.token ? maskToken(p.token) : ''
+  }
+
+  /**
+   * 🆕 2026-09-22（真实用户实测：**刷新后跑步页"变哑"**）：**自动**从本机缓存把任务恢复进内存。
+   *
+   * ## 为什么要它
+   * 用户的现场（诊断包）：17:10 两次「读取真实数据」都成功、门禁也通过；之后他刷新/重开过页面
+   * ⇒ `useState` 内存里的 task/profile/switches 全丢 ⇒ 跑步页只剩一句"请先读取真实账号和任务"，
+   * 而他刚刚才读过 —— 于是以为程序坏了（反复撞上）。**本机明明存着上次读到的任务**，没理由不认。
+   *
+   * ## 口径（**只做"本机已知事实"的搬运，绝不联网、绝不编造**）
+   *   · 判据：`shouldAutoRestoreFromCache()`（纯函数，有单测）—— 内存里已有任务 / 演示模式 / 没有缓存
+   *     三者任一 ⇒ **什么都不做**；
+   *   · 恢复的是**缓存里的任务本体**（信封会被 `restorePatchOf` 拆开，见 `utils/mp/realCache.ts`）、
+   *     当时的选线、以及缓存里的 token（没有 token 就只恢复任务，界面会说明"要真提交得先重新读取"）；
+   *   · **开跑开关（人脸/抽查）与摄像头杆不在缓存里**（缓存只存 task/lineId/token，见 realCache 的说明）
+   *     ⇒ `gateStatus` 会如实停在 `switches_unknown`。界面必须**明说这一点**并给一键「重新读取」，
+   *     而不是假装门禁已经通过。
+   *   · 幂等：多次调用只在"内存里没有任务"时生效。
+   *
+   * @returns `true` = 这次调用真的恢复了（界面可据此提示）
+   */
+  function autoRestoreFromCache(): boolean {
+    if (!import.meta.client) return false
+    const raw = (() => {
+      try {
+        const s = localStorage.getItem(TASK_CACHE_KEY)
+        return s ? JSON.parse(s) : null
+      } catch {
+        /* 缓存损坏（JSON 解析失败）：当作没有缓存，静默降级 */
+        return null
+      }
+    })()
+    const patch = restorePatchOf(raw)
+    const should = shouldAutoRestoreFromCache({
+      hasTaskInMemory: Boolean(task.value),
+      demoMode: Boolean(demoMode.value),
+      hasCache: Boolean(patch),
+    })
+    if (!should || !patch) return false
+
+    // ① token 兜底：会话里没有、而缓存里有 ⇒ 写回会话（与显式「恢复」同一口径，只是不联网）
+    if (patch.token && !String(session.value?.token ?? '')) {
+      setToken(patch.token)
+      logInfo('real', '已从本机缓存恢复 token（重建会话，未联网）', { tokenLen: patch.token.length })
+    }
+    // ② 任务本体 + 读取时刻 + 选线
+    /**
+     * 🆕 2026-09-22（issue #12）：缓存里的 `task` **本身也可能被包着**（信封 / 平铺任务元素）
+     * ⇒ 再用**同一个**解包器取一次本体（`utils/mp/taskUnpack.ts`，与联网读取那条路同源）。
+     * 判据：只有真的取到本体才用它；取不到就沿用 `restorePatchOf` 已经解析出来的那份。
+     */
+    const cachedUnpack = resolvePaperTask(patch.task)
+    const taskBody = cachedUnpack.task ?? patch.task
+    /**
+     * 留痕判据（与**读取路径**有意不同）：缓存里存的本来就是"已经解包过的任务本体"
+     * ⇒ `source === 'self'` 是**正常形态**，不许刷"解包退化"的日志（否则每次刷新都会留一行假证据）。
+     * 只有真的换了层（`adoptedFrom`）或缓存里躺着的其实是信封（`source` 指向 `data` 等）才留痕。
+     */
+    if (cachedUnpack.task && (cachedUnpack.adoptedFrom || cachedUnpack.source !== 'self')) {
+      noteUnpackDegraded('cache', cachedUnpack, { envelope: looksLikeEnvelope(patch.task) })
+    }
+    task.value = taskBody
+    loadedAt.value = patch.loadedAt || Date.now()
+    status.value = 'ready'
+    error.value = ''
+    restoredAt.value = patch.loadedAt || Date.now()
+    applyToRunner(patch.lineId || undefined)
+    logInfo('real', '已从本机缓存自动恢复任务（未联网）', {
+      paperName: taskBody.paperName,
+      lines: taskBody.runPointList?.length ?? 0,
+      unpackSource: cachedUnpack.source,
+      lineId: patch.lineId || '(按默认选线)',
+      hasToken: Boolean(patch.token || session.value?.token),
+      readAt: patch.loadedAt ? new Date(patch.loadedAt).toLocaleString('zh-CN') : '(未记录)',
+    })
+    logWarn('gate', '开跑开关不在缓存里：门禁会停在"尚未读取开关"，真实提交前请点「重新读取」')
+    return true
   }
 
   /** 把当前选中的线路写回缓存（用户换线路时调用；"恢复上次任务"时保持选线） */
@@ -349,6 +543,8 @@ export function useMpRealData() {
     loadedAt.value = 0
     status.value = 'idle'
     error.value = ''
+    // 🆕 2026-09-22：退出登录也要清掉"本次是缓存恢复来的"标记（否则换账号后还挂着上一条恢复提示）
+    restoredAt.value = 0
     // ⚠️ 任务/线路也要从跑步机侧清掉，否则阳光跑页还留着上一次的线路
     clearLocalData()
     // 🆕 2026-09-21 审计修复（B2）："该校未开通自由跑"的标记也属于本机缓存 ——
@@ -360,6 +556,12 @@ export function useMpRealData() {
      * "回看"其实只剩一份**无主**清单：换账号后跑步页会显示**上一个账号**的六步过程、结果卡却是空的（自相矛盾）。
      */
     submitProgress.value = []
+    /**
+     * 🆕 2026-09-22 审计 B8：**「最近已知状态」也要清**（与 `TASK_CACHE_KEY` 同等对待）。
+     * 不清的后果：换账号后上一个账号的掩码身份/开关/任务名仍留在 `mp_diag_last_known_v1`，
+     * 新账号读取失败时会被当"最近已知状态"打进诊断包 ⇒ **跨账号证据污染**（维护者会拿 A 的开关分析 B 的问题）。
+     */
+    clearLastKnown()
     logInfo('real', '已退出登录并清除本机缓存（含缓存中的 token）')
   }
 
@@ -378,6 +580,8 @@ export function useMpRealData() {
     status.value = 'idle'
     error.value = ''
     loadedAt.value = 0
+    // 🆕 2026-09-22：清空本机数据后，界面上不该再挂着"已从本机缓存恢复…"那句话
+    restoredAt.value = 0
     switches.value = null
     cameraFlag.value = null
     cameraFlagLineId.value = ''
@@ -389,6 +593,11 @@ export function useMpRealData() {
     // 🆕 2026-09-21：提交过程清单也是本机数据 —— 不一起清，界面上会残留"上一次提交的过程"
     // （它现在是 `./state` 的单例，退出登录时**不清**：退出不必抹掉过程清单，用户可能还想回看）
     submitProgress.value = []
+    /**
+     * 🆕 2026-09-22 审计 B8：「最近已知状态」同样是本机数据 ⇒ **一键清空必须连它一起清**，
+     * 否则"清空后"的诊断包里还带着清空前的开关/身份证据（与"清空"两字自相矛盾）。
+     */
+    clearLastKnown()
   }
 
   /** 是否存在"可恢复的上次任务"（界面据此显示恢复入口） */
@@ -576,7 +785,11 @@ export function useMpRealData() {
     isRealApplied,
     // 动作
     loadRealData,
-    /** 显式恢复"上次读取的任务"（刷新后**不会**自动恢复） */
+    /**
+     * **显式恢复**"上次读取的任务"：用缓存里的 token 重建会话 → **联网**全链路重新读取。
+     * ℹ️ 2026-09-22 起，跑步页/跑道编辑页挂载时还会先做一次 `autoRestoreFromCache()`（**不联网**）——
+     *    所以刷新后页面不再"变哑"；本函数仍是"要把开跑开关/摄像头杆也读回来"时必须点的那一步。
+     */
     restoreCachedTask,
     /** 是否存在可恢复的上次任务 */
     hasCachedTask,
@@ -584,12 +797,19 @@ export function useMpRealData() {
     /** 缓存里是否存了 token（决定「恢复」能否重建会话）+ 其掩码（仅供显示，不含完整 token） */
     cacheHasToken,
     cacheTokenMask,
+    /** 🆕 2026-09-22：这次的任务是不是"从本机缓存自动恢复"来的（值是那次读取的时刻，0 = 不是） */
+    restoredAt,
     clearCachedTask,
     /** 退出登录（彻底）：清会话 + **连缓存里的 token 一起清** + 复位界面状态（审计 S1） */
     logoutAndClearSession,
     /** 一键清空本机数据（会话 + 任务 + 记录 + 缓存） */
     clearAllLocalData,
     applyToRunner,
+    /**
+     * 🆕 2026-09-22（真实用户实测）：**从本机缓存自动恢复任务**（不联网、幂等）——
+     * 由跑步页/跑道编辑页/非官方路径页在挂载时调用；判据见 `shouldAutoRestoreFromCache`。
+     */
+    autoRestoreFromCache,
     persistSelectedLine,
     refreshCameraFlag,
     retryCameraFlag,

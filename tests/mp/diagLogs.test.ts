@@ -54,15 +54,22 @@ test('diagLogs：只收最近 N 天且**实际存在**的 app-*.log，按日期�
   assert.ok(files.every((f) => f.truncated === false), '小文件不该被标记截断')
 })
 
-test('diagLogs：超过单文件上限 ⇒ 截断到上限并标记 truncated，原始字节数照实上报', () => {
-  const big = ('X'.repeat(99) + '\n').repeat(60) // 6000 字节
+test('diagLogs：超过单文件上限 ⇒ **取文件尾**（最新证据优先）并丢掉首行残段，原始字节数照实上报', () => {
+  /**
+   * 🔴 2026-09-22 审计 B9：老实现取**文件头**，于是"用户刚复现的那一段"（在文件尾）被切在包外。
+   * 现在取**尾部** `maxBytes` 字节，并丢掉被切断的**首行残段**（半截 JSON 留着只会让人以为"这条坏了"）。
+   */
+  const line = 'X'.repeat(99)
+  const big = Array.from({ length: 60 }, () => line).join('\n') + '\n' // 6000 字节，每行 100 字节
   writeFileSync(join(sandbox, `app-${dayTag(2)}.log`), big, 'utf8')
   const [f] = recentLogFiles(3, 1000, sandbox).filter((x) => x.name === `app-${dayTag(2)}.log`)
   assert.ok(f, '超限的日志文件仍要进包（只截断，不丢弃）')
   assert.equal(f.truncated, true, '超过上限必须标记为已截断（manifest 要据此写 note）')
   assert.equal(f.bytes, 6000, 'bytes 报的是**原始**大小')
-  assert.equal(Buffer.byteLength(f.text), 1000, '文本内容应正好是上限字节数')
-  assert.equal(f.text, big.slice(0, 1000), '截断口径 = 从文件头取前 maxBytes 字节（测试把口径钉死）')
+  assert.ok(Buffer.byteLength(f.text) <= 1000, `落盘内容不得超过上限，实际 ${Buffer.byteLength(f.text)}`)
+  assert.equal(f.text.split('\n').length, 10, '尾部 1000 字节 = 10 整行（首行残段已丢）')
+  assert.equal(f.text, big.slice(-1000).split('\n').slice(1).join('\n'), '口径 = 尾部 maxBytes 且丢掉首行残段（把口径钉死）')
+  assert.ok(!f.text.includes('\n\n'), '不该出现空行（残段清理后首行就是完整行）')
 })
 
 test('diagLogs：目录不存在 / 没有日志 ⇒ 返回空数组（"没有日志"是合法情况，不能让导出失败）', () => {

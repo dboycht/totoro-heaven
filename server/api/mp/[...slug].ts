@@ -25,6 +25,7 @@
  */
 import { MP_API_PREFIX, MP_HOST, MP_PATH_PREFIXES, MP_UPSTREAM_HEADER } from '../../../src/mp/types'
 import { summarizeUpstream } from '../../../utils/mp/logFormat'
+import { knownValuePairs, summarizeRespShape, summarizeResponseBody, unpackNote } from '../../../utils/mp/responseRecord'
 import { logError, logInfo, summarizeRequestBody, logWarn } from '../../utils/logger'
 import { fingerprintOf } from '../../utils/tokenScanState'
 
@@ -46,6 +47,17 @@ const UPSTREAM_TIMEOUT_MS = 40_000
 const isAllowedUpstreamHost = (hostname: string): boolean => {
   const host = hostname.toLowerCase()
   return ALLOWED_UPSTREAM_SUFFIXES.some((suffix) => host === suffix || host.endsWith(`.${suffix}`))
+}
+
+/** 解析请求体文本（坏 JSON / 空 ⇒ undefined）——「全记录」要从它取"已知敏感原值"的对照表 */
+const safeParseJson = (text: string | undefined): unknown => {
+  if (!text) return undefined
+  try {
+    return JSON.parse(text)
+  } catch {
+    // 请求体不是 JSON（上游本就接受明文 JSON，这里只用于脱敏对照表）：拿不到对照表也不影响其它记录
+    return undefined
+  }
 }
 
 /**
@@ -147,7 +159,25 @@ export default defineEventHandler(async (event) => {
   } catch {
     parsed = undefined
   }
-  const upstream = parsed !== undefined ? summarizeUpstream(parsed) : { kind: 'non-json', bytes: text.length }
+  /**
+   * 🆕 2026-09-22「**全记录**」（用户原话）：把**响应的结构 + 脱敏后的内容**也记进服务端日志。
+   * 为什么加（真实用户那次的关键事实在日志里看不见）：此前只记响应的 `bytes` 与信封标量，
+   * "响应其实是个信封、真正的任务在 `data` 里"完全看不出来，只能靠客户端快照的 `task.raw`（还一度读错层）。
+   *
+   * 隐私顺序（**落盘前必须已脱敏**，见 `utils/mp/responseRecord.ts` 文件头）：
+   *   ① 字段名（`SENSITIVE_KEYS`）→ ② 已知原值（从**请求体**里取到的学号/姓名/手机）→
+   *   ③ token 样式串 → ④ 8~18 位纯数字（**字符串与数字两种形态**）。
+   *
+   * `known` 从**请求体**里取：服务端没有客户端 profile，而请求体里通常正带着 `stuNumber`/`snCode` 等，
+   * 于是它成了"同一批值在别处出现"的对照表。
+   * ⚠️ 2026-09-22 审计修正：`upstream`（信封标量里的 `msg`/`message` 是自由文本）与
+   * `respShape.envelope` **也必须**用这张对照表脱敏，否则同一行里会出现"respBody 掩了、envelope 没掩"。
+   */
+  const known = knownValuePairs(safeParseJson(body))
+  const upstream = parsed !== undefined ? summarizeUpstream(parsed, known) : { kind: 'non-json', bytes: text.length }
+  const respShape = parsed !== undefined ? summarizeRespShape(parsed, {}, known) : undefined
+  const respBody = summarizeResponseBody(text, parsed, known, undefined, res.headers.get('content-type') || '')
+  const unpack = parsed !== undefined ? unpackNote(parsed) : undefined
   const line = {
     endpoint: suffix,
     http: res.status,
@@ -155,6 +185,12 @@ export default defineEventHandler(async (event) => {
     bytes: text.length,
     auth: authFp,
     upstream,
+    /** 🆕 响应**结构**摘要（只记键名与数组长度，不记值） */
+    ...(respShape ? { respShape } : {}),
+    /** 🆕 响应**内容**（已脱敏；超 32KB 会瘦身/截断并注明） */
+    respBody,
+    /** 🆕 解包退化留痕（负载疑似藏在信封里时就写 `suspect: …`；正常时写 `ok`） */
+    ...(unpack ? { unpack: unpack.status === 'suspect' ? `suspect: ${unpack.hint}` : 'ok', ...(unpack.status === 'suspect' ? { unpackDetail: { payloadKeys: unpack.payloadKeys, envelopeField: unpack.envelopeField } } : {}) } : {}),
     body: summarizeRequestBody(suffix, body),
   }
   // 上游明确的业务失败或网络层错误 → warn/error，正常 → info（便于在日志里一眼筛出问题）

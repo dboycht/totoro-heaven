@@ -14,11 +14,13 @@ import {
   entrySummaryText,
   hasValidRings,
   isValidTrackEntry,
+  localEntryGeometryText,
   normalizeLibrary,
   saveSummaryText,
   type TrackRouteEntry,
 } from '../../utils/mp/trackLibrary.ts'
 import { curveLengthM, expandFreePathTrajectory, planFreePathTrips, type FreePathShape } from '../../utils/mp/pathShape.ts'
+import { laneLoop, laneRatioFor, ringLengthM } from '../../utils/mp/trackEditor.ts'
 
 const pt = (lat: number, lng: number) => ({ latitude: lat, longitude: lng })
 const ring = (n: number) => Array.from({ length: n }, (_, i) => pt(31.9 + i * 0.0001, 118.7 + i * 0.0001))
@@ -166,3 +168,62 @@ test('形状与内外圈可以**同时**存在：跑图取形状的展开结果�
   assert.deepEqual(geom[0], geom[geom.length - 1], '圈型展开首尾同点（生成器判闭合）')
   assert.ok(curveLengthM(e.freeShape, true) > 0)
 })
+
+// ---------- 🆕 2026-09-22（用户反馈）：跑步页那条"将使用本机几何：X —— …"的读数 ----------
+/**
+ * 现场：用户画完非官方路径保存，回跑步页只看到一句"轨迹将用你本机已有的跑道几何生成"，
+ * **不知道用的是不是自己刚画的那条**（反馈"无法选择"）。修法 = 把"用哪一条 + 它长什么样 + 怎么被选中的"
+ * 说清楚；这里钉住那句话里的**读数**（纯函数 `localEntryGeometryText`）。
+ */
+test('localEntryGeometryText：带非官方路径形状 ⇒ 复用 freePathShapeText 的口径（圈型/折线型）', () => {
+  const withCurve: TrackRouteEntry = {
+    lineId: 'local:free',
+    lineName: '本机跑道（本任务未下发线路）',
+    outer: [],
+    inner: [],
+    createdAt: '2026-09-22T14:00:00.000Z',
+    updatedAt: '2026-09-22T14:31:00.000Z',
+    appVersion: '1.2.5',
+    freeShape: curve,
+  }
+  const text = localEntryGeometryText(withCurve)
+  assert.match(text, /^圈型（闭合曲线）：4 个点 · 一圈 /, text)
+  assert.match(text, /最近保存 2026-09-22 22:31/, `时间必须是本机时区（UTC 14:31 ⇒ 22:31）：${text}`)
+
+  const withBent: TrackRouteEntry = { ...withCurve, freeShape: bent }
+  assert.match(localEntryGeometryText(withBent), /^折线型（折返）：3 个点 · 单程 /, localEntryGeometryText(withBent))
+})
+
+test('localEntryGeometryText：老条目（没有形状）⇒ 如实说"内外双圈"，并给出与跑步引擎同源的一圈长度', () => {
+  const e: TrackRouteEntry = {
+    lineId: 'sunrunLine-1',
+    lineName: '西操场',
+    outer: ring(4),
+    inner: ring(4),
+    laneNo: 3,
+    laneCount: 6,
+    createdAt: '2026-09-22T14:00:00.000Z',
+    appVersion: '1.2.5',
+  }
+  const text = localEntryGeometryText(e)
+  assert.match(text, /^内外双圈（第 3 道\/6）：外圈 4 点 · 内圈 4 点 · 一圈约 \d+ m/, text)
+  // ⚠️ "一圈"必须等于跑步页/引擎用的那条车道线的长度（同一算式）——否则界面报的圈数是假的
+  const loop = laneLoop({ outer: e.outer, inner: e.inner }, laneRatioFor(3, 6), 240)
+  assert.ok(text.includes(`一圈约 ${Math.round(ringLengthM(loop))} m`), `一圈长度要同源：${text}`)
+})
+
+test('localEntryGeometryText：内外圈点数不够 ⇒ **如实说不可用**（绝不假装有几何）', () => {
+  const e: TrackRouteEntry = {
+    lineId: 'sunrunLine-1',
+    lineName: '西操场',
+    outer: ring(2),
+    inner: [],
+    createdAt: '2026-09-22T14:00:00.000Z',
+    appVersion: '1.2.5',
+  }
+  const text = localEntryGeometryText(e)
+  assert.match(text, /几何不完整/, text)
+  assert.match(text, /请回「跑道编辑」补好内外圈/, text)
+  assert.doesNotMatch(text, /一圈约/, '不能报一个假的"一圈"')
+})
+

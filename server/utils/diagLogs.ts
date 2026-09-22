@@ -202,8 +202,17 @@ const DATE_TAG_RE = /^\d{4}-\d{2}-\d{2}$/
 /**
  * 取出"最近 `days` 天里**存在**的日志文件"，按**日期升序**（最旧在前，便于人读时间线）。
  *
+ * ## 🆕 2026-09-22 审计 B9：超上限时**取文件尾**（不再是文件头）
+ * 老实现取前 `maxBytes` 字节（"截头部"）。理由写的是"截尾会丢同一天最早发生的线索"——
+ * 但那是在**没有记录窗口**的老世界里成立的。现在用户明确是"**开始记录 → 复现 → 导出**"：
+ * 最新、最有用的证据在**文件尾部**，而截头部恰好把**用户刚复现的那一段**切在包外
+ * （审计实测：10 MB 响应 + 8 MB 上限 ⇒ 崩溃现场被切掉）。
+ * 所以改成**从尾部取**（最后 `maxBytes` 字节），并且：
+ *   · 丢掉可能被切断的**首行残段**（`JSON.parse` 失败的行本来就会被跳过，但留着会让人以为"这一行坏了"）；
+ *   · 首尾都有截断时在 `truncated` 里如实说明（manifest 里写"只保留**文件尾**"）。
+ *
  * @param days     向前数几天（含今天），默认 `DIAG_LOG_DAYS`
- * @param maxBytes 每个文件的读取上限（超出即截断），默认 `DIAG_LOG_MAX_BYTES`
+ * @param maxBytes 每个文件的读取上限（超出即取尾部），默认 `DIAG_LOG_MAX_BYTES`
  * @param dir      日志目录（默认 = logger 的 `LOG_DIR`；**只给单测注入临时目录用**，生产不传）
  * @param now       "今天"（默认当前时间；只给单测固定日期用）
  */
@@ -230,11 +239,19 @@ export function recentLogFiles(
       const raw = readFileSync(p)
       const truncated = raw.byteLength > maxBytes
       /**
-       * 截断时按**字节**切，再按 UTF-8 解回字符串：末尾若正好切在多字节字符中间，
+       * 截断时按**字节**从**尾部**切，再按 UTF-8 解回字符串：切点若正好落在多字节字符中间，
        * `toString('utf8')` 会把它变成 U+FFFD（而不是让包里的文本成为非法 UTF-8 ——
        * 有些文本编辑器/JSON 解析器看到非法序列会整段显示不出来）。
        */
-      const text = truncated ? raw.subarray(0, maxBytes).toString('utf8') : raw.toString('utf8')
+      let text = truncated ? raw.subarray(raw.byteLength - maxBytes).toString('utf8') : raw.toString('utf8')
+      if (truncated) {
+        /**
+         * 丢掉**首行残段**：从尾部切时，第一行几乎必然是被切断的半截 JSON。
+         * 留着它除了让读日志的人以为"这条坏了"没有任何价值（下游 `diagLogsLinesInWindow` 本来也会跳过）。
+         */
+        const nl = text.indexOf('\n')
+        if (nl >= 0) text = text.slice(nl + 1)
+      }
       out.push({ name, bytes: raw.byteLength, text, truncated })
     }
   } catch {

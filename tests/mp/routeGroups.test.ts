@@ -8,7 +8,15 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { groupRoutesByCampus, warnForSelection, toSelectItems, ROUTE_CLUSTER_THRESHOLD_M } from '../../utils/mp/routeGroups.ts'
+import {
+  groupRoutesByCampus,
+  warnForSelection,
+  toSelectItems,
+  trackEditorLink,
+  lineIdFromQuery,
+  TRACK_EDITOR_PATH,
+  ROUTE_CLUSTER_THRESHOLD_M,
+} from '../../utils/mp/routeGroups.ts'
 import type { MpRunLine } from '../../src/mp/types.ts'
 
 /** 与探针数据逐字一致的 8 条线路（仅坐标，无 PII） */
@@ -109,4 +117,39 @@ test('toSelectItems：默认不加自定义名（行为逐字不变），传解�
   )
   // ④ value（提交用的 lineId）不受改名影响 —— 报文口径零变化
   assert.deepEqual(withCustom.filter((i) => i.value).map((i) => i.value), plain.filter((i) => i.value).map((i) => i.value))
+})
+
+// ---------- 🆕 2026-09-22（真实用户实测）：直达「跑道编辑」并**预选线路**的链接 ----------
+/**
+ * 为什么有这组：跑步页提示"去「跑道编辑」描一条"时，用户跳过去还得**自己在下拉里找那条线路**
+ * —— 实测有人因此在别的页面兜了半天、画的东西根本用不上。带 `?line=<pointId>` 后编辑页会直接选中。
+ * 写（`trackEditorLink`）与读（`lineIdFromQuery`）必须成对，故一起钉住。
+ */
+test('trackEditorLink：带 lineId ⇒ 分组后的真实路径 + `?line=`（并对特殊字符做 URL 编码）', () => {
+  assert.equal(trackEditorLink('sunrunLine-20210918000001'), '/field/track-editor?line=sunrunLine-20210918000001')
+  // 必须用 `/field/track-editor`：旧路径 `/track-editor` 会 redirect，**查询串会被丢掉** ⇒ 预选失效
+  assert.equal(TRACK_EDITOR_PATH, '/field/track-editor')
+  assert.ok(trackEditorLink('a b&c').startsWith('/field/track-editor?line='))
+  assert.equal(trackEditorLink('a b&c'), `/field/track-editor?line=${encodeURIComponent('a b&c')}`, '特殊字符必须编码，否则 query 会被截断')
+})
+
+test('trackEditorLink：没有 lineId（空串/null/undefined/空白）⇒ 不带查询串（编辑页自己选线）', () => {
+  for (const v of ['', null, undefined, '   ']) {
+    assert.equal(trackEditorLink(v), '/field/track-editor', `lineId=${JSON.stringify(v)} 时不该带 ?line=`)
+  }
+})
+
+test('lineIdFromQuery：与 trackEditorLink 成对（字符串照收；数组/对象/空白/非串 ⇒ 空串）', () => {
+  assert.equal(lineIdFromQuery('sunrunLine-1'), 'sunrunLine-1')
+  assert.equal(lineIdFromQuery('  sunrunLine-1  '), 'sunrunLine-1', '两端空白要折掉')
+  assert.equal(lineIdFromQuery(['sunrunLine-1', 'other']), 'sunrunLine-1', '数组取第一个（路由 query 可能给数组）')
+  assert.equal(lineIdFromQuery(undefined), '')
+  assert.equal(lineIdFromQuery(null), '')
+  assert.equal(lineIdFromQuery(''), '')
+  assert.equal(lineIdFromQuery(42), '')
+  assert.equal(lineIdFromQuery({ bad: true }), '')
+  // 往返：写出来的链接，它的 query 值必须能被读回原值
+  const id = 'sunrunLine-20210918000001'
+  const q = trackEditorLink(id).split('?line=')[1]!
+  assert.equal(lineIdFromQuery(decodeURIComponent(q)), id)
 })

@@ -236,6 +236,37 @@ export function warnForSelection(groups: RouteGroupsResult, lineId: string): str
   return `⚠️ 你选的是【其他校区】的线路，距本校区约 ${kmText(hit.distanceFromHomeM)}：轨迹会生成在该校区，请确认这是你要跑的。`
 }
 
+// ---------- 🆕 2026-09-22：线路相关的 UI 直达链接（纯字符串拼接，可单测） ----------
+/**
+ * 「跑道编辑」子页路径（**唯一来源**）。
+ * ⚠️ 必须用分组后的真实路径 `/field/track-editor`：`/track-editor` 只是会 redirect 的旧路由，
+ * 而 redirect 会**丢掉查询串** ⇒ 用旧路径时 `?line=` 预选就失效了。
+ */
+export const TRACK_EDITOR_PATH = '/field/track-editor'
+
+/**
+ * **直达「跑道编辑」并预选某条线路** 的链接。
+ *
+ * 为什么要有它（2026-09-22 真实用户实测）：跑步页提示"去「跑道编辑」描一条"时，
+ * 用户跳过去还得**自己在下拉里找到那条任务的线路** —— 实测有人因此在别的页面兜了半天、
+ * 画的东西根本用不上。带上 `?line=<pointId>` 后，编辑页会直接选中这条线路。
+ *
+ * `lineId` 为空/空白 ⇒ 不带查询串（编辑页按自己的默认选线逻辑走）。
+ */
+export function trackEditorLink(lineId?: string | null): string {
+  const id = String(lineId ?? '').trim()
+  return id ? `${TRACK_EDITOR_PATH}?line=${encodeURIComponent(id)}` : TRACK_EDITOR_PATH
+}
+
+/**
+ * 从路由 `query.line` 里读线路 id（与 `trackEditorLink` **成对**：写/读共用同一个参数名）。
+ * 非法（数组 / 对象 / 非字符串 / 空白）⇒ 空串 = "没有指定"，调用方按原逻辑选线。
+ */
+export function lineIdFromQuery(raw: unknown): string {
+  const v = Array.isArray(raw) ? raw[0] : raw
+  return typeof v === 'string' ? v.trim() : ''
+}
+
 /** 下拉框选项（v-select 的 items）：分组标题（禁用项）+ 「名称（点数 · 长度 · 跨校区提示）」 */
 export interface RouteSelectItem {
   title: string

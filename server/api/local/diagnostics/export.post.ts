@@ -52,6 +52,7 @@ import { DIAG_EXPORT_PATH, DIAG_LOG_DAYS, DIAG_LOG_MAX_BYTES, DIAG_LOG_DIR, DIAG
 import type { DiagSnapshot, DiagWindow } from '../../../../utils/mp/diagnostics'
 import { assertLocalRequest } from '../../../utils/tokenScanState'
 import { diagLogsLinesInWindow, partitionLogsByRedline, recentLogFiles, summarizeDiagLineAccount } from '../../../utils/diagLogs'
+import { stripGeometryFromRespBody } from '../../../../utils/mp/responseRecord'
 import { DIAG_INSTANCE_ID, ignoredPrevInstanceInfo, readSession, sessionElapsedSeconds } from '../../../utils/diagSession'
 import { logInfo, logWarn } from '../../../utils/logger'
 import { createZip } from '../../../utils/zip'
@@ -148,8 +149,39 @@ export default defineEventHandler(async (event) => {
   /**
    * 按窗口逐行过滤（纯函数，有单测）。**无论有没有窗口都会跑一遍**：
    * `window = null` 时它退化为"原样返回并数行数"，这样 manifest 里的行数计数两种路径口径一致。
+   *
+   * 🆕 2026-09-22：日志行里现在有**响应内容**（`respBody`，见「全记录」）——任务/线路响应会带经纬度。
+   * 用户在界面上**关掉**「包含跑道/任务坐标」时，包里就不该还有坐标 ⇒ 这里逐行把 `respBody` 里的
+   * 坐标字段剥掉（`stripGeometryFromRespBody()`，纯函数、有单测）；**开关打开时一个字节都不动**。
+   * 判据为可执行：只删 `COORD_KEYS` 那些键，其余字段（含结构与长度）原样保留。
    */
-  const scoped = logFiles.map((f) => ({ file: f, scope: diagLogsLinesInWindow(f.text, windowRange) }))
+  const includeGeometry = Boolean(snap?.trackLibrary?.includeGeometry)
+  const scoped = logFiles.map((f) => {
+    const scope = diagLogsLinesInWindow(f.text, windowRange)
+    if (includeGeometry || !scope.text) return { file: f, scope }
+    const text = scope.text
+      .split('\n')
+      .map((line) => {
+        if (!line.includes('"respBody"')) return line
+        try {
+          const obj = JSON.parse(line) as Record<string, unknown>
+          if (obj && typeof obj === 'object' && obj.respBody !== undefined) {
+            obj.respBody = stripGeometryFromRespBody(obj.respBody)
+            /**
+             * ⚠️ 这里**重新序列化**了日志行（唯一一处）—— 因为要改动 JSON 内容。
+             * 代价：该行的键序/空白与磁盘上不再逐字节相同；换来的是"用户关掉坐标开关后包里真的没有坐标"。
+             * 只对**含 `respBody` 的行**这么做，其余行原样保留。
+             */
+            return JSON.stringify(obj)
+          }
+        } catch {
+          // 单行坏了就原样留着（红线与窗口过滤的口径都不受影响；坏行本来就会被下游跳过）
+        }
+        return line
+      })
+      .join('\n')
+    return { file: f, scope: { ...scope, text } }
+  })
 
   // ---------- ④ 🔴 红线自检（**降级而非整包拒绝**，2026-09-21 父代理定）----------
   /**
@@ -192,9 +224,22 @@ export default defineEventHandler(async (event) => {
   )
   const logEntries = safeScoped.map(({ file: f, scope }) => {
     const notes: string[] = []
+    /**
+     * ⚠️ 审计（可疑 4）：这里说的是**磁盘上原始文件**的大小，而包内同名 `.log` 只含窗口内的行 ——
+     * 老文案写"共 N 字节"会让人以为包里有这么多（顶层 `diagnostics.logBytesInPackage` 已经分开，
+     * 文件条目也得跟上）。现在明确写"磁盘原始大小"，并紧跟一句"包内实际见 diagnostics"。
+     */
     notes.push(f.truncated
-      ? `超过单文件上限 ${DIAG_LOG_MAX_BYTES} 字节，已截断（只保留文件头 ${DIAG_LOG_MAX_BYTES} 字节，原始 ${f.bytes} 字节）`
-      : `共 ${f.bytes} 字节`)
+      ? `磁盘原始 ${f.bytes} 字节，超过单文件上限 ${DIAG_LOG_MAX_BYTES} 字节已截断（保留「文件尾」${DIAG_LOG_MAX_BYTES} 字节 —— 最新证据优先）`
+      : `磁盘原始 ${f.bytes} 字节（未截断）`)
+    // 包内实际多少：与顶层 `diagnostics.logBytesInPackage / lines.*` 同口径，避免"文件条目说 100KB、包里只有 2KB"的误读
+    notes.push(`本包内这个文件只含窗口内的行，实际大小见 manifest 顶层 diagnostics（本文件保留 ${scope.kept} 行）`)
+    /**
+     * 🆕 2026-09-22「全记录」：日志行里现在有**响应结构 + 脱敏后的响应内容**（`respShape` / `respBody` / `unpack`）。
+     * 这句必须写在每个日志文件的说明里 —— 否则维护者看到 `respBody` 会以为是别的东西，
+     * 用户看到包里日志变大也不知道多了什么。
+     */
+    notes.push('每行含该请求的响应结构 respShape 与脱敏后的响应内容 respBody（单条 ≤32KB）+ 解包退化标记 unpack')
     if (win) {
       notes.push(`按记录窗口过滤：保留 ${scope.kept} 行、剔除窗口外 ${scope.outOfWindow} 行${scope.unparsable ? `、另有 ${scope.unparsable} 行没有可解析的时间戳也被剔除` : ''}`)
     } else {
@@ -291,7 +336,47 @@ export default defineEventHandler(async (event) => {
       appVersion: snap?.appVersion ?? '',
       route: snap?.route ?? '',
       userAgent: snap?.userAgent ?? '',
-      includeGeometry: Boolean(snap?.trackLibrary?.includeGeometry),
+      includeGeometry,
+      /**
+       * 🆕 2026-09-22：**任务本体取自哪里**（`memory(useMpReal.task)` / `cache.task` / `cache.data…` / `none`）。
+       * 真实用户那次"任务里 0 条线路"的误判，根因就是快照读到了**响应信封**而不是任务本体 ——
+       * 有了这一行，维护者看 manifest 就能定位"这份快照的任务是从哪一层取的"。
+       */
+      taskSource: typeof snap?.task?.source === 'string' ? snap.task.source : '',
+      /** 进包快照里任务摘要与线路的条数（与 `taskSource` 对照，一眼看出三者是否自洽） */
+      taskSummary: snap?.task?.present
+        ? {
+            runPointListCount: snap?.task?.summary?.runPointListCount ?? 0,
+            linesCount: Array.isArray(snap?.task?.lines) ? snap.task.lines.length : 0,
+            shapeLine: String(snap?.task?.summary?.shapeLine ?? ''),
+          }
+        : null,
+      /**
+       * 🆕 2026-09-22（用户原话："你刚刚说刷新后就丢了，我们直接丢之前记录下来不行吗"）：
+       * **最近一次成功读取时的状态**（含开关原值 / 摄像头杆 flag / 当时的门禁终值）。
+       *
+       * 🔴 口径必须写在 manifest 里（维护者与用户都要看到）：
+       *    **这是历史证据，不参与任何放行判断**；真实提交前必须重新读取（开关可能已变）。
+       * `note` 由客户端给出的 `lastKnownSummary` 口径改写，服务端只补"读取时刻"与这句边界。
+       */
+      lastKnown: snap?.lastKnown
+        ? {
+            at: String(snap.lastKnown.at ?? ''),
+            atMs: Number(snap.lastKnown.atMs ?? 0),
+            status: String(snap.lastKnown.status ?? ''),
+            switchesFound: Boolean(snap.lastKnown.switches),
+            switches: snap.lastKnown.switches ?? null,
+            cameraFlag: snap.lastKnown.cameraFlag ?? null,
+            cameraFlagLineId: String(snap.lastKnown.cameraFlagLineId ?? ''),
+            taskShape: String(snap.lastKnown.task?.shapeLine ?? ''),
+            runPointListCount: Number(snap.lastKnown.task?.runPointListCount ?? 0),
+            gateAllow: Boolean(snap.lastKnown.gateAllow),
+            gateBlockedBy: String(snap.lastKnown.gateBlockedBy ?? ''),
+            note:
+              '这是最近一次成功读取时的状态（含开跑开关原值 / 摄像头杆 flag / 当时的门禁终值），' +
+              '不参与任何放行判断；真实提交前必须重新读取（开关可能已变）。',
+          }
+        : null,
       /** 🆕 事件时间线的账（客户端按窗口过滤 + `DIAG_TIMELINE_MAX` 上限兜底的结果） */
       timeline: {
         max: DIAG_TIMELINE_MAX,
@@ -306,7 +391,7 @@ export default defineEventHandler(async (event) => {
     files: [
       ...diagManifestEntries({
         logNames: safeLogs.map((f) => f.name),
-        includeGeometry: Boolean(snap?.trackLibrary?.includeGeometry),
+        includeGeometry,
         logNote: win
           ? `本次只收录记录窗口内的日志行（共保留 ${account.keptLines} 行，剔除窗口外 ${account.droppedLines} 行${account.unparsableLines ? `、无时间戳 ${account.unparsableLines} 行` : ''}）`
           : '未按记录窗口过滤（本次运行没有记录窗口）⇒ 收录最近 ' + DIAG_LOG_DAYS + ' 天的全量日志',

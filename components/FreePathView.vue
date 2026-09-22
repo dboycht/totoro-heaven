@@ -55,6 +55,8 @@ import { buildFreeShapeSave, startClearedNote } from '~/utils/mp/freePathSave'
 // 「改回内外双圈」要判"记录上现存的这两圈到底合不合法" ⇒ 复用跑道编辑页同一套纯函数判据
 import { validateRings } from '~/utils/mp/trackEditor'
 import { LOCAL_FREE_LINE_ID, LOCAL_FREE_LINE_NAME, localFreeTrackLine } from '~/utils/mp/trackLibrary'
+// 🆕 2026-09-22（真实用户实测）：本页对"有官方线路的任务"不生效 ⇒ 给一条直达「跑道编辑」的出路
+import { trackEditorLink } from '~/utils/mp/routeGroups'
 import type { MpRunLine } from '~/src/mp/types'
 
 /** 契约层坐标（latitude/longitude 可能是字符串） */
@@ -64,7 +66,7 @@ type N = { latitude: number; longitude: number }
 const num = (p: LatLng): N => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) })
 
 // 与 run.vue / 跑道编辑页同一套取法：`useMpReal()` 返回 profile/status/task（真实链路），演示态用 useMpDemo 的 task 兜底
-const { status: realStatus, task: realTask } = useMpReal()
+const { status: realStatus, task: realTask, autoRestoreFromCache } = useMpReal()
 const { task: demoTask } = useMpDemo()
 const activeTask = computed(() => realTask.value ?? demoTask.value)
 /** 任务下发的线路（**原样**；本页只用来"参照 + 定位"，从不写它、也不改它） */
@@ -194,6 +196,12 @@ const onResize = () => {
   if (el) viewport.value = { w: el.clientWidth, h: el.clientHeight }
 }
 onMounted(() => {
+  /**
+   * 🆕 2026-09-22（真实用户实测）：**先从本机缓存把任务恢复回来**，再读路线库。
+   * 否则刷新后进本页，内存里没有任务 ⇒ 连"本任务到底有没有下发官方线路"都判不了，
+   * 用户会在这里白画半天（他实测就是这种情况）。
+   */
+  autoRestoreFromCache()
   lib.load()
   onResize()
   window.addEventListener('resize', onResize)
@@ -681,6 +689,11 @@ const focusOn = (ptsIn?: P[]) => {
 const locateNow = () => focusOn()
 /** 这个任务下发的官方线路条数（提示里如实报数） */
 const officialLineCount = computed(() => activeLines.value.length)
+/**
+ * 直达「跑道编辑」并**预选本任务第一条官方线路**（`?line=`）——
+ * 给"本页对当前任务不生效"那条提示配一个出路，别让用户在这儿白画。
+ */
+const trackEditorHref = computed(() => trackEditorLink(activeLines.value[0]?.pointId ?? ''))
 /** SVG path 构造（与跑道编辑页同一个写法） */
 const pathOf = (pts: P[], close = false) => {
   if (!pts.length) return ''
@@ -713,6 +726,17 @@ const pathOf = (pts: P[], close = false) => {
         只有「<b>服务端未下发线路</b>」的任务（如研究生院「<b>研途健行</b>」）才会用它开跑 ——
         那种任务没有官方路线可选，跑步页就用这条本机几何生成轨迹。
         它<b>不会影响官方线路任务</b>，也<b>绝不会</b>进提交报文（提交用的是厂商线路 id）。
+      </div>
+      <!--
+        🆕 2026-09-22（真实用户实测：**他在本页画了半天，结果这条几何根本用不上**）——
+        既然本页对"有官方线路的任务"不生效，就必须在这里给一条**直达出路**：
+        去「跑道编辑」给这条官方线路描一圈（带 `?line=` 预选本任务的第一条线路）。
+        判据：**说"这块不生效"的地方，必须同时给出"那该去哪里"的可点入口**。
+      -->
+      <div class="mt-2">
+        <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-vector-polyline" :to="trackEditorHref">
+          去「跑道编辑」给这条官方线路描一条
+        </v-btn>
       </div>
     </v-alert>
 

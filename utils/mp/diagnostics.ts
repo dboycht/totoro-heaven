@@ -183,6 +183,15 @@ export interface DiagSnapshot {
   /** 当前任务：摘要 + **完整原始 JSON**（排障的核心证据） */
   task: {
     present: boolean
+    /**
+     * 🆕 2026-09-22：**任务本体取自哪里**（`memory(useMpReal.task)` / `cache.task` /
+     * `cache.data(obj,runPointList)` / `none`）。
+     * 为什么需要它：真实用户那次故障里，快照把 **API 响应信封**当成了任务本体 ⇒
+     * `runPointList` 读成 0 条、`shapeLine` 得出 `route=free(0)` 的**错误结论**（见 `resolveCacheTask()`）。
+     * 有了这一行，维护者一眼能看出"这份快照的任务是从哪一层取的"，不必再靠猜。
+     * **可选**字段：老快照没有它。
+     */
+    source?: string
     summary: {
       paperId: string
       paperName: string
@@ -228,6 +237,14 @@ export interface DiagSnapshot {
   serverInstanceId?: string
   /** 🆕 2026-09-22：时间线按窗口过滤/截断的结果（写进 manifest，便于维护者判断"是不是漏了操作"） */
   timelineStats?: DiagTimelineStats
+  /**
+   * 🆕 2026-09-22（用户原话："刷新后就丢了，我们直接丢之前记录下来不行吗"）：
+   * **最近一次成功读取时的状态**（含开关原值、摄像头杆 flag、当时的门禁终值）。
+   *
+   * 🔴 **它只是诊断证据，不参与任何放行判断**；真实提交前必须**重新读取**（开关可能已变）。
+   * **可选**字段：老快照没有它，服务端照旧写盘。
+   */
+  lastKnown?: DiagLastKnown | null
 }
 
 /**
@@ -290,6 +307,40 @@ export function diagWindowMatch(args: {
     return { reason: 'unreported', detail: '服务端现在没有记录窗口（这次运行没点过「开始记录」，或它已被清掉）' }
   }
   return { reason: 'overwritten', detail: `服务端的记录窗口已换成 ${responded}（本页手里是 ${client}）` }
+}
+
+/**
+ * 🆕 2026-09-22（用户原话："你刚刚说刷新后就丢了，我们直接丢之前记录下来不行吗"）：
+ * **最近一次成功读取时的状态** —— 纯诊断证据，**绝不参与放行判断**（见 `utils/mp/diagLastKnown.ts` 的边界说明）。
+ *
+ * 现场用途：用户 17:10:56 读到过"人脸关/抽查关/摄像头杆未启用"，18:40 导出时实时状态已空
+ * （刷新丢内存态）⇒ 有了这一段，包里就能写清"最近一次读到开关是 17:10:56：均无阻碍（需重新读取）"。
+ */
+export interface DiagLastKnown {
+  /** 采集时刻（ISO，本地机器时钟） */
+  at: string
+  /** 采集时刻（epoch ms；界面排序/显示用） */
+  atMs: number
+  /** 当时的数据状态：`ready` 读到任务 / `partial` 只读到部分 / `demo` 演示模式 */
+  status: 'ready' | 'partial' | 'demo'
+  /** 学校/校区（掩码后的学号与姓名在 `student` 里） */
+  school: { schoolCode: string; schoolName: string; campusId: string; campusName: string }
+  /** 身份（🔴 只掩码形态，绝不含原文） */
+  student: { snCode: string; studentName: string; phone: string }
+  /** 凭证：**只记布尔与指纹**（长度 + 哈希前 12 位），绝不记 token 本体 */
+  auth: { hasToken: boolean; tokenFingerprint: string }
+  /** 任务摘要 */
+  task: { present: boolean; paperName: string; paperId: string; runPointListCount: number; shapeLine: string }
+  /** 开跑开关的**原值**（人脸/随机抽查/展示等；`null` = 当时没读到） */
+  switches: Record<string, string> | null
+  /** 摄像头杆 flag（`null` = 未知）与它对应的线路 id */
+  cameraFlag: boolean | null
+  cameraFlagLineId: string
+  cameraFlagError: string
+  /** **当时**的门禁终值（由同一个 `evaluateRunGate()` 算出；只是证据，不用于放行） */
+  gateAllow: boolean
+  gateBlockedBy: string
+  gateReason: string
 }
 
 /**
@@ -454,19 +505,36 @@ export function unescapeForRedlineScan(text: string): string {
     .replace(/\\\\/g, '\\')
 }
 
+import { CREDENTIAL_PATTERNS } from './credentialScan'
+
 /**
  * 导出前的"红线自检"：包内**任何**文本都不许出现凭证样式（服务端与单测共用同一判据）。
  *
  * ⚠️ 每条文本会跑**原文 + 还原转义后的两个变体**（见 `unescapeForRedlineScan()`）——
  * 只跑原文会让"转义进 JSON 的凭证"漏网（审计实测反例，已有单测钉住）。
+ *
+ * 🆕 2026-09-22 审计 B6 的第二半：判据与**落盘侧的掩码形态**对齐（`CREDENTIAL_PATTERNS` 单一来源）。
+ * 老实现只认 `Bearer …` / `"token":"…"` / `token=…`，于是：
+ *   · **裸 JWT** 只被这里判命中 ⇒ 文件被剔（用户丢证据）；
+ *   · `access_token` / `X-Auth-Token` / `tokenValue` / `sk-live-…` **两边都不认** ⇒ 随包发出。
+ * 现在"载明字段名的凭证"与"裸高熵凭证"都在这里被判命中（漏掩的那一侧因此还会被剔文件兜住）。
  */
 export function assertNoCredentials(texts: string[]): { ok: boolean; hits: string[] } {
   const patterns: { re: RegExp; why: string }[] = [
     { re: /Bearer\s+[A-Za-z0-9._-]{16,}/i, why: 'Bearer 凭证' },
     { re: /\beyJ[A-Za-z0-9._-]{20,}/, why: 'JWT 样式串' },
-    { re: /"token"\s*:\s*"[^"]{16,}"/i, why: 'token 字段明文' },
-    { re: /'token'\s*:\s*'[^']{16,}'/i, why: 'token 字段明文' },
-    { re: /token=[A-Za-z0-9._-]{16,}/i, why: 'token= 查询串' },
+    /**
+     * 载明字段名的凭证：token / auth / secret / sessionkey / ticket …（与落盘侧 `SENSITIVE_KEYS` 同口径）。
+     * ⚠️ 两条实测修正：
+     *   · 值的长度门槛用 **24+**（不是 16）：本程序自己的 `tokenFingerprint`（形如 `len=101 head=WXXC tail=abcd`）
+     *     恰好 16~20 字符 ⇒ 用 16 会把**正常快照**判成"token 字段明文"（实测踩到）。
+     *   · 允许 `fingerprint` 例外：`"tokenFingerprint"` 是"长度 + 前后各 4 位"的**指纹**，不是凭证本体。
+     */
+    { re: /"[^"]*(?:token|auth|secret|sessionkey|ticket)(?!fingerprint)[^"]*"\s*:\s*"[^"]{24,}"/i, why: 'token 字段明文' },
+    { re: /'[^']*(?:token|auth|secret|sessionkey|ticket)(?!fingerprint)[^']*'\s*:\s*'[^']{24,}'/i, why: 'token 字段明文' },
+    { re: /[?&][^=&\s]*(?:token|auth|secret|ticket)[^=&\s]*=[A-Za-z0-9._-]{20,}/i, why: 'token= 查询串' },
+    { re: /\b(?:sk|pk|rk)-[A-Za-z0-9][A-Za-z0-9_-]{15,}/, why: 'sk- 形态密钥' },
+    ...CREDENTIAL_PATTERNS,
   ]
   const hits: string[] = []
   for (const raw of texts) {

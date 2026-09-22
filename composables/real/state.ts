@@ -116,6 +116,16 @@ export function useRealState() {
    */
   const cacheHasToken = useState('mpRealCacheHasToken', () => false)
   const cacheTokenMask = useState('mpRealCacheTokenMask', () => '')
+  /**
+   * 🆕 2026-09-22（真实用户实测）：**本次页面加载时"任务是从本机缓存自动恢复的"** ——
+   * 值是那次读取的时刻（毫秒）；0 = 不是恢复来的（内存里本来就有 / 用户显式读取过）。
+   *
+   * 用途：跑步页据此显示"已从本机缓存恢复（最近一次读取于 HH:mm）"，
+   * 并说明**开跑开关（人脸/抽查）与摄像头杆不在缓存里** ⇒ 要真实提交得点一次「重新读取」。
+   * ⚠️ 一旦真的联网读取成功（`loadRealData`）或清空本机数据，这个标记必须复位 ——
+   * 否则界面会一直挂着"恢复来的"这句话，与事实不符。
+   */
+  const restoredAt = useState('mpRealRestoredAt', () => 0)
 
   const phase = useState<RealPhase>('mpRealPhase', () => 'idle')
   const phaseMessage = useState('mpRealPhaseMessage', () => '')
@@ -158,6 +168,8 @@ export function useRealState() {
     cachePaperName,
     cacheHasToken,
     cacheTokenMask,
+    /** 🆕 2026-09-22：本次加载的任务是不是"从本机缓存自动恢复"来的（0 = 不是） */
+    restoredAt,
     phase,
     phaseMessage,
     remainingSeconds,

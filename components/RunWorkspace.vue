@@ -2,6 +2,31 @@
   <div>
     <RunGateNotice :gate-status="gateStatus" :is-logged-in="isLoggedIn" />
 
+    <!--
+      🆕 2026-09-22（真实用户实测）：**任务是从本机缓存恢复来的** ⇒ 顶部如实说明 + 一键「重新读取」。
+      为什么必须说清：用户刷完页面看到"请先读取真实账号和任务"会以为程序坏了（他反复撞上）；
+      而"恢复"只能拿到缓存里的东西 —— **开跑开关与摄像头杆不在缓存里**，所以真实提交前必须再读一次
+      （本地模拟不受影响，现在就能点「开始跑步」）。
+    -->
+    <v-alert v-if="restoredAt" type="info" variant="tonal" density="comfortable" class="mb-3">
+      <div class="font-weight-bold">
+        <v-icon class="mr-1" size="18">mdi-history</v-icon>{{ restoredNotice }}
+      </div>
+      <div class="text-body-2 mt-1">
+        刷新后内存里没有任务，已用<b>本机缓存</b>自动恢复（含上次选中的线路），<b>没有联网</b>。
+        ⚠️ <b>开跑开关（人脸 / 随机抽查）与摄像头杆不在缓存里</b>—— 要<b>真实提交</b>请先点「重新读取」把它们读回来；
+        只做<b>本地模拟</b>（开始跑步 → 看自检表与报文预览）现在就能用。
+      </div>
+      <div class="d-flex flex-wrap ga-2 mt-2">
+        <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-refresh" :disabled="submitInFlight" @click="doRestoreCached">
+          {{ cacheHasToken ? '重新读取（刷新开跑开关）' : '重新读取（需先在「工作台」取 token）' }}
+        </v-btn>
+        <span v-if="cacheTokenMask" class="text-caption align-self-center">
+          已保存 token <code>{{ cacheTokenMask }}</code>
+        </span>
+      </div>
+    </v-alert>
+
     <v-card class="mb-4" variant="tonal">
       <v-card-text class="d-flex align-center flex-wrap ga-3 py-2">
         <v-chip :color="realReady ? 'success' : demoMode ? 'accent' : 'warning'" size="small" variant="tonal">
@@ -205,21 +230,46 @@
       <!-- 路线来源（2026-09-18 收紧）：**只列你描好的路线**，并以它的几何为基准生成轨迹 -->
       <!-- 🆕 2026-09-22（issue #12）：**先分"任务有没有下发线路"，再说"本机描没描"** ——
            原先只有"本机"一条判据，于是"服务端未下发线路"必然被归因成"你还没描跑道"。 -->
-      <v-alert v-if="routeIsFree" :type="libTotal > 0 ? 'info' : 'warning'" variant="tonal" density="compact" class="mt-3">
+      <v-alert
+        v-if="routeIsFree"
+        :type="freeRouteIsFallback ? 'warning' : libTotal > 0 ? 'info' : 'warning'"
+        variant="tonal"
+        density="compact"
+        class="mt-3"
+      >
         <div class="font-weight-bold">本任务服务端未下发线路（不指定路线）。</div>
         <div class="text-body-2 mt-1">
           任务的线路列表（<code>runPointList</code>）为空 ⇒ <b>没有服务端线路可选</b>，线路下拉已停用。
           <template v-if="libTotal > 0">
-            轨迹将用你<b>本机已有的跑道几何</b>生成（取本机第一条已描跑道）；提交时<b>只带任务号、不带线路标识</b>。
+            轨迹将用你<b>本机已有的跑道几何</b>生成；提交时<b>只带任务号、不带线路标识</b>。
           </template>
           <template v-else>
-            本机<b>一条跑道都还没描过</b> —— 我们总得有个几何才能生成轨迹：请先去
-            「<b>我的场地 → 跑道编辑</b>」描一条外圈并保存（本机），回到本页即可开跑。
+            本机<b>一条都没画过</b> —— 我们总得有个几何才能生成轨迹：请先去「<b>我的场地 → 非官方路径【测试】</b>」
+            画一条（圈型 / 折线型都行）并保存到本机，回到本页即可开跑。
           </template>
         </div>
-        <div v-if="libTotal === 0" class="mt-2">
-          <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-vector-polyline" to="/field/track-editor">
-            去「跑道编辑」描一条
+        <!--
+          🆕 2026-09-22（用户反馈："画完回跑步页看不到自己被没被用上"）：
+          **把"用哪一条"说清楚** —— 名称 + 形状与一圈长度（`localEntryGeometryText`，与跑步引擎同源读数）
+          ＋ 判据自己给出的那句依据（`freeRouteGeometryChoice().reason`：优先「非官方路径」保存的那条，
+          没有它才退回"最近保存的那条"，此时 `freeRouteIsFallback` 为真 ⇒ 用警告色把话说透）。
+        -->
+        <div v-if="freeRouteEntry" class="text-body-2 mt-1">
+          <v-icon size="16" class="mr-1">{{ freeRouteIsFallback ? 'mdi-alert-outline' : 'mdi-map-marker-path' }}</v-icon>
+          <b>将使用本机几何：{{ freeRouteEntryName }}</b> —— {{ freeRouteEntryText }}
+        </div>
+        <div v-if="freeRouteEntry" class="text-caption mt-1" :class="freeRouteIsFallback ? 'text-warning' : 'text-medium-emphasis'">
+          <b>选它的依据</b>：{{ freeRouteReason }}
+          <template v-if="!freeRouteIsFallback">
+            （想换一条：去「我的场地 → 非官方路径【测试】」重新保存即可）
+          </template>
+        </div>
+        <div v-if="libTotal === 0" class="mt-2 d-flex flex-wrap ga-2">
+          <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-vector-curve" to="/field/free-path">
+            去「非官方路径【测试】」画一条
+          </v-btn>
+          <v-btn size="small" variant="tonal" prepend-icon="mdi-vector-polyline" to="/field/track-editor">
+            或去「跑道编辑」描内外圈
           </v-btn>
         </div>
       </v-alert>
@@ -234,7 +284,9 @@
           去「<b>跑道编辑</b>」把线路切到这条任务的线路 → 「快速定位」→ 沿卫星图描外圈 → 「按外圈自动生成内圈」→ 保存（本机）。
         </div>
         <div class="mt-2">
-          <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-vector-polyline" to="/track-editor">
+          <!-- 🆕 2026-09-22（真实用户实测）：带上 `?line=` **预选本任务的线路**（原来跳过去还得自己在下拉里找），
+               并统一到分组后的真实路径（旧路径 `/track-editor` 会 redirect，**查询串会被丢掉**）。 -->
+          <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-vector-polyline" :to="trackEditorHref">
             去「跑道编辑」描一条
           </v-btn>
         </div>
@@ -248,7 +300,7 @@
           保存后回到本页，这条线路就会出现在下面的下拉框里。
         </div>
         <div class="mt-2">
-          <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-vector-polyline" to="/field/track-editor">
+          <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-vector-polyline" :to="trackEditorHref">
             去「跑道编辑」描一条
           </v-btn>
         </div>
@@ -257,7 +309,9 @@
       <v-alert v-if="!realReady && !demoMode" type="warning" variant="tonal" density="compact" class="mt-3">
               还没读到任务：回<NuxtLink to="/">工作台</NuxtLink>粘贴 token → 点「读取真实账号与任务」；
               或点上方「载入演示数据」只试界面与报文（不发请求）。
-              <!-- 刷新后默认不自动恢复缓存，这里给显式入口（2026-09-18：恢复 = 重建会话 + 自动读取） -->
+              <!-- 🆕 2026-09-22：挂载时已先试过 `autoRestoreFromCache()`（不联网）。走到这条说明
+                   **本机缓存里也没有可用任务**（或缓存坏了）⇒ 仍给显式入口作为兜底：
+                   缓存里有 token 时它能"重建会话 + 联网读取"，没有 token 时会提示去取 token。 -->
               <div v-if="hasCachedTask" class="d-flex flex-wrap ga-2 mt-2">
                 <v-btn size="small" variant="tonal" prepend-icon="mdi-history" @click="doRestoreCached">
                   {{ cacheHasToken ? '恢复上次会话（重建会话并读取）' : '恢复上次会话（用 token 读取）' }}
@@ -527,9 +581,11 @@ import { formatClock, formatDuration, formatPace } from '~/utils/mp/runData'
 // 冗余加固（2026-09-21）：判定"这笔结算是不是上一笔/演示数据留下的"（纯函数，有单测）
 import { isStaleSettlement } from '~/utils/mp/writeOutcome'
 import { useMpDemo } from '~/composables/useMpDemo'
+// 🆕 2026-09-22：那条几何的**判据与读数**都在算法层（纯函数、有单测）—— 与跑步引擎**同一个函数**，界面不许另写一套
+import { freeRouteGeometryChoice, localEntryGeometryText, resolveEntryName } from '~/utils/mp/trackLibrary'
 import { useMpReal } from '~/composables/useMpReal'
 import { logError, logInfo, logWarn } from '~/composables/useEventLog'
-import { groupRoutesByCampus, toSelectItems, warnForSelection } from '~/utils/mp/routeGroups'
+import { groupRoutesByCampus, toSelectItems, trackEditorLink, warnForSelection } from '~/utils/mp/routeGroups'
 // 🆕 2026-09-22（issue #12）：判"任务到底有没有下发线路"（纯函数，与门禁/自检/诊断同源）
 import { fitRequirementOf, routeRequirementOf } from '~/utils/mp/taskShape'
 import { laneLoop, laneRatioFor, ringLengthM } from '~/utils/mp/trackEditor'
@@ -564,6 +620,10 @@ const {
   freeRunUnsupported,
   clearFreeRunUnsupported,
   applyToRunner,
+  /** 🆕 2026-09-22（真实用户实测）：刷新后从本机缓存自动恢复任务（不联网、幂等） */
+  autoRestoreFromCache,
+  /** 🆕 2026-09-22：这次的任务是不是"缓存恢复"来的（值是那次读取时刻，0 = 不是） */
+  restoredAt,
   submitRealRun,
   fetchVerdict,
   restoreCachedTask,
@@ -629,6 +689,31 @@ const libTotal = computed(() => libEntries.value.length)
 const hasConfigured = computed(() => configuredForTask.value > 0)
 /** 库里有条目、但都不属于当前任务的线路（要给"去为这条线路描一圈"的指引） */
 const libEntriesNotForTask = computed(() => libTotal.value > 0 && configuredForTask.value === 0)
+
+/**
+ * 🆕 2026-09-22（用户反馈 + 负责人批准改选择逻辑）：
+ * **自由路线任务将要使用的本机几何** —— 判据与跑步引擎**同一个函数**
+ * （`freeRouteGeometryChoice()`，算法层 `utils/mp/trackLibrary.ts`）；界面**不许**在这里另写一套
+ * （否则"界面说用 A、实际用 B"会立刻骗到用户）。
+ *
+ * 现在的口径：**优先「非官方路径【测试】」保存的那条固定键 `local:free`**；没有它才退回"最近保存的那条"
+ * （`fallback: true` ⇒ 下面必须如实说明，别让用户以为他画的那条被忽略了）。
+ */
+const freeRouteChoice = computed(() =>
+  routeIsFree.value ? freeRouteGeometryChoice(libEntries.value, activeTask.value) : { fallback: false, reason: '' },
+)
+const freeRouteEntry = computed(() => freeRouteChoice.value.entry)
+/** 这条几何**是怎么被选中的**（判据自己给的说法，界面直接复用，别另写措辞） */
+const freeRouteReason = computed(() => freeRouteChoice.value.reason)
+/** 是否是"退而求其次"（没有非官方路径 ⇒ 暂用最近保存的跑道）⇒ 界面上要更显眼地说 */
+const freeRouteIsFallback = computed(() => freeRouteChoice.value.fallback)
+/** 那条几何的名字（改过名就用用户起的名字） */
+const freeRouteEntryName = computed(() => {
+  const e = freeRouteEntry.value
+  return e ? resolveEntryName(e) || String(e.lineId) : ''
+})
+/** 那条几何的读数：形状 + 一圈多长 + 最近保存（`localEntryGeometryText`，纯函数、有单测） */
+const freeRouteEntryText = computed(() => (freeRouteEntry.value ? localEntryGeometryText(freeRouteEntry.value) : ''))
 /** 本次是自由跑（提交口径：不选线路、不带任务号、不查打卡开关 —— 与小程序一致） */
 const isFreeRun = computed(() => run.value.runType !== 0)
 
@@ -752,13 +837,35 @@ const doEnableDemo = () => {
   showSnackbar('已载入演示数据（假数据，不发请求）', 'info')
 }
 
-/** 恢复"上次读取的任务"（刷新后默认不自动恢复） */
+/** 显式恢复"上次读取的任务"：用缓存里的 token 重建会话 → **联网**全链路重新读取 */
 const doRestoreCached = () => {
   // 这也是"读取数据"（从本机缓存里恢复任务）⇒ 用云式顶部提示（1.1.9 需求①）
   // 2026-09-18：恢复 = **拿本机 token 重新读取一遍**（与工作台同一套语义）
   if (restoreCachedTask()) showSnackbar('正在用本机 token 重新读取…', 'info', { cloud: true })
   else showSnackbar(realError.value || '本机没有可用 token：请回「工作台」点「一键获取 token」', 'warning', { cloud: true })
 }
+
+/**
+ * 🆕 2026-09-22（真实用户实测）：**任务是从本机缓存自动恢复来的** ⇒ 页面顶部如实说明。
+ *
+ * 必须说清的两件事（否则用户会以为"门禁也读回来了"）：
+ *   ① 这是本机缓存里的**上次读取结果**（附读取时刻），不是刚刚联网读的；
+ *   ② **开跑开关（人脸/随机抽查）与摄像头杆不在缓存里** ⇒ 真实提交要先把它们读回来
+ *      （点「重新读取」= 与工作台同一条 `loadRealData` 链路，只读、不改任何数据）。
+ */
+const restoredNotice = computed(() => {
+  if (!restoredAt.value) return ''
+  const at = new Date(restoredAt.value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  return `已从本机缓存恢复任务「${activeTask.value?.paperName ?? ''}」（最近一次读取于 ${at}）`
+})
+
+/**
+ * 「去「跑道编辑」描一条」的**直达链接**：带上当前任务选中的线路 id（`?line=`），
+ * 编辑页会**预选这条线路** —— 否则用户跳过去还得自己在下拉里找（实测有人因此兜了半天）。
+ */
+const trackEditorHref = computed(() =>
+  trackEditorLink(run.value.lineId || activeLinesRaw.value[0]?.pointId || ''),
+)
 
 const statusText = computed(() => ({ idle: '待开始', running: '跑步中', paused: '已暂停', finished: '已结算' })[run.value.status])
 const statusColor = computed(() => ({ idle: 'info', running: 'success', paused: 'warning', finished: 'primary' })[run.value.status])
@@ -901,8 +1008,16 @@ const paceItems = [
   { value: 390, label: `6'30" /km（轻松）` },
 ]
 
-/** 页面挂载：把当前任务（若已有）注入跑步机；**不再自动回填缓存**（刷新后默认干净） */
+/**
+ * 页面挂载：**先从本机缓存把任务恢复回来**（刷新后内存是空的），再把任务注入跑步机。
+ *
+ * 🆕 2026-09-22（真实用户实测）：原先刷新后内存里的 task/profile/switches 全丢，
+ * 跑步页只剩一句"请先读取真实账号和任务"—— 用户刚读过、以为程序坏了（反复撞上）。
+ * `autoRestoreFromCache()` 只做"本机已知事实"的搬运（不联网、幂等）；
+ * 开跑开关不在缓存里，所以页面上会明说"要真实提交请点「重新读取」"（见下面的 `restoredAt` 提示）。
+ */
 onMounted(() => {
+  autoRestoreFromCache()
   applyToRunner()
 })
 

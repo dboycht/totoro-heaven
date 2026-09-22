@@ -80,6 +80,100 @@ test('用户可见文本：.vue 模板里不得出现"包住中文的成对星�
   assert.deepEqual(bad, [], `发现会被用户看到的 markdown 星号：\n  - ${bad.join('\n  - ')}`)
 })
 
+/**
+ * 🆕 2026-09-22 审计 B11：**模板里的注释也要扫**。
+ *
+ * 为什么：上一版先 `stripHtmlComments()` 再判 ⇒ "注释里写 `**必须真的显示出来**`" 漏了过去。
+ * 它虽然不进 DOM，但**会被后来的编辑者复制进真实文案**（`DiagnosticsExportCard.vue` 实测就是这么发生的 ——
+ * 审计正是从这句注释旁边抓到了运行期文案里的星号）。所以注释里的星号也要清。
+ *
+ * ⚠️ **存量**：其它文件（`RunWorkspace.vue` / `FreePathView.vue` 等，不属于本轮范围）里已经有一批。
+ * 处理方式与仓库既有纪律一致 —— **只许变小的基线**：按文件记"当前有几处"，某文件**多出来**就报错。
+ * 用**计数**而不是行号：行号会随并行开发挪动而误报/漏报（实测：`FreePathView.vue` 正在被另一条线改）。
+ * 清掉某文件的全部存量后，请把该条目从这里删掉（否则守卫又变成一个洞）。
+ */
+const MARKDOWN_IN_TPL_COMMENT_BASELINE: Record<string, number> = {
+  'app.vue': 3,
+  'components/DiagnosticsView.vue': 1,
+  'components/FreePathView.vue': 17,
+  'components/HomeTokenCard.vue': 4,
+  'components/RunGateNotice.vue': 3,
+  'components/RunSelfCheckCard.vue': 2,
+  'components/RunTrajectoryPreview.vue': 1,
+  'components/RunWorkspace.vue': 27,
+  'components/TabGroupShell.vue': 3,
+  'components/TrackEditorView.vue': 6,
+  'components/UpdateNotice.vue': 2,
+  'layouts/default.vue': 2,
+  'pages/morning-sign.vue': 5,
+  'pages/version-info.vue': 2,
+}
+
+test('用户可见文本：模板**注释**里的中文成对星号（只许比基线更少，新的必须清）', () => {
+  const bad: string[] = []
+  for (const { rel, abs } of vueFiles()) {
+    const n = [...templateOf(readFileSync(abs, 'utf8')).matchAll(MARKDOWN_BOLD_CN)].length
+    const allowed = MARKDOWN_IN_TPL_COMMENT_BASELINE[rel] ?? 0
+    if (n > allowed) bad.push(`${rel}：${n} 处 > 基线 ${allowed} 处（新增的必须清掉）`)
+  }
+  assert.deepEqual(bad, [], `模板注释里出现新的 markdown 星号（会被复制进真实文案）：\n  - ${bad.join('\n  - ')}`)
+})
+
+/**
+ * 🆕 2026-09-22 审计 B11：**script 段里的"会渲染/会进 manifest"的文案**也要守。
+ *
+ * 为什么单独一条：`DiagnosticsExportCard.vue` 的「这个包里会包含什么」不是模板字面量，
+ * 而是 computed 里拼出来的 note 字符串（渲染进 `{{ m.note }}`），模板扫描器看不到；
+ * `export.post.ts` 的 manifest note 同理（会写进包内 `manifest.json` 给维护者看）。
+ * 判据（可执行）：这些文件里**含中文且含成对星号**的字符串字面量/模板串一律违规；
+ * 注释行（`*` / `//` / `/*` 开头）与纯代码行不算 —— 注释里讲 markdown 是给人看的。
+ */
+test('用户可见文本：运行期拼出来的文案（组件 script / manifest note）也不许有 markdown 星号', () => {
+  const files = ['components/DiagnosticsExportCard.vue', 'server/api/local/diagnostics/export.post.ts']
+  const bad: string[] = []
+  for (const rel of files) {
+    const abs = join(ROOT, rel)
+    if (!existsSync(abs)) {
+      bad.push(`${rel}：文件不存在（守卫需同步更新）`)
+      continue
+    }
+    const lines = readFileSync(abs, 'utf8').split('\n')
+    lines.forEach((line, i) => {
+      const t = line.trim()
+      if (t.startsWith('*') || t.startsWith('//') || t.startsWith('/*') || t.startsWith('<!--')) return
+      const hit = [...line.matchAll(MARKDOWN_BOLD_CN)]
+      if (hit.length) bad.push(`${rel}:${i + 1} ${hit.map((m) => m[0]).join(' / ')}`)
+    })
+  }
+  assert.deepEqual(bad, [], `运行期文案里有 markdown 星号（用户/manifest 会看到字面 **）：\n  - ${bad.join('\n  - ')}`)
+})
+
+/**
+ * 🆕 2026-09-22：**纯函数产出的清单文案**也要守（`diagManifestEntries()` 的 note 会渲染到界面）。
+ * 这条同时覆盖"服务端 manifest"与"界面预览"——两边用的是同一个函数。
+ */
+test('用户可见文本：diagManifestEntries 的输出（界面预览 + 包内 manifest）不含 markdown 星号', async () => {
+  const { diagManifestEntries } = await import('../../utils/mp/diagnostics.ts')
+  const bad: string[] = []
+  const cases = [
+    diagManifestEntries({ logNames: ['app-2026-09-22.log'], includeGeometry: true }),
+    diagManifestEntries({ logNames: [], includeGeometry: false }),
+    diagManifestEntries({
+      logNames: ['app-2026-09-22.log'],
+      includeGeometry: true,
+      logNote: '本次只收录记录窗口内的日志行（保留 12 行）',
+      window: { id: 'w-1', startedAt: 'a', endedAt: 'b' },
+    }),
+  ]
+  for (const entries of cases) {
+    for (const e of entries) {
+      for (const m of e.note.matchAll(MARKDOWN_BOLD_CN)) bad.push(`${e.name}: ${m[0]}`)
+      if (e.note.includes('`')) bad.push(`${e.name}: 反引号 -> ${e.note.slice(0, 40)}`)
+    }
+  }
+  assert.deepEqual(bad, [], `清单文案里有 markdown：\n  - ${bad.join('\n  - ')}`)
+})
+
 test('用户可见文本：releaseArt.ts 的版本条目不含 markdown 标记（与 releaseArt.test.ts 双重覆盖）', async () => {
   const { VERSION_ENTRIES } = await import('../../src/mp/releaseArt.ts')
   const bad: string[] = []

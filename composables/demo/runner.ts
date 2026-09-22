@@ -21,7 +21,7 @@ import { evaluateRunAgainstTask, type TaskCheckResult } from '~/utils/mp/taskRul
 import { routeRequirementOf } from '~/utils/mp/taskShape'
 // 🆕 2026-09-22「非官方路径绘制」：本机条目带 freeShape 时，几何用它展开（纯模块，与跑道编辑页预览同源）
 import { resolveFreePathGeometry } from '~/utils/mp/freePathGeometry'
-import { resolveEntryName, type TrackRouteEntry } from '~/utils/mp/trackLibrary'
+import { freeRouteGeometryChoice, resolveEntryName, type TrackRouteEntry } from '~/utils/mp/trackLibrary'
 import { newRunSeed, planRealisticRun, type RunPlan } from '~/utils/mp/realism'
 import { toSubmitRunType, type MpRunLine, type MpScoreDetailRequest, type MpScoreRequest } from '~/src/mp/types'
 import { DEMO_PASS_POINTS, demoScantronId } from '~/src/mp/demo'
@@ -54,6 +54,18 @@ function localTrackLines(entries: TrackRouteEntry[], taskId: string): MpRunLine[
     pointList: [],
   }))
 }
+
+/**
+ * 🆕 2026-09-22（负责人批准）：**自由路线任务用哪一条本机几何** 的判据**已搬到算法层**
+ * `utils/mp/trackLibrary.ts` 的 `freeRouteGeometryChoice()` / `freeRouteLocalEntry()` ——
+ * 搬运理由有两条：
+ *   ① **判据只能有一处**：跑步引擎（本文件）与界面（`RunWorkspace.vue`）都调它，
+ *      不然"界面说用 A、实际用 B"会立刻骗到用户；
+ *   ② **可离线单测**：本文件依赖 Nuxt 状态（`useState` 等），`tests/mp/**` 跑不了它；
+ *      搬到纯模块后，判据（含"优先 `local:free`、回退最近保存"）能被单测钉住。
+ * 现在的口径：`kind==='line'` ⇒ 不选（官方线路任务零变化）；`kind==='free'` ⇒ **优先固定键 `local:free`**，
+ * 没有它才退回"库里最近保存的那条"（并标 `fallback: true`，界面必须如实说明）。
+ */
 
 /**
  * 🆕 2026-09-22「非官方路径绘制」的几何装配**已搬到纯模块** `utils/mp/freePathGeometry.ts`。
@@ -178,9 +190,13 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
      * 判据：`routeRequirementOf(task).kind === 'free'`（纯函数）。
      * ⚠️ 只在这个分支兜底：`kind === 'line'`（服务端下发了线路）时**逐字保持原行为** ——
      *    没描过就是报错去描，绝不回落到别的线路（那是 2026-09-18 审计 #3 明确修掉的错法）。
+     * ⚠️ 选哪一条**由 `freeRouteGeometryChoice()` 唯一说了算**（跑步页那条提示也调用它 ⇒ 界面与实际不会分叉）。
      */
     const routeIsFree = routeRequirementOf(task.value).kind === 'free'
-    const localFallback = routeIsFree ? localTrackLines(lib.entries.value, task.value?.taskId ?? '')[0] : undefined
+    const fallbackEntry = freeRouteGeometryChoice(lib.entries.value, task.value).entry
+    const localFallback = fallbackEntry
+      ? localTrackLines([fallbackEntry], task.value?.taskId ?? '')[0]
+      : undefined
     const line =
       drawnLines.find((l) => String(l.pointId) === String(run.value.lineId)) ?? drawnLines[0] ?? localFallback
     if (!line) {
@@ -190,8 +206,8 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
        *   · `kind === 'free'`：任务**未下发线路**，而本机**一条跑道都没描过** ⇒ 我们总得有个几何，去描一条。
        */
       run.value.error = routeIsFree
-        ? '本机还没有可用的跑道几何：本任务「服务端未下发线路（不指定路线）」，轨迹只能用你自己描的跑道生成。' +
-          '请先去「跑道编辑」描一条外圈并保存（本机），回到本页即可开跑。'
+        ? '本机还没有可用的几何：本任务「服务端未下发线路（不指定路线）」，轨迹只能用你自己画的几何生成。' +
+          '请先去「我的场地 → 非官方路径【测试】」画一条并保存到本机（或去「跑道编辑」描好内外圈保存），回到本页即可开跑。'
         : '这条线路还没描过跑道：本版只允许用你自己描的跑道生成轨迹（官方模板偏十几到几十米）。' +
           '请去「跑道编辑」选这条线路 → 「快速定位」→ 沿卫星图描外圈 → 保存（本机）。'
       return

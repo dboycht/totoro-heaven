@@ -36,6 +36,8 @@ import {
   startSummaryText,
 } from '~/utils/mp/trackLibrary'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
+// 🆕 2026-09-22（真实用户实测）：从跑步页直达进来时 `?line=<pointId>` 要能**预选**这条线路
+import { lineIdFromQuery } from '~/utils/mp/routeGroups'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
 import type { MpRunLine } from '~/src/mp/types'
 // 🆕 2026-09-22（issue #12）：判"任务到底有没有下发线路"（纯函数，与跑步页/门禁同源）
@@ -48,7 +50,8 @@ type N = { latitude: number; longitude: number }
 const num = (p: LatLng): N => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) })
 
 // 与 run.vue 同一套取法：`useMpReal()` 返回 profile/status/task（真实链路），演示态用 useMpDemo 的 task 兜底
-const { profile: realProfile, status: realStatus, task: realTask } = useMpReal()
+const { profile: realProfile, status: realStatus, task: realTask, autoRestoreFromCache } = useMpReal()
+const route = useRoute()
 const { task: demoTask } = useMpDemo()
 const activeTask = computed(() => realTask.value ?? demoTask.value)
 /** 服务端下发的线路（**原样**，不加任何本机条目） */
@@ -195,6 +198,12 @@ const loadDraft = (id: string) => {
   draftStartDirection.value = e?.start?.direction === 'reverse' ? 'reverse' : 'forward'
 }
 onMounted(() => {
+  /**
+   * 🆕 2026-09-22（真实用户实测）：**先从本机缓存把任务恢复回来**，再读路线库。
+   * 否则从跑步页那条「去「跑道编辑」描一条」直达进来时，内存里没有任务 ⇒ 下拉里一条线路都没有
+   * ⇒ 用户画完也存不了（他实测就是这样兜了半天的）。
+   */
+  autoRestoreFromCache()
   lib.load()
   const el = mapEl.value
   if (el) viewport.value = { w: el.clientWidth, h: el.clientHeight }
@@ -253,6 +262,16 @@ const focusOn = () => {
 watch(
   lines,
   (ls) => {
+    /**
+     * 🆕 2026-09-22（真实用户实测）：从跑步页的「去「跑道编辑」描一条」按钮进来时会带
+     * `?line=<pointId>` ⇒ **预选这条线路**（否则用户还得自己在下拉里找，实测有人在别的页面兜了半天）。
+     * 判据：只有"参数里指定的线路**确实在可选列表里**"才认；不在列表里就退回原逻辑（不猜）。
+     */
+    const wanted = lineIdFromQuery(route.query.line)
+    if (wanted && ls.some((l) => String(l.pointId) === wanted)) {
+      if (String(lineId.value) !== wanted) lineId.value = wanted
+      return
+    }
     /**
      * 🆕 2026-09-22（issue #12）：任务从"没下发线路"换成"下发了线路"时，
      * 若下拉里还停在 `local:free` 上，必须切回服务端线路 —— 否则会把几何**存到 `local:free`

@@ -50,6 +50,14 @@ export function logFilePath(d = new Date()): string {
   return join(LOG_DIR, `app-${dateTag(d)}.log`)
 }
 
+/**
+ * 轮转节流的**上次运行时刻**（2026-09-22 审计 B9）：老实现只在**进程启动时**跑一次 `rotateOldLogs()`，
+ * 于是一个常驻几天的进程里日志会一直涨；而"下次启动"时那份**当天日志**又会被容量回收整份删掉
+ * ⇒ **用户刚复现的最新证据消失**。现在改成"每次写日志前按小时跑一次"，并且**当天文件永不回收**。
+ */
+let lastRotateAt = 0
+const ROTATE_INTERVAL_MS = 60 * 60 * 1000
+
 /** 追加一条日志（自动脱敏 data 与 msg、自动建目录、吞掉一切异常） */
 export function logEvent(level: LogLevel, cat: string, msg: string, data?: Record<string, unknown>): void {
   try {
@@ -57,6 +65,20 @@ export function logEvent(level: LogLevel, cat: string, msg: string, data?: Recor
     const entry: LogEntry = { t: new Date().toISOString(), level, cat, msg: maskTokenLike(msg), data: redactObject(data) }
     if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true })
     appendFileSync(logFilePath(), JSON.stringify(entry) + '\n', 'utf8')
+    /**
+     * 🆕 按小时节流地跑一次轮转（审计 B9）：放在**写之后**，这样"这一条已经落盘"，
+     * 即使轮转删文件也不会把刚写的这条删掉（当天文件本来也受保护）。
+     * 失败一律吞掉（轮转是尽力而为，绝不能影响业务日志写入）。
+     */
+    const now = Date.now()
+    if (now - lastRotateAt >= ROTATE_INTERVAL_MS) {
+      lastRotateAt = now
+      try {
+        rotateOldLogs()
+      } catch {
+        /* 轮转失败不影响日志写入本身 */
+      }
+    }
     // dev 下也镜像到控制台（缩略显示；用**已脱敏**的 entry.msg，不打印原始 msg）
     if (process.env.NODE_ENV !== 'production') {
       const d = entry.data && Object.keys(entry.data).length ? ` ${JSON.stringify(entry.data)}` : ''
@@ -125,12 +147,24 @@ export function clearLogs(mode: ClearLogMode = 'today'): { deleted: string[]; di
   return { deleted, dir: LOG_DIR, freedBytes }
 }
 
-/** 清一天前的日志（保留 7 天 / 上限 20MB）——自动策略的入口，见文件头 */
-export function rotateOldLogs(): void {
+/**
+ * 清一天前的日志（保留 7 天 / 上限 20MB）——自动策略的入口，见文件头。
+ *
+ * 🆕 2026-09-22 审计 B9 两条加固：
+ *   ① **当天文件永不回收**（`app-<今天>.log` 受保护）：它是"用户刚复现的那一段"，
+ *      被容量回收整份删掉 = 证据消失（实测就是这么发生的：单日超 20MB，下次启动被整份删）。
+ *      超期清理与容量回收**都跳过**当天文件（宁可让总量暂时超过 20MB，也不丢当天的证据）。
+ *   ② 调用时机从"只在进程启动"改成"每次写日志前按小时节流"（见 `logEvent`）。
+ *
+ * @param now 可注入（单测用固定日期）
+ */
+export function rotateOldLogs(now: Date = new Date()): void {
   try {
     if (!existsSync(LOG_DIR)) return
+    /** 🔒 当天文件（受保护，绝不因为"超期"或"超量"被删） */
+    const todayName = `app-${dateTag(now)}.log`
     const files = readdirSync(LOG_DIR).filter((f) => f.startsWith('app-') && f.endsWith('.log'))
-    const cutoff = Date.now() - KEEP_DAYS * 24 * 3600 * 1000
+    const cutoff = now.getTime() - KEEP_DAYS * 24 * 3600 * 1000
     /**
      * ⚠️ 2026-09-19 审计 M6：上一段已按"超期"删掉一批文件，但 `meta` 是**同一份快照**
      * （里面还留着那些已被删掉的文件）。原来第二段对"已删文件"再 `unlinkSync` 会抛 **ENOENT**，
@@ -149,6 +183,10 @@ export function rotateOldLogs(): void {
       })
       .sort((a, b) => a.mtime - b.mtime)
     for (const m of meta) {
+      if (m.name === todayName) {
+        total += m.size // 当天文件照常计入总量，但不参与任何删除
+        continue
+      }
       if (m.mtime < cutoff) {
         try {
           unlinkSync(m.p)
@@ -160,10 +198,10 @@ export function rotateOldLogs(): void {
       }
       total += m.size
     }
-    // 总量超限：从最旧的开始删（跳过已删的）
+    // 总量超限：从最旧的开始删（跳过已删的与**当天文件**）
     for (const m of meta) {
       if (total <= MAX_TOTAL_BYTES) break
-      if (deleted.has(m.p)) continue
+      if (deleted.has(m.p) || m.name === todayName) continue
       try {
         unlinkSync(m.p)
         deleted.add(m.p)

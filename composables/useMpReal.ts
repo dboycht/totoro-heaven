@@ -67,6 +67,9 @@ export function useMpReal() {
     logoutAndClearSession,
     clearAllLocalData,
     applyToRunner,
+    // 🆕 2026-09-22（真实用户实测）：刷新后从本机缓存自动恢复任务（不联网）
+    autoRestoreFromCache,
+    restoredAt,
     persistSelectedLine,
     refreshCameraFlag,
     retryCameraFlag,
@@ -106,8 +109,18 @@ export function useMpReal() {
     isRealApplied,
     // 动作
     loadRealData,
-    /** 显式恢复"上次读取的任务"（刷新后**不会**自动恢复） */
+    /**
+     * **显式恢复**"上次读取的任务"：用缓存里的 token 重建会话 → **联网**全链路重新读取
+     * （要把开跑开关/摄像头杆也读回来时点它）。
+     */
     restoreCachedTask,
+    /**
+     * 🆕 2026-09-22（真实用户实测）：**从本机缓存自动恢复任务**（不联网、幂等）——
+     * 跑步页 / 跑道编辑页 / 非官方路径页在挂载时调用，避免"刷新后整页变哑"。
+     */
+    autoRestoreFromCache,
+    /** 🆕 2026-09-22：这次的任务是不是"缓存恢复"来的（值是那次读取时刻，0 = 不是） */
+    restoredAt,
     /** 是否存在可恢复的上次任务 */
     hasCachedTask,
     cachedTaskLabel,

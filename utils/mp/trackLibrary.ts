@@ -8,7 +8,7 @@
  * 附**元信息**（创建日期、创建时的软件版本、线路名快照）—— 用户明确要求列表要显示这些。
  */
 import type { LatLng } from './routeSimilarity'
-import { ringLengthM, startDirectionLabel, type LoopDirection } from './trackEditor'
+import { laneLoop, laneRatioFor, ringLengthM, startDirectionLabel, type LoopDirection } from './trackEditor'
 import { freePathShapeText, parseFreePathShape, usableFreePathShape, type FreePathShape } from './pathShape'
 // 「任务到底有没有下发线路」的判据只允许有一个来源（纯函数，见 `utils/mp/taskShape.ts`）
 import { routeRequirementOf } from './taskShape'
@@ -210,6 +210,60 @@ export function localFreeTrackLine(task: unknown): { lineId: string; lineName: s
   }
 }
 
+/**
+ * 🆕 2026-09-22（用户反馈 + 负责人批准改选择逻辑）：**自由路线任务用哪一条本机几何** —— **唯一判据**。
+ *
+ * ## 为什么改成"优先 `local:free`"（原先只看"最近保存"）
+ * 跑步引擎原先取"本机路线库第一条（= 最近保存的那条）"。可用户**刚在「非官方路径【测试】」画完**
+ * 之后又保存了**别的东西**（另一条任务的跑道等）时，被采用的就不是他刚画的那条 ⇒ 他会以为"我画的没用上"
+ * （他反馈"无法选择"，我们上一轮把这件事**显示出来**后，暴露的正是这条判据本身会"串味"）。
+ * 现在：**自由路线任务优先认「非官方路径【测试】」那条固定键 `local:free`**；没有它（老用户从没画过）
+ * 才退回"最近保存的那条"，且**回退必须如实说明**（`fallback: true` + `reason`，界面直接显示，别自己另写措辞）。
+ *
+ * ## 判据（顺序即优先级）
+ * ① `routeRequirementOf(task).kind === 'line'`（服务端下发了线路）⇒ `entry: undefined`
+ *    —— **官方线路任务零变化**（几何来自任务线路，与本机库无关）；
+ * ② `kind === 'free'` ⇒ 库里 `lineId === LOCAL_FREE_LINE_ID` 的那条（**复用常量，不写死字符串**）；
+ * ③ 没有 ⇒ 退回库里第一条（最新在前 = 最近保存），并标 `fallback: true`；
+ * ④ 库空 ⇒ `entry: undefined`（调用方按"还没有几何"提示，绝不假装有一条）。
+ *
+ * ⚠️ **界面与跑步引擎共用这一个函数**（`composables/demo/runner.ts` 与 `RunWorkspace.vue`），
+ *    不许出现第二套判据 —— 否则"界面说用 A、实际用 B"会立刻骗到用户。
+ */
+export interface FreeRouteGeometryChoice {
+  /** 选中的本机条目（没有 ⇒ `undefined`：有线路的任务 / 本机库为空） */
+  entry?: TrackRouteEntry
+  /** `true` = 没有 `local:free`，退回到"最近保存的那条"⇒ **界面必须如实说明** */
+  fallback: boolean
+  /** 给人看的一句依据（界面直接复用，避免各处各写一套说法） */
+  reason: string
+}
+
+export function freeRouteGeometryChoice(entries: TrackRouteEntry[], task: unknown): FreeRouteGeometryChoice {
+  if (routeRequirementOf(task).kind !== 'free') return { fallback: false, reason: '' }
+  const list = Array.isArray(entries) ? entries : []
+  const preferred = list.find((e) => String(e?.lineId) === LOCAL_FREE_LINE_ID)
+  if (preferred) {
+    return {
+      entry: preferred,
+      fallback: false,
+      reason: '本任务未下发线路 ⇒ 用你在「非官方路径【测试】」保存的那条本机几何',
+    }
+  }
+  const first = list[0]
+  if (!first) return { fallback: false, reason: '本机还没有任何已保存的几何' }
+  return {
+    entry: first,
+    fallback: true,
+    reason: '本机还没有「非官方路径」形状 ⇒ 暂用最近保存的那条跑道几何；建议去「非官方路径【测试】」画一条',
+  }
+}
+
+/** 只要"哪一条"的调用方（跑步引擎）用它 —— **同一实现的薄包装**，判据只有 `freeRouteGeometryChoice()` 一处 */
+export function freeRouteLocalEntry(entries: TrackRouteEntry[], task: unknown): TrackRouteEntry | undefined {
+  return freeRouteGeometryChoice(entries, task).entry
+}
+
 /** 坐标是否可解析成一对有限数（**不要求是数字类型**：契约层允许字符串坐标） */
 const isFinitePoint = (v: unknown): v is LatLng =>
   !!v && typeof v === 'object' && Number.isFinite(Number((v as LatLng).latitude)) && Number.isFinite(Number((v as LatLng).longitude))
@@ -344,6 +398,35 @@ export function startSummaryText(e: Pick<TrackRouteEntry, 'outer' | 'start'>): s
   const dir = startDirectionLabel(e.outer ?? [], s.direction)
   const m = `${Math.round(s.offsetM * 10) / 10} m`
   return `${dir} · 沿跑道 ${m} 处`
+}
+
+/**
+ * 🆕 2026-09-22（用户反馈："自由路线任务的跑步页没说清**会用哪一条本机几何**"）：
+ * **一条本机条目"长什么样"的一句话**（纯函数，有单测）—— 专供跑步页那条提示用。
+ *
+ * 口径（**必须与跑步引擎/跑步页同源**，不许自己另算一套）：
+ *   · 有 `freeShape`（非官方路径）⇒ 直接复用 `freePathShapeText()`（圈型 / 折线型的同一套读数与单位）；
+ *   · 没有形状的老条目（内外双圈）⇒ 用**跑步引擎真正喂给生成器的那条车道线**的同一算式算"一圈"：
+ *     `ringLengthM(laneLoop({outer,inner}, laneRatioFor(laneNo ?? 3, laneCount ?? 6), 240))`
+ *     （与 `RunWorkspace.vue` 的 `selectedLaneLengthM`、`composables/demo/runner.ts` 的 `resolveTrackGeometry` 逐字同源）；
+ *   · 内外圈点数不够（跑图时会被当作"没几何"）⇒ **如实说不可用**，绝不假装有几何。
+ *
+ * 时间用 `updatedAt ?? createdAt`（"最近保存"）；两者都没有 ⇒ 不显示这一节（不写"时间未知"这类噪音）。
+ */
+export function localEntryGeometryText(e: TrackRouteEntry): string {
+  const saved = e.updatedAt || e.createdAt
+  const when = saved ? ` · 最近保存 ${formatLocalDateTime(String(saved))}` : ''
+  const shape = freePathShapeText(e.freeShape)
+  if (shape) return `${shape}${when}`
+  const outer = Array.isArray(e.outer) ? e.outer.length : 0
+  const inner = Array.isArray(e.inner) ? e.inner.length : 0
+  const lane = e.laneNo ? `第 ${e.laneNo} 道${e.laneCount ? `/${e.laneCount}` : ''}` : '道次未记录'
+  if (outer < 3 || inner < 3) {
+    return `内外双圈几何不完整（外圈 ${outer} 点 · 内圈 ${inner} 点）——跑步页拿不到几何，请回「跑道编辑」补好内外圈并保存${when}`
+  }
+  const loop = laneLoop({ outer: e.outer, inner: e.inner }, laneRatioFor(e.laneNo ?? 3, e.laneCount ?? 6), 240)
+  const lap = ringLengthM(loop)
+  return `内外双圈（${lane}）：外圈 ${outer} 点 · 内圈 ${inner} 点 · 一圈约 ${Math.round(lap)} m${when}`
 }
 
 /**
