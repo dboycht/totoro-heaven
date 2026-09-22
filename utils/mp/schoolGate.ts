@@ -19,6 +19,14 @@
  */
 import type { MpRunLine } from '../../src/mp/types'
 
+/**
+ * **线路不要求时的门禁说明**（`lineRequired: false` 且没选线路时，`reason` 就是它）。
+ *
+ * ⚠️ 口径纪律：只说**客观事实**（"服务端未下发线路列表"），**不许**写成
+ * "服务端不判路线"（我们无法证明服务端在判定时怎么做）—— 与 `utils/mp/taskShape.ts` 的措辞一致。
+ */
+export const LINE_NOT_REQUIRED_REASON = '本任务未下发线路（不指定路线），无需选择线路'
+
 /** 共享域 host（支持范围判据①：与南航同一个 API 域） */
 export const SHARED_DOMAIN_HOST = 'wxxcx.xtotoro.com'
 
@@ -124,6 +132,17 @@ export interface RunGateInput {
   /** 上面那个 flag 对应的线路 id（防止"线路已切换但 flag 还是上一条的"） */
   cameraFlagLineId?: string | null | undefined
   /**
+   * 🆕 2026-09-22（issue #12）：**本次任务是否要求指定线路** ——
+   * 调用方传 `routeRequirementOf(task).kind === 'line'`（纯函数 `utils/mp/taskShape.ts`）。
+   *
+   * · 省略 / `true` = **保持历史行为**：没选线路 ⇒ 拒绝（`camera_unknown`）；
+   * · `false` = 服务端**未下发线路列表**（自由路线任务）⇒ **不再因"未选线路"拒绝**，
+   *   摄像头杆那一段也无从校验（它是**按线路**下发的，没有线路就没有线路级开关可查）。
+   *
+   * ⚠️ 它**只放宽"线路"这一条**：开关未读 / 开场人脸 / 随机抽查 / 夜间停用一律照旧拦。
+   */
+  lineRequired?: boolean
+  /**
    * 本次跑步类型（提交口径：`0` 阳光跑 / `1` 自由跑）。
    * 自由跑只受夜间停用约束 —— 厂商的自由跑**不打卡、不取线路**（见 `evaluateRunGate` 说明）。
    */
@@ -136,7 +155,11 @@ export interface RunGateInput {
 export interface RunGateResult {
   /** true = 允许创建场次并开跑 */
   allow: boolean
-  /** 拒绝原因（allow=false 时必填） */
+  /**
+   * 拒绝原因（allow=false 时必填）。
+   * ⚠️ 例外：`lineRequired: false` 且没选线路时**放行**，`reason` 为 `LINE_NOT_REQUIRED_REASON`
+   * （说明"这一条为什么不拦"，供日志/诊断核对；界面只在 `!allow` 时把它当错误显示）。
+   */
   reason: string
   /** 命中的否决项代号（便于界面/测试断言） */
   blockedBy?: 'night' | 'switches_unknown' | 'start_face' | 'point_random' | 'camera_on' | 'camera_unknown'
@@ -186,6 +209,8 @@ export function nightBlockReason(now: Date = new Date()): string {
  *   也就是说"开场人脸 / 随机抽查 / 摄像头杆"这三项**都是按学校的阳光跑线路下发的**，与自由跑无关。
  *   所以自由跑：**只受夜间停用约束**，不查开关、不要求线路。
  *   夜间仍然拦：那是"避免留下深夜记录"的自定纪律，与厂商判分无关（用户 2026-09-17 确认的口径）。
+ * ⚠️ **服务端未下发线路的任务**（调用方传 `lineRequired: false`，issue #12）：④「未选线路」**不拦**
+ *   —— 详见 `RunGateInput.lineRequired` 与下面的分支注释。
  */
 export function evaluateRunGate(input: RunGateInput): RunGateResult {
   // ⓪ 夜间停用（最先判：到点就谁也别跑，避免留下深夜记录）
@@ -229,6 +254,14 @@ export function evaluateRunGate(input: RunGateInput): RunGateResult {
   // ④ 摄像头杆（**按线路**下发，且必须确认是"当前这条线路"的 flag）
   const lineId = String(input.line?.pointId ?? '')
   if (!lineId) {
+    /**
+     * 🆕 2026-09-22（issue #12）：
+     * - 默认（`lineRequired` 省略/true）⇒ **保持原样**：没选线路就拒绝；
+     * - `lineRequired === false`（服务端未下发线路 = 自由路线任务）⇒ 放行并说明依据：
+     *   摄像头杆是**按线路**下发的，没有线路就没有"这条线路的开关"可查，
+     *   拿"未选线路"拦等于**自己造出一个服务端没提的要求**（任务本身不指定路线）。
+     */
+    if (input.lineRequired === false) return { allow: true, reason: LINE_NOT_REQUIRED_REASON }
     return { allow: false, reason: '尚未选择跑步线路。', blockedBy: 'camera_unknown' }
   }
   const flagLineId = String(input.cameraFlagLineId ?? '')

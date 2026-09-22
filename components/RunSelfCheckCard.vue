@@ -27,9 +27,13 @@
         <tbody>
           <tr v-for="item in run.result.check.items" :key="item.key">
             <td>{{ item.label }}</td>
-            <td class="text-body-2">{{ item.detail }}</td>
+            <td class="text-body-2" :class="item.skipped ? 'text-medium-emphasis' : ''">{{ item.detail }}</td>
             <td>
-              <v-icon v-if="item.ok === true" color="success" size="18">mdi-check</v-icon>
+              <!-- 🆕 2026-09-22（issue #12）：`skipped` = **服务端没下发这一项的要求**（如未下发拟合度阈值）
+                   ⇒ 显示成"提示"（灰色信息图标），**不是**通过（绿勾）也不是失败（红叉）。
+                   判据来自纯函数（`utils/mp/taskRules.ts` 的 `TaskRuleItem.skipped`）。 -->
+              <v-icon v-if="item.skipped" color="grey" size="18" title="服务端未下发这一项的要求，无从判定">mdi-information-outline</v-icon>
+              <v-icon v-else-if="item.ok === true" color="success" size="18">mdi-check</v-icon>
               <v-icon v-else-if="item.ok === false" :color="item.confidence === 'hard' ? 'error' : 'warning'" size="18">
                 {{ item.confidence === 'hard' ? 'mdi-close' : 'mdi-alert-outline' }}
               </v-icon>
@@ -39,10 +43,10 @@
               <v-chip
                 size="x-small"
                 variant="tonal"
-                :color="confidenceColor(item.confidence)"
+                :color="item.skipped ? 'grey' : confidenceColor(item.confidence)"
                 :title="item.note || undefined"
               >
-                {{ confidenceText(item.confidence) }}
+                {{ item.skipped ? '提示' : confidenceText(item.confidence) }}
               </v-chip>
             </td>
           </tr>
@@ -56,8 +60,9 @@
       </div>
       <div class="text-caption text-medium-emphasis mb-3">
         口径说明：<b>硬性</b> = 本地能确定判的（参与预判）；<b>待实测</b> = 单位或"服务端是否强校验"的<b>边界</b>未验证的项，
-        只提示、<b>不阻断</b>（这类项的中段数值已随真实提交验证过；边界要验证得做"贴边提交"，会在账号留异常记录，故故意不做）。
-        把鼠标停在「口径」标签上可看各项的具体依据。
+        只提示、<b>不阻断</b>（这类项的中段数值已随真实提交验证过；边界要验证得做"贴边提交"，会在账号留异常记录，故故意不做）；
+        <b>提示</b> = <b>服务端没下发这一项的要求</b>（例如未下发拟合度阈值），我们无从判定 ——
+        既不判通过、也不判失败，更不参与预判。把鼠标停在「口径」标签上可看各项的具体依据。
         步数提交值 <code>"{{ run.result.stepsSubmitted }}"</code>（照实测真包口径）。
       </div>
       <!-- ⚠️ 插槽：拆分前「结算表 + 真实提交」是<b>同一张卡、同一个 v-card-text</b>。

@@ -97,6 +97,13 @@ export interface DiagSnapshot {
       validFrom: string
       validTo: string
       runPointListCount: number
+      /**
+       * 🆕 2026-09-22（issue #12）：任务形状一行摘要 —— `route=line(2) fit=required(0.6)` /
+       * `route=free(0) fit=none`（由纯函数 `taskShapeLine()` 生成，`utils/mp/taskShape.ts`）。
+       * **可选**字段：老快照没有它，服务端原样写盘，不校验。
+       * 用途：一眼看出"服务端到底下发了几条线路、有没有下发拟合度阈值"。
+       */
+      shapeLine?: string
     }
     /** 每条线路的关键字段（含坐标点数，不含完整坐标数组） */
     lines: { pointId: string; pointName: string; pointCount: number; taskId: string; campusName: string }[]

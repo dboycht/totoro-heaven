@@ -19,6 +19,8 @@ import { MP_SCORE_STATUS } from '~/src/mp/models'
 import type { MpRunLine } from '~/src/mp/types'
 import { buildRunBeginRequest, buildScoreDetailRequest, buildScoreRequest, toSubmitPoints } from '~/utils/mp/submitPayload'
 import { evaluateRunGate } from '~/utils/mp/schoolGate'
+// 🆕 2026-09-22（issue #12）：门禁要按"任务到底要不要求线路"来判（纯函数，与只读侧 `gateStatus` 同源）
+import { routeRequirementOf } from '~/utils/mp/taskShape'
 import { TOKEN_EXPIRED_HINT } from '~/utils/mp/tokenScan'
 import { looksLikeTokenExpired } from '~/src/mp/envelope'
 import { logError, logInfo, logWarn } from '../useEventLog'
@@ -73,8 +75,19 @@ export function useMpRealSubmit() {
    *    自由跑按厂商口径只受夜间停用约束（厂商的自由跑不打卡、不取线路）。
    */
   async function submitRealRun(input: {
-    /** 阳光跑必填；**自由跑传 null** */
+    /** 阳光跑必填；**自由跑传 null**；**服务端未下发线路的任务也传 null**（任务号由 `paperId` 兜底） */
     line: MpRunLine | null
+    /**
+     * 🆕 2026-09-22（issue #12）：**任务号兜底**（任务自身的 `taskId`）。
+     *
+     * 只在"没有线路"时生效（有线路时 `buildRunBeginRequest` / `buildScoreRequest` **以线路为准**，
+     * 传了也会被忽略 ⇒ `kind === 'line'` 的老路径行为一字不变）。
+     *
+     * 依据：`MpRunLine.taskId` 与任务 `taskId` **实测同值**（`src/mp/models.ts` 字段注释、9-14 实测），
+     * 所以服务端未下发线路时用任务号不是发明新值，而是取同一事实的另一个来源；
+     * 反之若传空串，成绩会挂在"没有任务号"上，服务端无从归属。
+     */
+    paperId?: string
     runType?: 0 | 1
     points: { latitude: string | number; longitude: string | number }[]
     km: number
@@ -103,12 +116,34 @@ export function useMpRealSubmit() {
     const token = session.value?.token
     const runType: 0 | 1 = input.runType === 1 ? 1 : 0
     const freeRun = runType === 1
-    // 阳光跑需要"档案 + 任务 + 线路"；自由跑只需要档案（不取任务、不取线路）
-    if (!token || !profile.value || (!freeRun && !task.value) || (!freeRun && !input.line)) {
+    /**
+     * 🆕 2026-09-22（issue #12）：**本次任务要不要求线路**（纯函数判据，与只读侧 `gateStatus` 同一处口径）。
+     * · `kind: 'line'` ⇒ 服务端下发了线路列表：没选线路依旧拦（**老行为不变**）；
+     * · `kind: 'free'` ⇒ 服务端未下发线路（自由路线任务）：没有线路是必然的，不该因此拦。
+     */
+    const lineRequired = routeRequirementOf(task.value).kind === 'line'
+    /** 任务号兜底：只有"没有线路"时才会被报文构造器采用（见 submitPayload 的注释） */
+    const paperId = String(input.paperId ?? task.value?.taskId ?? '')
+    /**
+     * 上下文检查（⚠️ 逐条写清，别把三件事混成一句；也**不抽成布尔变量** ——
+     * 抽出去会让 TS 丢掉 `profile.value` 的非空收窄，下面 `profile.value.schoolCode` 会报可能为 null）：
+     *   ① 会话/档案（两种跑法都要）；
+     *   ② 阳光跑还要**任务**（约束与任务号都从它来）；
+     *   ③ 阳光跑还要**"线路标识或任务号"至少有一个** —— 任务下发了线路（`kind: 'line'`）时必须选到线路；
+     *      任务**未下发线路**（`kind: 'free'`）时线路本来就是空的，此时必须有任务号兜底，
+     *      否则报文里既没有 lineId 也没有 paperId，成绩无从归属。
+     */
+    if (
+      !token ||
+      !profile.value ||
+      (!freeRun && !task.value) ||
+      (!freeRun && lineRequired && !input.line) ||
+      (!freeRun && !lineRequired && !input.line && !paperId)
+    ) {
       phase.value = 'error'
       phaseMessage.value = freeRun
         ? '缺少真实会话/档案，请先在工作台读取真实数据'
-        : '缺少真实会话/档案/任务，请先在工作台读取真实数据'
+        : '缺少真实会话/档案/任务（或没有可提交的线路/任务号），请先在工作台读取真实数据'
       return null
     }
 
@@ -121,6 +156,8 @@ export function useMpRealSubmit() {
       line: input.line,
       cameraFlag: cameraFlag.value,
       cameraFlagLineId: cameraFlagLineId.value,
+      // 🆕 2026-09-22（issue #12）：与只读侧 `gateStatus` **同一判据** —— 服务端未下发线路的任务不因"未选线路"拦
+      lineRequired,
       runType,
       now: new Date(),
     })
@@ -134,11 +171,12 @@ export function useMpRealSubmit() {
 
     const options = { token, baseUrl: session.value?.baseUrl }
 
-    // ① 开跑：getRunBegin（写）。自由跑照厂商口径传 runType=1 且 paperId/lineId 为空串。
+    // ① 开跑：getRunBegin（写）。自由跑照厂商口径传 runType=1 且 paperId/lineId 为空串；
+    //    **服务端未下发线路的任务**：paperId 用任务号兜底、lineId 为空串（本机跑道 id 不是服务端线路，绝不进报文）。
     phase.value = 'begin'
     phaseMessage.value = '正在创建跑步会话（getRunBegin）…'
     pushProgress('step', SUBMIT_PROGRESS.begin(input.line?.pointName ?? '', freeRun ? '自由跑' : '阳光跑'))
-    const begin = await MpApiWrapper.getRunBegin(buildRunBeginRequest({ line: input.line, runType }), options)
+    const begin = await MpApiWrapper.getRunBegin(buildRunBeginRequest({ line: input.line, paperId, runType }), options)
     const scantronId = (begin.data as { scantronId?: string } | undefined)?.scantronId
     if (!begin.ok || !scantronId) {
       phase.value = 'error'
@@ -168,7 +206,9 @@ export function useMpRealSubmit() {
       }
       logError('submit', '开跑失败（getRunBegin）', {
         message: begin.message,
-        lineId: input.line?.pointId ?? '(自由跑)',
+        // 日志里如实区分三种情形（自由跑 / 本任务未下发线路 / 有线路）
+        lineId: input.line?.pointId ?? (freeRun ? '(自由跑)' : '(本任务未下发线路)'),
+        paperId,
         ...(noFreeRunTask ? { note: '服务端未开通自由跑任务（2026-09-21 实测）' } : {}),
       })
       return null
@@ -178,8 +218,9 @@ export function useMpRealSubmit() {
     logInfo('submit', '开跑会话已创建', {
       scantronId,
       runType,
-      lineId: input.line?.pointId ?? '(自由跑)',
+      lineId: input.line?.pointId ?? (freeRun ? '(自由跑)' : '(本任务未下发线路)'),
       lineName: input.line?.pointName ?? '',
+      paperId,
       km: Number(input.km.toFixed(2)),
       fitDegree: input.fitDegree,
       points: input.points.length,
@@ -239,6 +280,8 @@ export function useMpRealSubmit() {
       schoolCode: profileNow.schoolCode,
       task: task.value,
       line: input.line,
+      // 🆕 2026-09-22（issue #12）：任务号兜底 —— 没有线路时 `sunRunExercises.taskId` 取它（有线路时被忽略）
+      paperId,
       km: input.km,
       durationSeconds: planned,
       fitDegree: input.fitDegree,

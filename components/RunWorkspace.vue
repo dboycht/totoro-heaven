@@ -66,11 +66,17 @@
               :items="lineItems"
               item-title="title"
               item-value="value"
-              :label="isFreeRun ? '线路（只影响本地轨迹几何）' : '线路（按校区自动分组，本校区优先）'"
+              :label="routeIsFree ? '线路（服务端未下发线路 —— 本任务不指定路线）' : isFreeRun ? '线路（只影响本地轨迹几何）' : '线路（按校区自动分组，本校区优先）'"
               density="comfortable"
-              :disabled="isBusy"
+              :disabled="isBusy || routeIsFree"
               class="mb-2"
             />
+            <!-- 🆕 2026-09-22（issue #12）：服务端**未下发线路**时把下拉停用并就地说明 ——
+                 不再让"下拉为空"被误读成"你还没描跑道"。措辞只用客观事实（"未下发"），
+                 不写成"服务端不判路线"（我们无法证明服务端判定时怎么做）。 -->
+            <div v-if="routeIsFree" class="text-caption text-medium-emphasis mb-2">
+              本任务<b>服务端未下发线路</b>（不指定路线）—— 线路下拉已停用；轨迹将用你<b>本机已有的跑道几何</b>生成。
+            </div>
             <!-- 跨校区提示：选了别的校区的线路（按坐标判定，不看名称） -->
             <v-alert v-if="crossCampusWarning" type="warning" variant="tonal" density="compact" class="mb-2">
               {{ crossCampusWarning }}
@@ -197,7 +203,27 @@
 
             <v-alert v-if="run.error" type="error" variant="tonal" density="compact" class="mt-3">{{ run.error }}</v-alert>
       <!-- 路线来源（2026-09-18 收紧）：**只列你描好的路线**，并以它的几何为基准生成轨迹 -->
-      <v-alert v-if="hasConfigured" type="success" variant="tonal" density="compact" class="mt-3">
+      <!-- 🆕 2026-09-22（issue #12）：**先分"任务有没有下发线路"，再说"本机描没描"** ——
+           原先只有"本机"一条判据，于是"服务端未下发线路"必然被归因成"你还没描跑道"。 -->
+      <v-alert v-if="routeIsFree" :type="libTotal > 0 ? 'info' : 'warning'" variant="tonal" density="compact" class="mt-3">
+        <div class="font-weight-bold">本任务服务端未下发线路（不指定路线）。</div>
+        <div class="text-body-2 mt-1">
+          任务的线路列表（<code>runPointList</code>）为空 ⇒ <b>没有服务端线路可选</b>，线路下拉已停用。
+          <template v-if="libTotal > 0">
+            轨迹将用你<b>本机已有的跑道几何</b>生成（取本机第一条已描跑道）；提交时<b>只带任务号、不带线路标识</b>。
+          </template>
+          <template v-else>
+            本机<b>一条跑道都还没描过</b> —— 我们总得有个几何才能生成轨迹：请先去
+            「<b>我的场地 → 跑道编辑</b>」描一条外圈并保存（本机），回到本页即可开跑。
+          </template>
+        </div>
+        <div v-if="libTotal === 0" class="mt-2">
+          <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-vector-polyline" to="/field/track-editor">
+            去「跑道编辑」描一条
+          </v-btn>
+        </div>
+      </v-alert>
+      <v-alert v-else-if="hasConfigured" type="success" variant="tonal" density="compact" class="mt-3">
         只列出你在「跑道编辑」里配置好的 <b>{{ configuredForTask }}</b> 条路线 —— 轨迹以<b>你描的真跑道</b>为基准生成；
         官方模板只作对照（提交时服务端的拟合度仍按官方模板算）。
       </v-alert>
@@ -454,10 +480,12 @@
             这会在你的账号上<b>真实生成一条成绩</b>（会计入本学期的跑步次数）。请确认下列数值无误。
           </v-alert>
           <v-list density="compact">
-            <v-list-item title="线路" :subtitle="selectedLineName" prepend-icon="mdi-map-marker-path" />
+            <v-list-item title="线路" :subtitle="routeIsFree ? '本任务未下发线路（不指定路线）' : selectedLineName" prepend-icon="mdi-map-marker-path" />
             <v-list-item title="里程" :subtitle="`${run.result?.km.toFixed(2)} km（任务要求 ${activeTask?.mileage ?? '—'} km）`" prepend-icon="mdi-map-marker-distance" />
             <v-list-item title="时长 / 配速" :subtitle="`${formatDuration(run.result?.durationSeconds ?? 0)} · ${formatPace(Math.round((run.result?.durationSeconds ?? 1) / Math.max(0.01, run.result?.km ?? 1)))}/km`" prepend-icon="mdi-timer-outline" />
-            <v-list-item title="拟合度" :subtitle="`${run.result?.fitDegree.toFixed(2)}（阈值 ${activeTask?.fitDegree ?? '—'}）`" prepend-icon="mdi-chart-bell-curve" />
+            <!-- 🆕 2026-09-22（issue #12）：阈值口径取自纯函数 `fitRequirementOf()` ——
+                 服务端未下发阈值时如实写"未下发"（客观事实），不再拿历史兜底 0.6 冒充"要求"。 -->
+            <v-list-item title="拟合度" :subtitle="`${run.result?.fitDegree.toFixed(2)}（${fitRequirementText}）`" prepend-icon="mdi-chart-bell-curve" />
             <v-list-item title="自检" :subtitle="run.result?.check.pass ? '硬性项全部通过' : '存在不通过项，建议先修正'" prepend-icon="mdi-clipboard-check-outline" />
             <v-list-item
               title="开跑前门禁（人脸 / 抽查 / 摄像头杆）"
@@ -502,6 +530,8 @@ import { useMpDemo } from '~/composables/useMpDemo'
 import { useMpReal } from '~/composables/useMpReal'
 import { logError, logInfo, logWarn } from '~/composables/useEventLog'
 import { groupRoutesByCampus, toSelectItems, warnForSelection } from '~/utils/mp/routeGroups'
+// 🆕 2026-09-22（issue #12）：判"任务到底有没有下发线路"（纯函数，与门禁/自检/诊断同源）
+import { fitRequirementOf, routeRequirementOf } from '~/utils/mp/taskShape'
 import { laneLoop, laneRatioFor, ringLengthM } from '~/utils/mp/trackEditor'
 import {
   FREE_RUN_KM_MAX,
@@ -552,6 +582,22 @@ const realReady = computed(() => realStatus.value === 'ready' && Boolean(realTas
 const activeTask = computed(() => realTask.value ?? task.value)
 /** 当前线路集（真实/演示任务都自带 runPointList） */
 const activeLinesRaw = computed(() => activeTask.value?.runPointList ?? [])
+
+/**
+ * 🆕 2026-09-22（issue #12）：**本任务到底有没有下发线路**（纯函数判据，唯一来源 `utils/mp/taskShape.ts`）。
+ *
+ * `routeIsFree === true` = 任务的 `runPointList` 缺失/为空 ⇒ **服务端未下发线路**（自由路线任务，如"研途健行"）。
+ * 它与"任务有线路、但你还没描跑道"是**两件不同的事**，界面文案必须分开（这是 issue #12 的核心误判）。
+ *
+ * ⚠️ 口径纪律：文案只能说"**服务端未下发线路**"（客观事实），**不许**写成"服务端不判路线"。
+ */
+const routeReq = computed(() => routeRequirementOf(activeTask.value))
+const routeIsFree = computed(() => routeReq.value.kind === 'free')
+/**
+ * 拟合度那一行的口径说明（确认弹窗用）——**与自检表同源**（`utils/mp/taskShape.ts`）：
+ * 服务端未下发阈值时就是"服务端未下发拟合度阈值（本任务不判拟合度）"，不写"不判路线"这类我们证明不了的结论。
+ */
+const fitRequirementText = computed(() => fitRequirementOf(activeTask.value).reason)
 
 /**
  * 本地路线库（用户要求，2026-09-18 收紧为**强制**）：
@@ -636,8 +682,14 @@ const doStart = () => {
  *   提交口径**一个字都没变**：自由跑依旧 `runType=1` + 不带任务号 + `paperId`/`lineId` 为空串 +
  *   不发路径点明细（由 `buildScoreRequest` 的 freeRun 分支强制，且有单测钉住）。
  *   判据：**"选线路"这件事只允许影响本地几何；任何把 UI 上的线路选择带进自由跑报文的改动都是错的。**
+ *
+ * 🆕 2026-09-22（issue #12）：**服务端未下发线路的任务**（`routeIsFree`）——
+ *   线路下拉已停用（没有服务端线路可选），但**本机只要有一条已描跑道就允许开跑**：
+ *   跑步引擎用「本机第一条已描跑道」当几何（`composables/demo/runner.ts` 的 `localTrackLines` 兜底）。
+ *   一条都没描 ⇒ 仍禁用并提示去描一条（我们总得有个几何才能生成轨迹）。
+ *   ⚠️ 那只是**本地几何的来源**，与提交报文无关：这类任务提交时 `lineId` 为空串、`paperId` 用任务号兜底。
  */
-const canStart = computed(() => configuredForTask.value > 0)
+const canStart = computed(() => configuredForTask.value > 0 || (routeIsFree.value && libTotal.value > 0))
 const isBusy = computed(() => run.value.status === 'running' || run.value.status === 'paused')
 /**
  * **真实提交正在进行**（等报备时长 / 正在提交）。
@@ -712,9 +764,15 @@ const phaseColor = computed(
   () => ({ idle: 'info', begin: 'info', waiting: 'info', submitting: 'warning', done: 'success', error: 'error' })[phase.value],
 )
 
+/**
+ * 拟合度数值的颜色（RunMetricsCard 的大字）。
+ * 🆕 2026-09-22（issue #12）：阈值口径同 `utils/mp/taskShape.ts` —— **服务端未下发阈值 ⇒ 不着色**
+ * （灰色小字语境），既不算"通过"（旧实现会拿历史兜底 0.6 把它染绿）也不算"不通过"。
+ */
 const fitClass = computed(() => {
-  const threshold = Number(activeTask.value?.fitDegree ?? 0.6)
-  if (run.value.fitDegree >= threshold) return 'text-success'
+  const fit = fitRequirementOf(activeTask.value)
+  if (!fit.required || fit.threshold === null) return 'text-medium-emphasis'
+  if (run.value.fitDegree >= fit.threshold) return 'text-success'
   return run.value.fitDegree > 0 ? 'text-warning' : ''
 })
 
@@ -857,15 +915,29 @@ const doRealSubmit = async () => {
     return
   }
   const r = run.value.result
-  // ⚠️ 自由跑没有线路（厂商口径：自由跑 paperId/lineId 都为空串）⇒ line 允许为空
-  const line = isFreeRun.value ? null : (activeLines.value.find((l) => l.pointId === run.value.lineId) ?? null)
-  if (!r || (!isFreeRun.value && !line)) {
-    showSnackbar(isFreeRun.value ? '缺少结算数据' : '缺少线路或结算数据', 'error')
+  /**
+   * 🆕 2026-09-22（issue #12）：**提交用哪条线路**。
+   *
+   * · 自由跑（`isFreeRun`）⇒ 没有线路（厂商口径：paperId/lineId 都为空串）；
+   * · **服务端未下发线路的任务**（`routeIsFree`）⇒ 也传 `null`：本机跑道只是**本地几何**，
+   *   它的 `pointId` 是我们自己库里的键名（多半来自别的任务/线路），**不是服务端线路标识**，
+   *   绝不能进报文（`lineId` 必须空串）；任务号改由 `paperId` 兜底（`task.taskId`）。
+   * · 其余（服务端下发了线路）⇒ 与原来逐字一致。
+   */
+  const line = isFreeRun.value || routeIsFree.value ? null : (activeLines.value.find((l) => l.pointId === run.value.lineId) ?? null)
+  const paperId = routeIsFree.value ? String(activeTask.value?.taskId ?? '') : ''
+  if (!r) {
+    showSnackbar('缺少结算数据', 'error')
+    return
+  }
+  if (!isFreeRun.value && !routeIsFree.value && !line) {
+    showSnackbar('缺少线路或结算数据', 'error')
     return
   }
   logInfo('submit', '用户确认真实提交', {
     runType: r.submitRunType,
-    lineId: line?.pointId ?? '(自由跑)',
+    lineId: line?.pointId ?? (isFreeRun.value ? '(自由跑)' : '(本任务未下发线路)'),
+    paperId,
     km: Number(r.km.toFixed(2)),
     durationSeconds: r.durationSeconds,
     fitDegree: r.fitDegree,
@@ -875,6 +947,8 @@ const doRealSubmit = async () => {
   try {
     const out = await submitRealRun({
       line,
+      // 🆕 2026-09-22（issue #12）：任务号兜底 —— 只有"本任务未下发线路"时才非空（有线路时被报文构造器忽略）
+      paperId: paperId || undefined,
       // 提交口径与预览同源（结果里那份 submitRunType），避免两处各转一次导致口径漂移
       runType: r.submitRunType,
       // ⚠️ 用**实际跑出来的那一段**（自由跑提前结束时，整条 points 会与 km 矛盾）

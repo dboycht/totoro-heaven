@@ -16,8 +16,11 @@ import { applyStartToLoop, laneLoop, laneRatioFor } from '~/utils/mp/trackEditor
 import { buildRunStats, buildTimeFields } from '~/utils/mp/runData'
 import { buildScoreDetailRequest, buildScoreRequest } from '~/utils/mp/submitPayload'
 import { evaluateRunAgainstTask, type TaskCheckResult } from '~/utils/mp/taskRules'
+// 🆕 2026-09-22（issue #12）：判"任务到底有没有下发线路"（纯函数，与门禁/自检/诊断同源）
+import { routeRequirementOf } from '~/utils/mp/taskShape'
+import { resolveEntryName, type TrackRouteEntry } from '~/utils/mp/trackLibrary'
 import { newRunSeed, planRealisticRun, type RunPlan } from '~/utils/mp/realism'
-import { toSubmitRunType, type MpScoreDetailRequest, type MpScoreRequest } from '~/src/mp/types'
+import { toSubmitRunType, type MpRunLine, type MpScoreDetailRequest, type MpScoreRequest } from '~/src/mp/types'
 import { DEMO_PASS_POINTS, demoScantronId } from '~/src/mp/demo'
 import { DEMO_STEP_M, REAL_STEP_M, TICK_MS, createRunState, type DemoStateApi } from './state'
 import type { DemoRecordsApi } from './records'
@@ -25,6 +28,29 @@ import type { DemoRecordsApi } from './records'
 /** 跑步计时器放在模块级：整个应用只有一个（多个组件调用 useMpDemo 不会各起一个） */
 let timer: ReturnType<typeof setInterval> | null = null
 let lastFitAt = 0
+
+/**
+ * 🆕 2026-09-22（issue #12）：**服务端未下发线路的任务**（自由路线任务，如"研途健行"）的几何来源。
+ *
+ * 这类任务的 `runPointList` 缺失/为空 ⇒ 线路下拉里**必然没有**服务端线路可选，
+ * 但本地生成轨迹**总得有一条几何** —— 用**本机已描的跑道**（用户自己在「跑道编辑」描的真跑道）。
+ *
+ * ⚠️ 三条口径（避免后人误改）：
+ *   ① 这只是**本地几何**：这些 `pointId` 是我们自己描述的路线库键名（多半来自别的任务/线路），
+ *      **不是服务端线路标识** ⇒ 绝不允许进提交报文（`lineId` 必须空串，任务号走 `paperId` 兜底）；
+ *   ② `pointList: []` —— 本任务**没有官方模板点列**，如实留空（不拿本机坐标冒充服务端线路）；
+ *      连带影响：拟合度没有参照线可算（`calculateRouteSimilarity([], …) === 0`），
+ *      所以自检里的拟合度一行会显示成"提示"（服务端未下发阈值，`taskRules.ts`）；
+ *   ③ 一条都没描 ⇒ 返回空数组，照旧报"还没描过跑道"（我们总得有个几何才能生成轨迹）。
+ */
+function localTrackLines(entries: TrackRouteEntry[], taskId: string): MpRunLine[] {
+  return entries.map((e) => ({
+    pointId: String(e.lineId),
+    pointName: resolveEntryName(e) || String(e.lineId),
+    taskId,
+    pointList: [],
+  }))
+}
 
 export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
   const { demoMode, task, lines, run, session, freeRunKm } = state
@@ -107,11 +133,27 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
      */
     const drawnIds = new Set(lib.entries.value.map((e) => String(e.lineId)))
     const drawnLines = lines.value.filter((l) => drawnIds.has(String(l.pointId)))
-    const line = drawnLines.find((l) => String(l.pointId) === String(run.value.lineId)) ?? drawnLines[0]
+    /**
+     * 🆕 2026-09-22（issue #12）：**服务端未下发线路的任务**兜底 —— 从**本机第一条已描跑道**取几何。
+     * 判据：`routeRequirementOf(task).kind === 'free'`（纯函数）。
+     * ⚠️ 只在这个分支兜底：`kind === 'line'`（服务端下发了线路）时**逐字保持原行为** ——
+     *    没描过就是报错去描，绝不回落到别的线路（那是 2026-09-18 审计 #3 明确修掉的错法）。
+     */
+    const routeIsFree = routeRequirementOf(task.value).kind === 'free'
+    const localFallback = routeIsFree ? localTrackLines(lib.entries.value, task.value?.taskId ?? '')[0] : undefined
+    const line =
+      drawnLines.find((l) => String(l.pointId) === String(run.value.lineId)) ?? drawnLines[0] ?? localFallback
     if (!line) {
-      run.value.error =
-        '这条线路还没描过跑道：本版只允许用你自己描的跑道生成轨迹（官方模板偏十几到几十米）。' +
-        '请去「跑道编辑」选这条线路 → 「快速定位」→ 沿卫星图描外圈 → 保存（本机）。'
+      /**
+       * 两种"没有几何"的原因必须分开归因（user 在 issue #12 里正是被混为一谈坑到的）：
+       *   · `kind === 'line'`：任务有线路，但你**没给这条线路描过**跑道 ⇒ 去描这一条；
+       *   · `kind === 'free'`：任务**未下发线路**，而本机**一条跑道都没描过** ⇒ 我们总得有个几何，去描一条。
+       */
+      run.value.error = routeIsFree
+        ? '本机还没有可用的跑道几何：本任务「服务端未下发线路（不指定路线）」，轨迹只能用你自己描的跑道生成。' +
+          '请先去「跑道编辑」描一条外圈并保存（本机），回到本页即可开跑。'
+        : '这条线路还没描过跑道：本版只允许用你自己描的跑道生成轨迹（官方模板偏十几到几十米）。' +
+          '请去「跑道编辑」选这条线路 → 「快速定位」→ 沿卫星图描外圈 → 保存（本机）。'
       return
     }
 

@@ -71,15 +71,69 @@ test('里程与拟合度都达标 → pass=true', () => {
   assert.equal(itemOf(result, 'fitDegree').confidence, 'hard')
 })
 
-test('拟合度不足 → hard 不通过（阈值缺省按 0.6）', () => {
+/**
+ * ⚠️ 2026-09-22 改写（issue #12）：**服务端未下发 `fitDegree` ⇒ 本任务不判拟合度**。
+ *
+ * 旧实现 `Number(task.fitDegree ?? 0.6)` 会**自己造出一个服务端没提的要求**：自检表里凭空多一条
+ * "拟合度不达标"的硬性失败（甚至会拦住提交）。而"没下发"的正确含义是**我们无从判定**。
+ * 新判据来自纯函数 `fitRequirementOf()`（`utils/mp/taskShape.ts`）：
+ * 缺失 / null / 空串 / 非数字 / ≤0 ⇒ `skipped: true` + `ok: true` + `confidence: 'info'`（不进 pass）。
+ */
+test('拟合度：服务端未下发阈值（fitDegree 缺失）⇒ 只提示、不判失败、不进 pass', () => {
   const result = evaluateRunAgainstTask({
     task: makeTask({ fitDegree: undefined }),
     km: 3.05,
     durationSeconds: 1100,
+    // ⚠️ 这个值若还按历史兜底 0.6 判就会失败 —— 正是本条要防的回归
     fitDegree: 0.42,
   })
-  assert.equal(result.pass, false)
-  assert.match(itemOf(result, 'fitDegree').detail, /0\.42 \/ 阈值 0\.6/)
+  const item = itemOf(result, 'fitDegree')
+  assert.equal(result.pass, true, '未下发阈值时不得因拟合度判失败')
+  assert.deepEqual(result.problems, [], '不得写进 problems（否则会被当成硬性不通过）')
+  assert.equal(item.ok, true, 'ok 必须是 true（不是 false，也不是 undefined）')
+  assert.equal(item.skipped, true, '必须带 skipped 标记 —— 界面据此显示成"提示"而不是"通过/失败"')
+  assert.equal(item.confidence, 'info', '不参与 pass（pass 只统计 hard 项）')
+  assert.match(item.detail, /服务端未下发拟合度阈值/)
+  assert.doesNotMatch(item.detail, /阈值 0\.6/, '不得再出现历史兜底 0.6')
+})
+
+test('拟合度：阈值 0 / 非数字 / 空串 同样按"未下发"处理（只提示，不判失败）', () => {
+  for (const v of [0, '0', 'abc', '']) {
+    const result = evaluateRunAgainstTask({
+      task: makeTask({ fitDegree: v }),
+      km: 3.05,
+      durationSeconds: 1100,
+      fitDegree: 0.1,
+    })
+    const item = itemOf(result, 'fitDegree')
+    assert.equal(result.pass, true, `fitDegree=${JSON.stringify(v)} 时不该判失败`)
+    assert.equal(item.skipped, true, `fitDegree=${JSON.stringify(v)} 时该是提示项`)
+    assert.equal(item.ok, true)
+  }
+})
+
+test('拟合度：服务端**下发了**阈值 ⇒ 行为与旧版逐字一致（照阈值判 hard）', () => {
+  const low = evaluateRunAgainstTask({
+    task: makeTask({ fitDegree: 0.6 }),
+    km: 3.05,
+    durationSeconds: 1100,
+    fitDegree: 0.42,
+  })
+  assert.equal(low.pass, false)
+  assert.equal(itemOf(low, 'fitDegree').ok, false)
+  assert.equal(itemOf(low, 'fitDegree').skipped, undefined, '有阈值时不得带 skipped 标记')
+  assert.equal(itemOf(low, 'fitDegree').confidence, 'hard')
+  assert.match(itemOf(low, 'fitDegree').detail, /0\.42 \/ 阈值 0\.6/)
+
+  const ok = evaluateRunAgainstTask({
+    task: makeTask({ fitDegree: 0.6 }),
+    km: 3.05,
+    durationSeconds: 1100,
+    fitDegree: 0.97,
+  })
+  assert.equal(ok.pass, true)
+  assert.equal(itemOf(ok, 'fitDegree').ok, true)
+  assert.equal(itemOf(ok, 'fitDegree').confidence, 'hard')
 })
 
 test('推断项（配速/时长/时段）不阻断 pass —— 单位未实测前只提示', () => {

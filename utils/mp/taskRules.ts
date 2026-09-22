@@ -11,9 +11,17 @@
  *      → 换算 `秒/公里 = 3600 / kmh`：3 km/h = 20'00"、15 km/h = 4'00"。
  *    - `minTime` / `maxTime`：实测 10 / 25，**推断为分钟**（3.2km 合理用时应落在此区间）。
  *    - 字段名最早是 2026-09-11 从 `camera/currentTimeMillis` 响应尾部拿到的，**取值**由 9-14 实测补齐。
- *    规则分三类：`hard`（里程/拟合度阈值，参与 pass）/ `inferred`（配速、时长、时段，只提示不阻断）/ `info`。
+ *    规则分三类：`hard`（里程，以及**服务端真的下发了阈值时的**拟合度，参与 pass）/
+ *    `inferred`（配速、时长、时段，只提示不阻断）/ `info`。
+ *
+ * ⚠️ **拟合度阈值只认服务端下发的字段**（2026-09-22 修 issue #12）：
+ *    阈值判据收口到纯函数 `fitRequirementOf()`（`utils/mp/taskShape.ts`，有单测）——
+ *    `fitDegree` 缺失 / null / 空串 / 非数字 / ≤0 ⇒ **本任务没有下发阈值** ⇒ 自检那条
+ *    **不判失败**（`ok: true` + `skipped: true`，界面显示成"提示"），也不再默认按 `0.6` 判。
+ *    历史上的 `Number(task.fitDegree ?? 0.6)` 会**自己造出一个服务端没提的要求**（详见 taskShape.ts 抬头）。
  */
 import type { MpSunrunTask } from '../../src/mp/types'
+import { fitRequirementOf } from './taskShape'
 
 export type TaskRuleConfidence = 'hard' | 'inferred' | 'info'
 
@@ -26,6 +34,12 @@ export interface TaskRuleItem {
   confidence: TaskRuleConfidence
   /** 口径备注（推断项写明依据） */
   note?: string
+  /**
+   * 🆕 2026-09-22：**该项没有可判的要求**（服务端未下发阈值 / 字段缺失）——
+   * 界面据此显示成"提示"（黄/灰小字），而**不是**"通过"或"失败"。
+   * ⚠️ 这类项一律 `ok: true`（不得判失败）且 `confidence: 'info'`（不参与 `pass`）。
+   */
+  skipped?: boolean
 }
 
 export interface TaskCheckInput {
@@ -104,7 +118,8 @@ const paceText = (secPerKm: number): string => {
 
 /**
  * 逐条评估一次跑步是否满足任务约束。
- * `pass` 只看 `hard` 项：里程达标 + 拟合度达标。
+ * `pass` 只看 `hard` 项：里程达标 + **服务端确实下发了阈值时的**拟合度达标。
+ * ⚠️ `skipped: true` 的项（服务端未下发阈值）一律 `ok: true`、`confidence: 'info'`，**两边都不参与**。
  */
 export function evaluateRunAgainstTask(input: TaskCheckInput): TaskCheckResult {
   const { task, km, durationSeconds, fitDegree } = input
@@ -124,18 +139,34 @@ export function evaluateRunAgainstTask(input: TaskCheckInput): TaskCheckResult {
   })
   if (!kmOk) problems.push(`里程不足：${km.toFixed(2)} < ${requiredKm} km`)
 
-  // 2) 拟合度阈值（hard；服务端执行的阈值，源码默认 0.6）
-  const threshold = Number(task.fitDegree ?? 0.6)
-  const fitOk = fitDegree >= threshold
-  items.push({
-    key: 'fitDegree',
-    label: '拟合度达标',
-    ok: fitOk,
-    detail: `${fitDegree.toFixed(2)} / 阈值 ${threshold}`,
-    confidence: 'hard',
-    note: '阈值由服务端执行；客户端自算仅作预判',
-  })
-  if (!fitOk) problems.push(`拟合度不足：${fitDegree.toFixed(2)} < ${threshold}`)
+  // 2) 拟合度阈值（**只有服务端下发了有限且 > 0 的阈值时才是 hard 项**）
+  //    判据来自纯函数 `fitRequirementOf()`：缺失/null/空串/非数字/≤0 ⇒ 本任务没有下发阈值。
+  const fit = fitRequirementOf(task)
+  if (!fit.required) {
+    items.push({
+      key: 'fitDegree',
+      label: '拟合度达标',
+      // ⚠️ **不得判失败**：这不是"不达标"，而是"服务端没给阈值、我们无从判"。
+      //    同时 `confidence: 'info'` + `skipped: true` ⇒ 既不进 `pass`，界面也显示成"提示"。
+      ok: true,
+      detail: `${fit.reason}；本次自算拟合度 ${fitDegree.toFixed(2)}（仅作展示，不作判定）`,
+      confidence: 'info',
+      skipped: true,
+      note: fit.reason,
+    })
+  } else {
+    const threshold = fit.threshold as number
+    const fitOk = fitDegree >= threshold
+    items.push({
+      key: 'fitDegree',
+      label: '拟合度达标',
+      ok: fitOk,
+      detail: `${fitDegree.toFixed(2)} / 阈值 ${threshold}`,
+      confidence: 'hard',
+      note: '阈值取自服务端下发的 fitDegree（服务端执行）；客户端自算仅作预判',
+    })
+    if (!fitOk) problems.push(`拟合度不足：${fitDegree.toFixed(2)} < ${threshold}`)
+  }
 
   // 3) 配速区间（inferred：单位未实测）
   const pace = km > 0 ? durationSeconds / km : 0

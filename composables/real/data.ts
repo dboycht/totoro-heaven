@@ -11,6 +11,7 @@
 import { MpApiWrapper, MP_DEFAULT_BASE_URL } from '~/src/wrappers/MpApiWrapper'
 import type { MpRunLine, MpSunrunTask } from '~/src/mp/types'
 import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
+import { routeRequirementOf } from '~/utils/mp/taskShape'
 import { maskToken, normalizeCachePayload, serializeCachePayload, type RealCachePayload } from '~/utils/mp/realCache'
 import { TOKEN_EXPIRED_HINT } from '~/utils/mp/tokenScan'
 import { looksLikeTokenExpired } from '~/src/mp/envelope'
@@ -73,7 +74,19 @@ export function useMpRealData() {
     disableDemo()
     setTask(task.value)
     const list = (task.value?.runPointList ?? []) as MpRunLine[]
-    if (!list.length) return
+    if (!list.length) {
+      /**
+       * 🆕 2026-09-22（issue #12）：**服务端未下发线路的任务**（自由路线任务，如"研途健行"）。
+       *
+       * 旧写法是直接 `return` —— 那会把**上一个任务/演示数据**的线路留在 `lines` 里（`setLines` 没被调用），
+       * 而跑步引擎正是从 `lines` 里挑几何的 ⇒ 要么挑到不相干的旧线路，要么报"这条线路还没描过跑道"。
+       * 现在的判据：**没有线路 ⇒ 明确清空**（线路集与选线都归零）；几何由跑步引擎回落到
+       * 「本机第一条已描跑道」（`composables/demo/runner.ts` 的本地几何兜底，与"本任务不指定路线"一致）。
+       */
+      setLines([])
+      run.value.lineId = ''
+      return
+    }
     setLines(list)
     // 选线优先级：① 显式指定（恢复缓存时）且仍有效 → 用它；② 与本人校区同名的线路；
     // ③ 按坐标分组的本校区第一条（不再盲选数据里的第一条 —— 实测数据第一条常在别的校区）。
@@ -493,6 +506,17 @@ export function useMpRealData() {
       line: selectedLine.value,
       cameraFlag: cameraFlag.value,
       cameraFlagLineId: cameraFlagLineId.value,
+      /**
+       * 🆕 2026-09-22（issue #12）：**本任务是否要求指定线路** —— 判据收口到纯函数
+       * `routeRequirementOf()`（`utils/mp/taskShape.ts`，有单测）。
+       *
+       * 为什么不传就会误拦：任务本身**服务端未下发线路**（`runPointList` 缺失/为空，如"研途健行"）时，
+       * `selectedLine` 必然是空的 ⇒ 门禁判 `camera_unknown`（"尚未选择跑步线路"）⇒ 真实提交永远灰着。
+       * 而"没选线路"在这里是**必然结果**，不是用户的疏忽 —— 那是我们自己造出来的一个要求。
+       * ⚠️ 传 `false` 只放宽"线路"这一条：开关/人脸/抽查/夜间一律照旧拦（见 `evaluateRunGate`）。
+       */
+      lineRequired: routeRequirementOf(task.value).kind === 'line',
+
       /**
        * ⚠️ 必须带上**本次跑步类型**（2026-09-18 自由跑落地）：
        * 自由跑不选线路、也不校验"开场人脸/随机抽查/摄像头杆"（厂商的自由跑**不打卡**）。

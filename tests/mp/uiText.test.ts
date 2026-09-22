@@ -131,10 +131,15 @@ const ALLOW_DUPLICATE_LABELS = new Map<string, string>([
      *   `v-else-if="libEntriesNotForTask"`（库里有条目但都不属于当前任务）与
      *   `v-else`（完全没描过），同一时刻只渲染一个 ⇒ 不是视觉重复。
      * 判据：白名单理由必须与代码**逐条对得上**，否则守卫的可信度会被"一条过时理由"带坏。
+     *
+     * 🆕 2026-09-22 更新（issue #12）：现在是 **3 处**，仍在**互斥分支**里 ——
+     *   `v-if="routeIsFree"`（任务未下发线路且本机一条都没描）/ `v-else-if="libEntriesNotForTask"` /
+     *   `v-else-if="activeLinesRaw.length"`，三者的条件两两互斥，同一时刻只渲染一个。
      */
     'components/RunWorkspace.vue：去「跑道编辑」描一条',
-    '**2 处**，位于互斥的 `v-else-if` / `v-else` 分支（库里有别的任务的跑道 / 完全没描过），' +
-      '同一时刻只渲染一个 —— 2026-09-19 逐行核对过源码',
+    '**3 处**，位于互斥的 `v-if="routeIsFree"` / `v-else-if="libEntriesNotForTask"` / ' +
+      '`v-else-if="activeLinesRaw.length"` 分支（本任务未下发线路且没描过 / 库里有别的任务的跑道 / 有线路但没描过），' +
+      '同一时刻只渲染一个 —— 2026-09-22 逐行核对过源码',
   ],
 ])
 

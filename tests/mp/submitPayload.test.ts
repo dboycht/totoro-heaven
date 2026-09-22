@@ -91,6 +91,57 @@ test('buildRunBeginRequest：自由跑不传线路 ⇒ paperId/lineId 都是空�
   assert.equal(withLine.lineId, '')
 })
 
+/**
+ * ⚠️ 2026-09-22 新增（issue #12）：**服务端未下发线路的任务**（如"研途健行"，`runPointList` 为空）。
+ *
+ * 那时没有线路可取，但"总得有个任务号" —— 用任务自身的 `taskId` 显式兜底，`lineId` 必须为空串
+ * （本机跑道的 pointId 是我们自己库里的键名，**不是**服务端线路标识）。
+ * 依据：`MpRunLine.taskId` 与任务 `taskId` **实测同值**（`src/mp/models.ts` 字段注释、9-14 实测）。
+ */
+test('buildRunBeginRequest：无线路 + paperId ⇒ paperId 取任务号、lineId 为空串', () => {
+  const req = buildRunBeginRequest({ line: null, paperId: 'sunrunTaskPaper-20210917000004', runType: 0 })
+  assert.deepEqual(req, {
+    runType: 0,
+    version: MP_CLIENT_VERSION,
+    phoneInfo: MP_PHONE_INFO_BEGIN,
+    paperId: 'sunrunTaskPaper-20210917000004',
+    lineId: '',
+    faceBase64: '',
+  })
+})
+
+test('buildRunBeginRequest：有线路时 paperId **仍取线路 taskId**（兜底不得覆盖线路 —— 老路径零回归）', () => {
+  const withBoth = buildRunBeginRequest({ line, paperId: 'another-paper', runType: 0 })
+  assert.equal(withBoth.paperId, line.taskId, '有线路 ⇒ 线路优先，传入的 paperId 被忽略')
+  assert.equal(withBoth.lineId, line.pointId)
+  // 线路存在但自身没有 taskId ⇒ 仍是空串（逐字同旧实现 `line.taskId ?? ''`，不因传了 paperId 而变）
+  const noTaskId = buildRunBeginRequest({ line: { ...line, taskId: undefined }, paperId: 'another-paper', runType: 0 })
+  assert.equal(noTaskId.paperId, '')
+})
+
+test('buildRunBeginRequest：既无线路也无 paperId ⇒ 两个都空串（老行为，不抛错）', () => {
+  const req = buildRunBeginRequest({ line: null, runType: 0 })
+  assert.equal(req.paperId, '')
+  assert.equal(req.lineId, '')
+})
+
+test('buildScoreRequest：无线路 + paperId ⇒ taskId 取任务号、路径点列为空、18 字段不变', () => {
+  const ctx = makeContext({ line: null, paperId: 'sunrunTaskPaper-20210917000004' })
+  const req = buildScoreRequest(ctx, { runType: 0 })
+  assert.equal(req.runType, 0)
+  assert.equal(req.taskId, 'sunrunTaskPaper-20210917000004', '没有线路时任务号必须兜底（否则成绩无从归属）')
+  // ⚠️ 服务端未下发线路 ⇒ 我们**没有官方点列**可带：如实传空数组（不拿本机跑道坐标冒充服务端线路）
+  assert.deepEqual(req.sunrunPathPointList, [])
+  assert.deepEqual(Object.keys(req).sort(), Object.keys(buildScoreRequest(makeContext())).sort(), '仍是 18 字段')
+  assert.equal(req.fitDegree, '1.00')
+})
+
+test('buildScoreRequest：有线路时 taskId 仍取自线路（传入的 paperId 被忽略 —— 零回归）', () => {
+  const req = buildScoreRequest(makeContext({ paperId: 'another-paper' }))
+  assert.equal(req.taskId, line.taskId)
+  assert.deepEqual(req.sunrunPathPointList, line.pointList)
+})
+
 test('buildScoreRequest：自由跑 line=null ⇒ taskId 空串、路径点列为空数组（厂商口径）', () => {
   const ctx = makeContext()
   const req = buildScoreRequest({ ...ctx, line: null, task: null }, { runType: 1 })

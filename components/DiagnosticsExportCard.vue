@@ -121,6 +121,8 @@ import {
   type DiagSnapshot,
 } from '~/utils/mp/diagnostics'
 import { TASK_CACHE_KEY, useRealState } from '~/composables/real/state'
+// 🆕 2026-09-22（issue #12）：任务形状一行摘要（"下发了线路没有 / 下发了拟合度阈值没有"）进诊断包
+import { taskShapeLine } from '~/utils/mp/taskShape'
 // 共享域常量（会话里没写 baseUrl 时的兜底展示值）
 import { MP_DEFAULT_BASE_URL } from '~/src/wrappers/MpApiWrapper'
 // 路线库的键名/归一化都在纯逻辑层（不自己再声明一份键名）
@@ -350,6 +352,8 @@ function taskSummaryOf(rawTask: Record<string, unknown> | null): DiagSnapshot['t
       validFrom: '',
       validTo: '',
       runPointListCount: 0,
+      // 没有任务时不写形状摘要（空串 = "没有任务"，避免 `route=free(0)` 被误读成"这个任务没下发线路"）
+      shapeLine: '',
     }
   }
   const list = rawTask.runPointList
@@ -363,6 +367,12 @@ function taskSummaryOf(rawTask: Record<string, unknown> | null): DiagSnapshot['t
     validFrom: asText(readFirst(rawTask, ['startDate', 'validFrom'])),
     validTo: asText(readFirst(rawTask, ['endDate', 'validTo'])),
     runPointListCount: Array.isArray(list) ? list.length : 0,
+    /**
+     * 🆕 2026-09-22（issue #12）：`route=line(2) fit=required(0.6)` 这种一行摘要 ——
+     * **与门禁/自检用的是同一个纯函数**（`utils/mp/taskShape.ts`，有单测），
+     * 所以排障时"界面为什么这样判"与"包里写了什么"必然一致。
+     */
+    shapeLine: taskShapeLine(rawTask),
   }
 }
 

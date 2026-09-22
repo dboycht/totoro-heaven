@@ -12,6 +12,7 @@ import assert from 'node:assert/strict'
 import {
   VERIFIED_SCHOOLS,
   SHARED_DOMAIN_HOST,
+  LINE_NOT_REQUIRED_REASON,
   evaluateRunGate,
   findVerifiedSchool,
   isNightBlocked,
@@ -164,4 +165,44 @@ test('门禁：未选线路 → 拒绝', () => {
   const r = evaluateRunGate(base({ line: null, cameraFlagLineId: '' }))
   assert.equal(r.allow, false)
   assert.equal(r.blockedBy, 'camera_unknown')
+})
+
+// ---------- 🆕 2026-09-22（issue #12）：任务未下发线路（lineRequired=false）----------
+/**
+ * 背景：有的任务**服务端未下发线路**（`runPointList` 缺失/为空，实测"研途健行"/研究生院）。
+ * 那种情况下 `line` 必然是空的 —— 这是任务的属性，不是用户的疏忽。原先门禁会判 `camera_unknown`
+ * （"尚未选择跑步线路。"）把开跑永远挡住，等于**自己造出一个服务端没提的要求**。
+ *
+ * 判据：调用方传 `lineRequired: false`（`routeRequirementOf(task).kind === 'line'` 取反）时，
+ * **④「未选线路」那一条不拦**，其余四层（夜间/开关/人脸/抽查）一律照旧。
+ */
+test('门禁：任务未下发线路（lineRequired=false）⇒ 未选线路**不再**拒绝（并给出依据）', () => {
+  const r = evaluateRunGate(base({ line: null, cameraFlag: null, cameraFlagLineId: '', lineRequired: false }))
+  assert.equal(r.allow, true, '任务未下发线路时不得因"未选线路"拦住')
+  assert.equal(r.blockedBy, undefined)
+  assert.equal(r.reason, LINE_NOT_REQUIRED_REASON)
+  assert.match(r.reason, /本任务未下发线路/)
+  // ⚠️ 措辞纪律：只说"未下发"这个客观事实，不许写成"服务端不判路线"（我们证明不了）
+  assert.doesNotMatch(r.reason, /不判路线/)
+})
+
+test('门禁：lineRequired=false **只**放宽"线路"这一条 —— 夜间/开关/人脸/抽查照旧拦', () => {
+  const noLine = { line: null, cameraFlag: null, cameraFlagLineId: '', lineRequired: false } as const
+  assert.equal(evaluateRunGate(base({ ...noLine, switches: null })).blockedBy, 'switches_unknown', '开关未读照旧拦')
+  assert.equal(
+    evaluateRunGate(base({ ...noLine, switches: { sunrunStartFace: '1', sunrunPointRandom: '0' } })).blockedBy,
+    'start_face',
+  )
+  assert.equal(
+    evaluateRunGate(base({ ...noLine, switches: { sunrunStartFace: '0', sunrunPointRandom: '1' } })).blockedBy,
+    'point_random',
+  )
+  assert.equal(
+    evaluateRunGate(base({ ...noLine, now: new Date(2026, 8, 16, 22, 30, 0) })).blockedBy,
+    'night',
+    '夜间停用优先级最高',
+  )
+  // 反过来：默认（不传 lineRequired）**必须逐字保持老行为**
+  assert.equal(evaluateRunGate(base({ line: null, cameraFlagLineId: '' })).blockedBy, 'camera_unknown')
+  assert.equal(evaluateRunGate(base({ line: null, cameraFlagLineId: '', lineRequired: true })).blockedBy, 'camera_unknown')
 })

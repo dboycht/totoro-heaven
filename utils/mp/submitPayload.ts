@@ -6,6 +6,8 @@
  *   - `sunRunExercisesDetail`：**只有 3 个字段** `pointList + scantronId + token`（2026-09-16 修正；
  *     点必须带 `time:"HH:mm:ss"`，否则服务端判「GPS位置为空！」整条拒收）
  *   - `getRunBegin`：`paperId = line.taskId`、`lineId = line.pointId`、**不带 token**（源码实测）
+ *     （🆕 2026-09-22：服务端未下发线路的任务改用**任务号兜底** `paperId = task.taskId`、`lineId = ''`，
+ *      见 `buildRunBeginRequest` 的说明）
  *
  * ⚠️ 这些函数只负责"拼报文"；实际请求、等待与判定在 `composables/useMpReal.ts`。
  */
@@ -28,8 +30,19 @@ export interface RealSubmitContext {
   /**
    * 选中线路（其 pointId 即 lineId、taskId 即 paperId）。
    * ⚠️ **自由跑为 `null`**（厂商源码：只有阳光跑才取线路；自由跑 paperId/lineId 都是空串）。
+   * ⚠️ **服务端未下发线路的任务**（`routeRequirementOf(task).kind === 'free'`）也为 `null` ——
+   *    此时任务号由下面的 `paperId` 兜底（见 `buildScoreRequest` 的 taskId 分支）。
    */
   line: MpRunLine | null
+  /**
+   * 🆕 2026-09-22（issue #12）：**任务号兜底** —— 只有"没有线路可取自"时才被使用。
+   *
+   * 依据：`MpRunLine.taskId` 的注释写明"提交 getRunBegin 的 paperId / sunRunExercises 的 taskId；
+   * **实测 9-14 同值**" ⇒ 线路的 taskId 与任务自身的 `taskId` 就是同一个值，
+   * 所以没有线路时用任务的 `taskId` 不是"发明新值"，而是取同一事实的另一个来源。
+   * ⚠️ 有线路时**以线路为准**（`line.taskId` 优先），本字段被忽略 ⇒ 老路径逐字不变。
+   */
+  paperId?: string
   /** 实际里程（公里） */
   km: number
   /** 实际时长（秒） */
@@ -59,9 +72,16 @@ export interface RealSubmitContext {
  * ```
  * 即：**自由跑传 `runType:1`，且 `paperId`/`lineId` 都是空串**（不去取线路）。
  * 传 `line` 时按阳光跑口径取该线路的 taskId/pointId；**`line` 可为空**（自由跑）。
+ *
+ * 🆕 2026-09-22（issue #12）：**服务端未下发线路的任务**（`routeRequirementOf(task).kind === 'free'`）下
+ * 我们没有线路可取，但"总得有个任务号"—— 用 `paperId`（任务自身的 `taskId`）兜底，`lineId` 为空串。
+ * 依据：`MpRunLine.taskId` 与任务 `taskId` **实测同值**（见 `src/mp/models.ts` 的字段注释）。
+ * ⚠️ **有线路时以线路为准**（`line.taskId` 优先，哪怕它是空串）⇒ `kind === 'line'` 的老路径逐字不变。
  */
 export function buildRunBeginRequest(context: {
   line?: MpRunLine | null
+  /** 任务号兜底（**只在没有线路时生效**；有线路时忽略 —— 见上面说明） */
+  paperId?: string
   /** 0 = 阳光跑 / 1 = 自由跑（源码：`2 == runType ? 1 : 0`，即 0/1 原样透传） */
   runType: 0 | 1
 }): { runType: number; version: string; phoneInfo: string; paperId: string; lineId: string; faceBase64: string } {
@@ -70,7 +90,8 @@ export function buildRunBeginRequest(context: {
     runType: context.runType,
     version: MP_CLIENT_VERSION,
     phoneInfo: MP_PHONE_INFO_BEGIN,
-    paperId: freeRun ? '' : (context.line?.taskId ?? ''),
+    // 有线路 ⇒ 取线路的 taskId（逐字同旧行为）；没有线路 ⇒ 任务号兜底（无则空串）
+    paperId: freeRun ? '' : (context.line ? String(context.line.taskId ?? '') : String(context.paperId ?? '')),
     lineId: freeRun ? '' : (context.line?.pointId ?? ''),
     faceBase64: '', // ✅ 已建档 → 留空即可放行（9-11 对照实验 + 9-14 实测双重确认）
   }
@@ -116,7 +137,9 @@ export function buildScoreRequest(context: RealSubmitContext, options: ScorePayl
     evaluateDate: time.evaluateDate,
     endTime: time.endTime,
     startTime: time.startTime,
-    taskId: freeRun ? '' : (context.line?.taskId ?? ''),
+    taskId: freeRun ? '' : (context.line ? String(context.line.taskId ?? '') : String(context.paperId ?? '')),
+    // ⚠️ 服务端未下发线路的任务 ⇒ 我们**没有官方点列**可带（本机跑道几何不是服务端线路）
+    //    ⇒ 如实传空数组（不拿本机坐标冒充服务端线路，见 `_mp-analyze` 的报文纪律）。
     sunrunPathPointList: freeRun ? [] : (context.line?.pointList ?? []),
     flag: '1',
   }
