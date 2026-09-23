@@ -35,34 +35,68 @@ const listCaptureFiles = (): string[] => {
   }
 }
 
-test('captures：文件名可读可排序、纯函数解析往返（UTC 也一样）', () => {
-  const at = new Date(2026, 8, 23, 14, 5, 6, 78) // 本地 2026-09-23 14:05:06.078
+test('captures：文件名**不含长数字串**、可解析、且"掩码与红线都不动它"（用户要求 1️⃣）', async () => {
+  const at = new Date(2026, 8, 23, 14, 5, 6, 78)
   const name = captureFileName({ at, seq: 7, endpoint: '/wxxcx/sunrun/getSunrunPaper', http: 200, json: true })
-  assert.equal(name, '20260923-140506078-0007-wxxcx-sunrun-getSunrunPaper-200.json')
-  const parsed = parseCaptureName(name)
-  assert.deepEqual(parsed, { stamp: '20260923-140506078', seq: 7, endpoint: 'wxxcx-sunrun-getSunrunPaper', http: 200, json: true })
-  // 时间戳能回读（用**本地分量**构造，故 UTC 环境下也自洽）
-  assert.equal(captureStampToMs('20260923-140506078'), at.getTime())
-  assert.equal(captureStampToIso('20260923-140506078'), at.toISOString())
-  // 非 JSON ⇒ .txt；序号补零；字典序 = 时间序
+  /** 新格式：`c<5 位序号>-<端点短名>-<http>.<ext>`（时间戳进 meta，不再进文件名） */
+  assert.equal(name, 'c00007-getSunrunPaper-200.json')
+  assert.deepEqual(parseCaptureName(name), { stamp: '', seq: 7, endpoint: 'getSunrunPaper', http: 200, json: true })
+  // 非 JSON ⇒ .txt；序号补零（5 位）
   const txt = captureFileName({ at, seq: 8, endpoint: '/x/y', http: 502, json: false })
-  assert.match(txt, /^20260923-140506078-0008-x-y-502\.txt$/)
+  assert.equal(txt, 'c00008-y-502.txt')
+  // 序号有序（字典序 = 序号序）
+  const s1 = captureFileName({ at, seq: 1, endpoint: '/x', http: 200, json: true })
+  const s2 = captureFileName({ at, seq: 2, endpoint: '/x', http: 200, json: true })
+  assert.ok(s1 < s2, '同一批里序号决定先后（5 位补零）')
   /**
-   * 字典序 = 时间序：**先比时间戳，同一毫秒再比序号**。
-   * ⚠️ 别写成"整串字典序"：`…-0001-x-200.json` 与 `…-0008-x-y-502.txt` 在同一毫秒时会先比后面的名字，
-   * 那不是我们要的语义（我们只保证"时间戳串有序 + 序号补零"）。
+   * 🔴 **核心断言（用户要求）**：对**每一个端点形状**生成的名字，
+   * 必须「掩码不动它」且「红线不命中」—— 这样 manifest 才能写真实文件名。
+   * 端点清单取真实项目里的形状（含超长短名、纯数字短名等极端值）。
    */
-  const stampOf = (n: string) => /^\d{8}-\d{9}/.exec(n)![0]
-  const later = captureFileName({ at: new Date(at.getTime() + 1), seq: 1, endpoint: '/x', http: 200, json: true })
-  assert.ok(stampOf(later) > stampOf(name), '时间戳部分必须有序（字典序 = 时间序）')
-  const sameMsSeq1 = captureFileName({ at, seq: 1, endpoint: '/x', http: 200, json: true })
-  const sameMsSeq2 = captureFileName({ at, seq: 2, endpoint: '/x', http: 200, json: true })
-  assert.ok(sameMsSeq1 < sameMsSeq2, '同一毫秒内序号决定先后（4 位补零）')
+  const { maskTokenLike } = await import('../../utils/mp/logFormat.ts')
+  const { assertNoCredentials } = await import('../../utils/mp/diagnostics.ts')
+  const endpoints = [
+    '/wxxcx/sunrun/getSunrunPaper',
+    '/wxxcx/platform/serverlist/getSunRunSchoolList',
+    '/wxxcx/sunrun/selectSunRunStartConfiguration',
+    '/wxxcx/sunrun/getRunBegin',
+    '/wxxcx/very/long/path/with/many/segments/andAReallyLongEndpointNameHere',
+    '/wxxcx/sunrun/GetStudentInfoByToken',
+    '/',
+    '/12345678',
+    '/a',
+    '???',
+    '',
+  ]
+  for (const ep of endpoints) {
+    for (const http of [200, 502]) {
+      for (const json of [true, false]) {
+        const n = captureFileName({ at, seq: 99999, endpoint: ep, http, json })
+        assert.ok(n.length < 36, `文件名要**短于高熵门槛**（36）：${n}（端点 ${ep}）`)
+        assert.equal(maskTokenLike(n), n, `掩码不得改动文件名：${n}（端点 ${ep}）`)
+        assert.equal(assertNoCredentials([n]).ok, true, `红线不得命中文件名：${n}（端点 ${ep}）`)
+      }
+    }
+  }
+  // 短名只取**最后一段**（整条路径拼起来会太长而落进高熵判据带）
+  assert.equal(captureEndpointSlug('/wxxcx/sunrun/getSunrunPaper'), 'getSunrunPaper')
+  assert.equal(captureEndpointSlug('/wxxcx/platform/serverlist/getSunRunSchoolList'), 'getSunRunSchoolList')
   // 端点名净化：防目录穿越/非法字符
-  assert.equal(captureEndpointSlug('../../etc/passwd'), 'etc-passwd')
-  assert.equal(captureEndpointSlug('/a/b/c'), 'a-b-c')
+  assert.equal(captureEndpointSlug('../../etc/passwd'), 'passwd')
+  assert.equal(captureEndpointSlug('/a/b/c'), 'c')
   assert.equal(captureEndpointSlug(''), 'root')
   assert.equal(captureEndpointSlug('???'), 'root')
+  // 旧格式仍能解析（兼容"旧文件按旧格式读"）
+  assert.deepEqual(parseCaptureName('20260923-140506078-0007-wxxcx-sunrun-getSunrunPaper-200.json'), {
+    stamp: '20260923-140506078',
+    seq: 7,
+    endpoint: 'wxxcx-sunrun-getSunrunPaper',
+    http: 200,
+    json: true,
+  })
+  // 时间戳（meta 用）仍能互相转换
+  assert.equal(captureStampToMs('20260923-140506078'), at.getTime())
+  assert.equal(captureStampToIso('20260923-140506078'), at.toISOString())
   // 解析坏名字不抛错
   assert.equal(parseCaptureName('random.txt'), null)
   assert.equal(captureStampToMs('nope'), null)
@@ -136,24 +170,23 @@ test('captures：脱敏仍然生效（token/学号/姓名/手机/动态键名/�
 })
 
 test('captures：超预算 ⇒ 淘汰**最旧**、当天不删、台账累计（淘汰不静默）', () => {
-  /** 先清空目录（前面的用例写了东西），再造 3 份"昨天"的大文件 */
+  /** 先清空目录（前面的用例写了东西），再造 2 份"旧"的大文件 */
   store.clearCaptures()
   const dir = store.CAPTURE_DIR
   mkdirSync(dir, { recursive: true })
-  const mk = (stamp: string, payloadBytes: number): string => {
-    const name = `${stamp}-0001-old-endpoint-200.json`
+  /** 🆕 新命名（`c<5 位序号>-<短名>-<http>.ext`）：旧格式的 14 位时间戳会被掩码动，所以不再用它造夹具 */
+  const mk = (seq: number, payloadBytes: number): string => {
+    const name = `c${String(seq).padStart(5, '0')}-old-endpoint-200.json`
     writeFileSync(join(dir, name), 'x'.repeat(payloadBytes), 'utf8')
-    writeFileSync(join(dir, `${name}.meta.json`), '{}', 'utf8')
-    /** 把 mtime 设成 2 天前（模拟"旧文件"；淘汰看的是文件名里的日期 + mtime） */
+    /** meta 里写"2 天前"（时间判定看 meta.at；淘汰看 mtime/顺序） */
+    const oldAt = new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString()
+    writeFileSync(join(dir, `${name}.meta.json`), JSON.stringify({ at: oldAt, fileName: name, truncated: false }), 'utf8')
     const old = (Date.now() - 2 * 24 * 3600 * 1000) / 1000
     utimesSync(join(dir, name), old, old)
     return name
   }
-  const d = new Date(Date.now() - 2 * 24 * 3600 * 1000)
-  const p = (n: number) => String(n).padStart(2, '0')
-  const day = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
-  const old1 = mk(`${day}-010000000`, 1200 * 1024)
-  const old2 = mk(`${day}-020000000`, 1200 * 1024)
+  const old1 = mk(1, 1200 * 1024)
+  const old2 = mk(2, 1200 * 1024)
   /** 再来一份**今天**的大文件（不该被删） */
   const todayName = store.writeCapture({
     endpoint: '/wxxcx/today',
@@ -182,14 +215,100 @@ test('captures：窗口过滤（最近 N 天）+ 窗口内逐份可读', () => {
   const items = store.recentCaptures(3)
   assert.ok(items.length >= 1, `应当至少读到今天那份，实际 ${items.length}`)
   for (const it of items) {
-    assert.ok(/^\d{8}-\d{9}-/.test(it.name), `窗口内的名字要合法：${it.name}`)
+    // 名字要么是新格式（`c00001-…`），要么是旧格式（`<时间戳>-…`）—— 两种都要能进包
+    assert.ok(/^(c\d{1,5}-|\d{8}-\d{9}-)/.test(it.name), `窗口内的名字要合法：${it.name}`)
     assert.ok(it.text.length > 0, '正文要读得到')
   }
+  /** 时间判定：今天写的那份必须在（meta.at 优先） */
+  assert.ok(items.some((it) => it.meta?.at), '至少有一份带 meta.at（时间判定靠它）')
   /** 窗口 0 天 ⇒ 什么都不给（防呆） */
   assert.deepEqual(store.recentCaptures(0), [])
 })
 
+test('captures：`.txt` 坐标**尽力剥离**（两态：关 ⇒ 值不出现且有计数；开 ⇒ 原样）', async () => {
+  const { stripGeometryFromText } = await import('../../utils/mp/responseRecord.ts')
+  /** 覆盖用户点名的所有形态：JSON 片段（数字/字符串/数组）+ 查询串/表单 */
+  const txt = [
+    '<html><script>var p = {"latitude": 30.123456, "longitude": 120.654321};</script></html>',
+    '{"data":{"runPointList":[{"pointId":"L1"}],"routeItudes":"30.1,120.2;30.3,120.4"}}',
+    "lat=30.123456&lng=120.654321&name=x",
+    "'lat': -30.5, 'lng': 120.25",
+    '{"routeItudes":["30.1,120.2","30.3,120.4"]}',
+    '<div data-latitude="30.1">不受覆盖的形态（如实说明可能残留）</div>',
+  ].join('\n')
+  const r = stripGeometryFromText(txt)
+  for (const gone of ['30.123456', '120.654321', '30.1,120.2', '30.3,120.4', '-30.5', '120.25']) {
+    assert.ok(!r.text.includes(gone), `坐标值不得残留：${gone}（实际 ${r.text.slice(0, 200)}）`)
+  }
+  assert.ok(r.count >= 5, `要如实计数剥了几处，实际 ${r.count}`)
+  assert.ok(r.text.includes('[坐标已按开关省略]'), '要有占位符（让人看出这里原本有坐标）')
+  // 非坐标内容一个不动
+  assert.ok(r.text.includes('L1') && r.text.includes('name=x'), '其余内容一个不动')
+  /** 反向：不做剥离时（开着开关）原文逐字保留 */
+  assert.ok(txt.includes('30.123456'), '开着开关时原样保留（调用方不调这个函数即可）')
+  /** 边界：空串 / 无坐标文本 不抛错、计数为 0 */
+  assert.deepEqual(stripGeometryFromText(''), { text: '', count: 0 })
+  assert.deepEqual(stripGeometryFromText('hello world'), { text: 'hello world', count: 0 })
+})
+
+test('captures：「退出登录」与「清空本机数据」都清 captures（源码级守卫 + 行为断言）', async (t) => {
+  const { readFileSync, existsSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  /** 先在目录里放一份，验证 clearCaptures 真能清空（行为断言） */
+  const seeded = store.writeCapture({ endpoint: '/probe/seed-before-clear', http: 200, ms: 1, originalBytes: 3, payload: { kind: 'text', text: 'seed' } })
+  assert.ok(seeded && existsSync(join(store.CAPTURE_DIR, seeded)), '清空前应当有一份')
+  const cleared = store.clearCaptures()
+  assert.ok(cleared.files >= 1, `清空要报告删了几份，实际 ${cleared.files}`)
+  assert.deepEqual(
+    existsSync(store.CAPTURE_DIR) ? (await import('node:fs')).readdirSync(store.CAPTURE_DIR).filter((n) => /\.(json|txt)$/.test(n) && !n.endsWith('.meta.json')) : [],
+    [],
+    '清空后目录里没有正文文件',
+  )
+
+  /** 源码级守卫：`composables/real/data.ts` 的两个函数体里各要调一次（调用形式不写死，只要是清 captures） */
+  let dir = join(fileURLToPath(import.meta.url), '..')
+  let root = ''
+  for (let i = 0; i < 6; i++) {
+    const parent = join(dir, '..')
+    if (existsSync(join(parent, 'package.json')) && existsSync(join(parent, 'composables', 'real', 'data.ts'))) {
+      root = parent
+      break
+    }
+    dir = parent
+  }
+  if (!root) {
+    t.skip('找不到项目根（package.json + composables/real/data.ts）—— 可能不在仓库内运行；本守卫跳过')
+    return
+  }
+  const src = readFileSync(join(root, 'composables', 'real', 'data.ts'), 'utf8')
+  /** 取函数体（从 `function xxx(` 到下一个顶层 function / 注释块） */
+  const bodyOf = (marker: string): string => {
+    const at = src.indexOf(marker)
+    assert.ok(at >= 0, `data.ts 里找不到 ${marker}（守卫需同步更新）`)
+    const rest = src.slice(at + marker.length)
+    const next = rest.search(/\n {2}(?:async )?function |\n {2}\/\*\* /)
+    return next < 0 ? rest : rest.slice(0, next)
+  }
+  for (const fn of ['function logoutAndClearSession(', 'function clearAllLocalData(']) {
+    const body = bodyOf(fn)
+    assert.match(body, /clearServerCaptures\(/, `${fn} 里没有清服务端 captures（换账号会留下上一个账号的响应原文）`)
+  }
+  /** 清空动作要**尽力而为**：调用处必须用 `void`（不 await、不让失败影响退出/清空） */
+  assert.match(src, /void clearServerCaptures\(/, '调用要 `void`（清不掉也不能让退出/清空失败）')
+  /** 服务端端点存在且沿用本机校验 */
+  const ep = join(root, 'server', 'api', 'local', 'diagnostics', 'captures', 'clear.post.ts')
+  assert.ok(existsSync(ep), '缺 `POST /api/local/diagnostics/captures/clear` 端点')
+  const epSrc = readFileSync(ep, 'utf8')
+  assert.match(epSrc, /assertLocalRequest\(/, '端点必须沿用 assertLocalRequest（只允许本机）')
+  assert.match(epSrc, /clearCaptures\(/, '端点必须真的调 clearCaptures')
+})
+
 test('captures：clearCaptures 清空目录（含台账）', () => {
+  /** 先放一份（上一用例已清过，可能为空 ⇒ 补一份保证断言有意义） */
+  if (listCaptureFiles().length === 0) {
+    store.writeCapture({ endpoint: '/probe/for-clear', http: 200, ms: 1, originalBytes: 2, payload: { kind: 'text', text: 'x' } })
+  }
   const before = listCaptureFiles().length
   assert.ok(before >= 1, '清空前应当有东西')
   const res = store.clearCaptures()

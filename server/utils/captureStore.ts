@@ -32,6 +32,7 @@ import {
   DIAG_CAPTURE_DAYS,
   DIAG_CAPTURE_MAX_BYTES,
   captureFileName,
+  parseCaptureName,
   type CaptureMeta,
 } from '../../utils/mp/diagnostics'
 import { RUNTIME_DIR, logWarn } from './logger'
@@ -187,8 +188,22 @@ export function evictCapturesIfNeeded(incomingBytes: number): { files: number; b
   return result
 }
 
-/** 进程内自增序号（文件名里那 4 位） */
+/** 进程内自增序号（文件名里那 5 位）—— 启动时**从目录里已有的最大序号续号**（避免同一目录里重名） */
 let seqCounter = 0
+/** 从现有文件名里推出"下一个序号"（新旧格式都认；一次性，之后走内存计数） */
+function initSeqCounter(): void {
+  try {
+    let max = 0
+    for (const f of listPayloadFiles()) {
+      const parsed = parseCaptureName(f.name)
+      if (parsed && parsed.seq > max) max = parsed.seq
+    }
+    seqCounter = max
+  } catch {
+    seqCounter = 0
+  }
+}
+let seqInitialized = false
 
 /**
  * 写一份 capture（**调用方必须已脱敏**）。
@@ -214,6 +229,11 @@ export function writeCapture(input: {
     if (!existsSync(CAPTURE_DIR)) mkdirSync(CAPTURE_DIR, { recursive: true })
     /** 先腾地方（按"即将写入的正文 + 元信息估算"来算） */
     evictCapturesIfNeeded(payloadBytes + 1024)
+    /** 🆕 序号在**首次写入**时从目录里续（进程重启后不会与已有文件重名） */
+    if (!seqInitialized) {
+      initSeqCounter()
+      seqInitialized = true
+    }
     const name = captureFileName({ at, seq: ++seqCounter, endpoint: input.endpoint, http: input.http, json: isJson })
     const meta: CaptureMeta = {
       at: at.toISOString(),
@@ -250,8 +270,12 @@ export interface CapturePackItem {
 }
 
 /**
- * 取"最近 `days` 天"的 captures（按时间升序），用于导出。
- * 解析不出来的文件名（不是我们生成的）**跳过**，不参与打包。
+ * 取"最近 `days` 天"的 captures（**按时间升序**），用于导出。
+ *
+ * 🆕 2026-09-23：新文件名里**没有时间戳**（用户要求 1️⃣ 的副作用）⇒ 判定"哪一天"改为：
+ *   ① 优先读同名 `.meta.json` 的 `at`（权威）；
+ *   ② 没有 meta（旧文件被删过 meta / 坏 meta）就退回**文件的 mtime**。
+ * 解析不出文件名的（不是我们生成的）**跳过**，不参与打包。
  */
 export function recentCaptures(days = 3, now: Date = new Date()): CapturePackItem[] {
   const out: CapturePackItem[] = []
@@ -261,10 +285,7 @@ export function recentCaptures(days = 3, now: Date = new Date()): CapturePackIte
     if (!span) return out
     const oldest = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (span - 1)).getTime()
     for (const f of listPayloadFiles()) {
-      const stamp = /^(\d{8})-\d{9}-/.exec(f.name)?.[1]
-      if (!stamp) continue
-      const t = new Date(Number(stamp.slice(0, 4)), Number(stamp.slice(4, 6)) - 1, Number(stamp.slice(6, 8))).getTime()
-      if (!Number.isFinite(t) || t < oldest) continue
+      if (!parseCaptureName(f.name)) continue
       let text = ''
       try {
         text = readFileSync(join(CAPTURE_DIR, f.name), 'utf8')
@@ -278,8 +299,19 @@ export function recentCaptures(days = 3, now: Date = new Date()): CapturePackIte
       } catch {
         meta = null
       }
+      /** 时间判定：meta.at 优先，其次 mtime（旧格式的文件名时间戳已不再依赖） */
+      const atMs = meta?.at ? Date.parse(meta.at) : NaN
+      const t = Number.isFinite(atMs) ? atMs : f.mtimeMs
+      if (!Number.isFinite(t) || t < oldest) continue
       out.push({ name: f.name, bytes: Buffer.byteLength(text, 'utf8'), text, meta })
     }
+    /** 按时间升序（meta.at / mtime 决定；文件名序号不再承载时间） */
+    out.sort((a, b) => {
+      const ta = a.meta?.at ? Date.parse(a.meta.at) : 0
+      const tb = b.meta?.at ? Date.parse(b.meta.at) : 0
+      if (ta && tb && ta !== tb) return ta - tb
+      return a.name.localeCompare(b.name)
+    })
   } catch {
     /* 目录不存在/权限异常 ⇒ 视作"没有 captures"（导出照样要能用） */
   }

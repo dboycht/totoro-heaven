@@ -60,6 +60,42 @@ const byteLen = (s: string): number => Buffer.byteLength(s, 'utf8')
 export { knownValuePairs }
 
 /**
+ * 🆕 2026-09-23（用户要求 2️⃣）：**非 JSON 文本的坐标——尽力而为地剥**（不是"完全不剥"）。
+ *
+ * 为什么不能像 JSON 那样精确剥：`.txt` 是**原文**（可能是 HTML 错误页、日志片段、表单编码串），
+ * 没有结构可依据；但"关掉坐标开关后包里还留着 `"latitude": 30.1`"更糟 ⇒ 做**正则尽力剥离**。
+ *
+ * 覆盖的形态（实测这几类最常见）：
+ *   · JSON 片段：`"latitude": 30.1` / `'longitude':'120.2'` / `"lat"` / `"lng"` / `"routeItudes": […]`
+ *     （值可以是数字、字符串、数组）；
+ *   · 查询串 / 表单：`lat=30.1` / `lng=120.2` / `latitude=…` / `longitude=…`（`&`/`;`/空白 分隔）。
+ *
+ * ⚠️ **口径如实**：这是"尽力而为"，**不是**"保证剥干净"（正则不认识所有变体：URL 编码、拼音缩写、自定义键名…）。
+ * 所以返回 `{ text, count }`：`count` = 替换了几处，调用方在 manifest 里标 `geometryStripped: 'best-effort'`
+ * 与 `strippedCount`，并注明"**可能仍有坐标残留**"——**不许**写成"已完全剥离"。
+ */
+export function stripGeometryFromText(text: string): { text: string; count: number } {
+  const s = String(text ?? '')
+  if (!s) return { text: s, count: 0 }
+  const PLACEHOLDER = '[坐标已按开关省略]'
+  let count = 0
+  let out = s
+  /** ① JSON 片段：`"键": 值`（值可以是数字 / 字符串 / 数组） */
+  const jsonLike = /(["'])(latitude|longitude|lat|lng|routeItudes)\1(\s*:\s*)(?:"[^"]*"|'[^']*'|\[[^\]]*\]|-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)/gi
+  out = out.replace(jsonLike, (_m, q: string, key: string, sep: string) => {
+    count++
+    return `${q}${key}${q}${sep}"${PLACEHOLDER}"`
+  })
+  /** ② 查询串 / 表单：`lat=30.1` */
+  const queryLike = /(^|[?&;\s])(latitude|longitude|lat|lng|routeItudes)=([^&\s;]*)/gi
+  out = out.replace(queryLike, (_m, pre: string, key: string) => {
+    count++
+    return `${pre}${key}=${encodeURIComponent(PLACEHOLDER)}`
+  })
+  return { text: out, count }
+}
+
+/**
  * 坐标类字段名（**唯一一份**；界面与服务端都从这里 import，别处不要再抄一份）。
  *
  * ⚠️ 2026-09-22 审计（可疑 6）：原先界面 `DiagnosticsExportCard.vue` 里还有一份同名拷贝，

@@ -53,8 +53,7 @@ import type { CaptureAccount, CaptureFileEntry, DiagSnapshot, DiagWindow } from 
 import { assertLocalRequest } from '../../../utils/tokenScanState'
 import { diagLogsLinesInWindow, partitionLogsByRedline, recentLogFiles, summarizeDiagLineAccount } from '../../../utils/diagLogs'
 import { CAPTURE_DIR, CAPTURE_MAX_BYTES, captureDirBytes, readEvictedLedger, recentCaptures } from '../../../utils/captureStore'
-import { maskTokenLike } from '../../../../utils/mp/logFormat'
-import { stripGeometryFromRespBody } from '../../../../utils/mp/responseRecord'
+import { stripGeometryFromRespBody, stripGeometryFromText } from '../../../../utils/mp/responseRecord'
 import { DIAG_INSTANCE_ID, ignoredPrevInstanceInfo, readSession, sessionElapsedSeconds } from '../../../utils/diagSession'
 import { logInfo, logWarn } from '../../../utils/logger'
 import { createZip } from '../../../utils/zip'
@@ -71,37 +70,39 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 /**
- * 🆕 2026-09-23：写进 **manifest** 的文件名要先过一遍掩码。
+ * 🆕 2026-09-23：manifest 里 captures 的文件名**直接写真实名**（用户明确要求"对得上文件"）。
  *
- * 为什么：captures 的文件名形如 `20260923-101646064-0004-probe-trigger-evict-200.txt` ——
- * 它有数字、大小写混合、长度 >36，**恰好符合"高熵裸凭证"的形态** ⇒ 写进 manifest 后会被红线判命中，
- * 而 manifest 命中是**硬拒**（整包失败）。可是这**根本不是凭证**，是我们自己生成的路径名。
- * 处置：manifest 里只写**掩码后**的名字（`[token len=N]`），文件名本身留在包内条目里 ——
- * 既不放松红线（仍以"掩码侧改了没有"为唯一判据），也不会让导出因为自己的文件名而失败。
+ * 为什么现在可以（以前不行）：旧命名 `<14 位时间戳>-…` 里的连续数字会被"学号/手机"兜底掩掉、
+ * 整串又会命中"高熵凭证"形态 ⇒ 写进 manifest 会让 manifest 自己被红线判命中（硬拒整包）。
+ * 新命名 `c<5 位序号>-<端点短名>-<http>.<ext>` **两头都不触发** —— 由 `tests/mp/captureStore.test.ts`
+ * 对"各种端点形状"逐个断言 `maskTokenLike(name) === name` 且 `assertNoCredentials([name]).ok === true`。
+ * 所以这里**不再做掩码转换**（保留旧函数会诱使后来者再用它，故直接删掉）。
  */
-function safeNameForManifest(name: string): string {
-  return maskTokenLike(name)
-}
 
 /**
- * 🆕 2026-09-23：把一份 capture 的**坐标**按开关剥掉（复用 `stripGeometryFromRespBody()` 的口径）。
+ * 🆕 2026-09-23（用户要求 2️⃣）：把一份 capture 的**坐标**按开关剥掉。
  *
- * - `.json` 的 capture：正文就是"脱敏后的完整 JSON"，直接 parse → strip → 重新序列化；
- *   ⚠️ 故意包一层 `{ body: parsed }`：`stripGeometryFromRespBody()` 的契约就是"处理 respBody 那个对象"
- *   （它只在 `record.body` 上递归、并按 `record.body === undefined` 判断），直接传裸 JSON 会**什么都不删**。
- * - `.txt`：非 JSON 全文，**不做逐字符删除**（那会毁掉原文且判据不可靠）—— 保持原样，
- *   由清单里的 `geometryStripped` 与界面文案如实说明。
+ * - `.json`：正文是"脱敏后的完整 JSON" ⇒ **结构化剥净**（复用 `stripGeometryFromRespBody()` 的口径）；
+ *   ⚠️ 故意包一层 `{ body: parsed }`：那个函数的契约就是"处理 respBody 那个对象"（只在 `record.body` 上递归），
+ *   直接传裸 JSON 会**什么都不删**。
+ * - `.txt`（非 JSON）：**尽力而为的正则剥离**（`stripGeometryFromText()`）——覆盖
+ *   `"latitude": 12.34` / `"lng"` / `"routeItudes": […]` / `lat=12.34&lng=…` 这些常见形态，并返回**替换计数**。
+ *   ⚠️ **不保证剥干净**（正则不认识所有变体）⇒ 清单里标 `'best-effort'` + `strippedCount`，文案如实写"可能仍有残留"。
  */
-function stripGeometryFromCapturesText(text: string, name: string): string {
-  if (!name.endsWith('.json')) return text
-  try {
-    const parsed = JSON.parse(text) as unknown
-    const stripped = stripGeometryFromRespBody({ body: parsed }) as { body?: unknown }
-    return JSON.stringify(stripped?.body ?? parsed)
-  } catch {
-    // 解析不了就原样保留（坏文件的坐标问题由"要不要导出"决定，不在这里猜）
-    return text
+function stripGeometryFromCapturesText(text: string, name: string): { text: string; kind: boolean | 'best-effort'; count: number } {
+  if (name.endsWith('.json')) {
+    try {
+      const parsed = JSON.parse(text) as unknown
+      const stripped = stripGeometryFromRespBody({ body: parsed }) as { body?: unknown }
+      return { text: JSON.stringify(stripped?.body ?? parsed), kind: true, count: 0 }
+    } catch {
+      // 坏 JSON ⇒ 退回文本尽力剥离（宁可多剥一点，也别把坐标原样发出去）
+      const r = stripGeometryFromText(text)
+      return { text: r.text, kind: 'best-effort', count: r.count }
+    }
   }
+  const r = stripGeometryFromText(text)
+  return { text: r.text, kind: 'best-effort', count: r.count }
 }
 
 export default defineEventHandler(async (event) => {
@@ -230,13 +231,9 @@ export default defineEventHandler(async (event) => {
    */
   const captureItems = recentCaptures(DIAG_CAPTURE_DAYS, now)
   const capturePrepared = captureItems.map((c) => {
-    let text = c.text
-    let geometryStripped = false
-    if (!includeGeometry) {
-      geometryStripped = true
-      text = stripGeometryFromCapturesText(text, c.name)
-    }
-    return { name: c.name, bytes: Buffer.byteLength(text, 'utf8'), text, raw: c, geometryStripped }
+    if (includeGeometry) return { name: c.name, bytes: c.bytes, text: c.text, raw: c, geometryStripped: false as const, strippedCount: 0 }
+    const r = stripGeometryFromCapturesText(c.text, c.name)
+    return { name: c.name, bytes: Buffer.byteLength(r.text, 'utf8'), text: r.text, raw: c, geometryStripped: r.kind, strippedCount: r.count }
   })
   const {
     safe: safeCaptures,
@@ -250,9 +247,11 @@ export default defineEventHandler(async (event) => {
   const safeCaptureItems = safeCaptures.map((c) => preparedByName.get(c.name)!)
   const captureLedger = readEvictedLedger()
   const captureEntries: CaptureFileEntry[] = safeCaptureItems.map((c) => ({
-    name: safeNameForManifest(c.name),
+    /** 🔴 用户要求 1️⃣：**写真实文件名**（新命名不触发掩码也不触发红线 ⇒ 与包内 `captures/` 条目逐字一致） */
+    name: c.name,
     bytes: c.bytes,
     geometryStripped: c.geometryStripped,
+    ...(c.strippedCount > 0 ? { strippedCount: c.strippedCount } : {}),
   }))
   const captureAccount: CaptureAccount = {
     dir: CAPTURE_DIR,
@@ -260,7 +259,7 @@ export default defineEventHandler(async (event) => {
     keptBytes: captureEntries.reduce((s, e) => s + e.bytes, 0),
     droppedFiles: captureLedger.files,
     droppedBytes: captureLedger.bytes,
-    droppedNames: captureLedger.names.slice(-50).map(safeNameForManifest),
+    droppedNames: captureLedger.names.slice(-50),
     ...(captureLedger.names.length > 50 ? { droppedMore: captureLedger.names.length - 50 } : {}),
     budgetBytes: CAPTURE_MAX_BYTES,
     usedBytes: captureDirBytes(),

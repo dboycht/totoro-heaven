@@ -72,34 +72,62 @@ export const DIAG_CAPTURE_DAYS = DIAG_LOG_DAYS
 /** captures 目录的**总量预算**（默认 64 MB；`TOTORO_CAPTURE_MAX_BYTES` 可覆盖） */
 export const DIAG_CAPTURE_MAX_BYTES = 64 * 1024 * 1024
 
-/** captures 文件名里的时间戳格式：`YYYYMMDD-HHmmssSSS`（**可排序**：字典序 = 时间序） */
+/** captures 的**元信息**里的时间戳格式：`YYYYMMDD-HHmmssSSS`（🆕 不再进文件名，见 `captureFileName`） */
 export function captureStamp(d: Date): string {
   const p = (n: number, w = 2) => String(n).padStart(w, '0')
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}${p(d.getMilliseconds(), 3)}`
 }
 
 /**
- * 端点路径 → 文件名短名（**只用白名单字符**，防目录穿越与非法文件名）。
- * `"/wxxcx/sunrun/getSunrunPaper"` ⇒ `"wxxcx-sunrun-getSunrunPaper"`；空 ⇒ `"root"`。
+ * 端点路径 → 文件名短名：**取最后一段**（就是接口名本身），只保留白名单字符。
+ * `"/wxxcx/sunrun/getSunrunPaper"` ⇒ `"getSunrunPaper"`；空/无字母 ⇒ `"root"`。
+ *
+ * 为什么只取最后一段（而不是整条路径拼成 `wxxcx-sunrun-…`）：整条路径拼出来是**长串**，
+ * `c99999-wxxcx-sunrun-getSunrunPaper-200` 这种 35+ 字符、含数字与大小写混合的形态
+ * **恰好落进"高熵裸凭证"的判据带**（32~35 位需含数字或大小写混合）⇒ 掩码会把文件名改成 `[token len=35]`。
+ * 取最后一段后名字通常 <30 字符，稳定地"两边都不触发"。
  */
 export function captureEndpointSlug(path: string): string {
-  const s = String(path ?? '')
+  const raw = String(path ?? '')
+  const last = raw.split(/[/?#]/).filter(Boolean).pop() ?? ''
+  const s = last
     .replace(/[^A-Za-z0-9._-]+/g, '-')
     .replace(/^[.-]+|[.-]+$/g, '')
-  return (s || 'root').slice(0, 80)
+  return s || 'root'
 }
 
-/** 一份 capture 的文件名（**可读、可排序**）：`<本地时间戳>-<序号>-<端点短名>-<http状态>.<json|txt>` */
+/** 🆕 序号的位数（5 位 ⇒ `c00001-…`） */
+export const CAPTURE_SEQ_DIGITS = 5
+
+/**
+ * 🆕 2026-09-23（用户要求 1️⃣）**captures 文件名必须"两边都不触发"**：
+ * 既不被掩码改动、也不被判成凭证形态 —— 这样 manifest 里就能直接写**真实名**（与包内文件对得上）。
+ *
+ * 旧格式（已废弃）`<14 位时间戳>-<4 位序号>-<短名>-<http>.<ext>` 有两处踩雷：
+ *   ① 14 位连续数字 ≥8 ⇒ 被"学号/手机"兜底掩成 `[masked len=N]`；
+ *   ② 时间戳 + 短名 + 状态码拼起来长度与字符集**恰好命中"高熵凭证"形态** ⇒ 红线判命中 ⇒ manifest 硬拒。
+ * 新格式：`c<5 位序号>-<端点短名>-<http状态>.<json|txt>`（例 `c00007-getSunrunPaper-200.json`）：
+ *   · 序号 5 位（**< 8 位数字门槛**）⇒ 数字兜底不动它；短名截到 24 字符；
+ *   · **完整时间戳进同名 `.meta.json`**（排序靠序号；"这份是什么时候的"看 meta）。
+ * 兼容：**旧文件按旧格式读**（`parseCaptureName` 两种都认），**新文件按新格式写**。
+ */
 export function captureFileName(parts: { at: Date; seq: number; endpoint: string; http: number; json: boolean }): string {
-  const seq = String(Math.max(0, Math.floor(parts.seq))).padStart(4, '0')
-  return `${captureStamp(parts.at)}-${seq}-${captureEndpointSlug(parts.endpoint)}-${Math.floor(parts.http)}.${parts.json ? 'json' : 'txt'}`
+  const seq = String(Math.max(0, Math.floor(parts.seq))).padStart(CAPTURE_SEQ_DIGITS, '0')
+  const slug = captureEndpointSlug(parts.endpoint).slice(0, 16)
+  return `c${seq}-${slug}-${Math.floor(parts.http)}.${parts.json ? 'json' : 'txt'}`
 }
 
-/** 解析 capture 文件名（列表/清单/核对用；解析不出来返回 null，**不抛错**） */
+/**
+ * 解析 capture 文件名 —— **新旧两种格式都认**（新格式 `stamp` 为空，时间从 `.meta.json` 来）。
+ * 解析不出来返回 `null`（**不抛错**，调用方跳过即可）。
+ */
 export function parseCaptureName(name: string): { stamp: string; seq: number; endpoint: string; http: number; json: boolean } | null {
-  const m = /^(\d{8}-\d{9})-(\d{4})-(.*)-(\d{2,3})\.(json|txt)$/.exec(String(name ?? ''))
-  if (!m) return null
-  return { stamp: m[1]!, seq: Number(m[2]), endpoint: m[3]!, http: Number(m[4]), json: m[5] === 'json' }
+  const s = String(name ?? '')
+  const old = /^(\d{8}-\d{9})-(\d{4})-(.*)-(\d{2,3})\.(json|txt)$/.exec(s)
+  if (old) return { stamp: old[1]!, seq: Number(old[2]), endpoint: old[3]!, http: Number(old[4]), json: old[5] === 'json' }
+  const neu = /^c(\d{1,5})-(.*)-(\d{2,3})\.(json|txt)$/.exec(s)
+  if (neu) return { stamp: '', seq: Number(neu[1]), endpoint: neu[2]!, http: Number(neu[3]), json: neu[4] === 'json' }
+  return null
 }
 
 /** 时间戳串（`captureStamp` 的产物）→ epoch ms；解析不出来返回 null */
@@ -146,10 +174,18 @@ export interface CaptureMeta {
 
 /** captures 清单里"进包的每一份"的账（manifest 用） */
 export interface CaptureFileEntry {
+  /** **真实文件名**（用户要求 1️⃣：与包内 `captures/` 条目逐字一致；新命名不会触发掩码/红线） */
   name: string
   bytes: number
-  /** 导出时是否因「包含坐标」开关关闭而剥掉了坐标（逐份记录，别让人以为原文就是这样） */
-  geometryStripped: boolean
+  /**
+   * 坐标处理结果：
+   * · `false` —— 没剥（本次开着坐标开关）；
+   * · `true` —— JSON 结构化剥净（`stripGeometryFromRespBody()`）；
+   * · `'best-effort'` —— **非 JSON 文本**的正则尽力剥离（**可能仍有残留**，见 `strippedCount`）。
+   */
+  geometryStripped: boolean | 'best-effort'
+  /** `'best-effort'` 时替换了几处坐标（如实计数） */
+  strippedCount?: number
 }
 
 /** captures 的总账（`manifest.captures`）：**淘汰也要记账，不许静默丢** */

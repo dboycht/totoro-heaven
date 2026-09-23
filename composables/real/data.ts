@@ -518,6 +518,29 @@ export function useMpRealData() {
   }
 
   /**
+   * 🆕 2026-09-23（用户要求 3️⃣）：清**服务端**的"响应原文留档"（captures）。
+   *
+   * 为什么走端点：captures 在**服务端进程**的目录里（`<运行时目录>/captures`），composable 碰不到文件系统；
+   * 于是按既有 `/api/local/**` 方式调 `POST /api/local/diagnostics/captures/clear`。
+   *
+   * ⚠️ **尽力而为**：任何失败（服务端没起来、网络、权限）都只记一条日志 ——
+   * **绝不能让"清不掉一份诊断留档"把"退出登录/清空本机数据"本身搞失败**。
+   */
+  async function clearServerCaptures(reason: 'logout' | 'clearAll'): Promise<void> {
+    try {
+      const res = await fetch('/api/local/diagnostics/captures/clear', { method: 'POST' })
+      if (!res.ok) {
+        logWarn('ui', '清空服务端响应原文留档失败（不影响退出/清空本身）', { reason, http: res.status })
+        return
+      }
+      const data = (await res.json().catch(() => ({}))) as { files?: unknown }
+      logInfo('ui', '已清空服务端响应原文留档', { reason, files: Number(data?.files ?? 0) })
+    } catch (err) {
+      logWarn('ui', '清空服务端响应原文留档失败（不影响退出/清空本身）', { reason, error: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
+  /**
    * **退出登录（清除会话）** —— 必须是"彻底的"，所以**连缓存里的 token 一起清**。
    *
    * ⚠️ 2026-09-18 修（发布前审计 S1）：此前顶栏与工作台的"清除会话"只 `clearSession()`
@@ -562,6 +585,13 @@ export function useMpRealData() {
      * 新账号读取失败时会被当"最近已知状态"打进诊断包 ⇒ **跨账号证据污染**（维护者会拿 A 的开关分析 B 的问题）。
      */
     clearLastKnown()
+    /**
+     * 🆕 2026-09-23（用户要求 3️⃣）：**服务端的"响应原文留档"（captures）也要清**。
+     * 它里面是**每个请求的完整响应原文**（已脱敏，但仍属上一个账号的证据）⇒ 与 `clearLastKnown()` 同等对待。
+     * 走 `/api/local/**`（captures 在服务端进程的目录里，composable 碰不到文件系统）；
+     * **尽力而为**：请求失败只记一条日志，**绝不影响退出登录本身**（`void` + `catch`）。
+     */
+    void clearServerCaptures('logout')
     logInfo('real', '已退出登录并清除本机缓存（含缓存中的 token）')
   }
 
@@ -598,6 +628,11 @@ export function useMpRealData() {
      * 否则"清空后"的诊断包里还带着清空前的开关/身份证据（与"清空"两字自相矛盾）。
      */
     clearLastKnown()
+    /**
+     * 🆕 2026-09-23（用户要求 3️⃣）：**服务端的 captures 也一起清**（"清空"两字必须名副其实：
+     * 清空后导出的包里不该还带着清空前的**响应原文**）。同样尽力而为，失败不影响清空流程。
+     */
+    void clearServerCaptures('clearAll')
   }
 
   /** 是否存在"可恢复的上次任务"（界面据此显示恢复入口） */
