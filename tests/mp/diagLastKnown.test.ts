@@ -101,8 +101,13 @@ test('🔴 绝不落 token 明文 / 学号姓名原文：写盘文本里只有�
   assert.equal(s!.auth.tokenFingerprint, '101:abcdef123456')
   assert.deepEqual(assertNoCredentials([text]).hits, [], '这份文本不该命中诊断红线')
   // 开关是 1 ⇒ 当时的门禁终值应当是"被人脸拦住"（历史事实，与实时无关）
-  assert.equal(s!.gateAllow, false)
-  assert.equal(s!.gateBlockedBy, 'start_face')
+  /**
+   * ⚠️ 2026-09-23（pre3 采数据期）：门禁默认**放宽**（`RELAX_GATE_FOR_CAPTURE = true`，有命中项也只警告不拦）
+   * ⇒ 那时的"门禁终值"就是 `allow: true`，而 `blockedBy` 仍如实记录**本该拦住的那一条**（`start_face`）。
+   * 严格语义由本目录 `schoolGate.test.ts` 的 `relaxGate: false` 那一组继续钉住。
+   */
+  assert.equal(s!.gateAllow, true, 'pre3 放宽：有命中项也只警告不拦')
+  assert.equal(s!.gateBlockedBy, 'start_face', 'blockedBy 仍记录"本该拦住的那条"（历史事实）')
 })
 
 test('buildLastKnown：什么都没有 ⇒ 返回 null（宁可不写，也不留一份"全空"的假证据）', () => {
@@ -162,6 +167,11 @@ test('🔴 门禁只认实时状态：lastKnown 说开关全关，但实时未�
     line: LINE,
     runType: 0,
     now: AT_1840, // 白天，排除"夜间停用"这条干扰
+    /**
+     * ⚠️ 显式跑**严格模式**：pre3 期门禁默认放宽（只警告不拦），而本条要验的是
+     * "**陈旧数据不得诱使门禁放行**"这个安全属性 —— 它只对严格语义成立。
+     */
+    relaxGate: false,
   })
   assert.equal(verdict.allow, false, '实时未知 ⇒ 绝不许因为有一份"全关"的历史记录就放行')
   assert.equal(verdict.blockedBy, 'switches_unknown')
@@ -176,6 +186,7 @@ test('🔴 门禁只认实时状态：lastKnown 说开关全关，但实时未�
     runType: 0,
     lastKnown: saved,
     now: AT_1840,
+    relaxGate: false,
   } as unknown as Parameters<typeof evaluateRunGate>[0])
   assert.equal(withExtra.allow, false, '门禁的判据只有实时状态；多传的字段不参与判定')
 })

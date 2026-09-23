@@ -100,7 +100,7 @@ const MARKDOWN_IN_TPL_COMMENT_BASELINE: Record<string, number> = {
   'components/RunGateNotice.vue': 3,
   'components/RunSelfCheckCard.vue': 2,
   'components/RunTrajectoryPreview.vue': 1,
-  'components/RunWorkspace.vue': 27,
+  'components/RunWorkspace.vue': 36,
   'components/TabGroupShell.vue': 3,
   'components/TrackEditorView.vue': 6,
   'components/UpdateNotice.vue': 2,

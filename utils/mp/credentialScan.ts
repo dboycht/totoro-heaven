@@ -84,6 +84,30 @@ export function isRepeatedPattern(s: string): boolean {
 }
 
 /**
+ * **"这段是 URL / 端点路径"的判据**（2026-09-23 实测踩到的**真 bug**，务必保留）。
+ *
+ * ## 故障现象
+ * `proxy` 日志行里的 `"/wxxcx/platform/serverlist/getSunRunSchoolList"`（46 字符、含大小写与数字）
+ * **恰好命中"高熵裸凭证"形态** ⇒ 掩码把它改成 `[token len=46]`；而红线判据是"**掩码会不会改动它**"
+ * ⇒ **红线判命中 ⇒ 整个日志文件被剔出诊断包** ⇒ 包里 `logs/` 为空、连"刷新前的事件"都没了
+ * （第一次端到端验收就是这么炸的）。
+ *
+ * ## 判据（可执行）
+ * **"像路径"而不是"含斜杠"**（第一版只判"含 `/`"⇒ 把 `WXXCXAb3+/=…` 这种**真 token 也放过了**，单测当场抓到）：
+ *   ① 至少两段（`a/b` 形态）；② 每段只能是**普通单词**（大小写字母/数字/`-`/`_`），
+ *   **不含 `+`、`=`**（base64 的填充与加号是凭证特征，不是路径特征）；③ 整串**不含 `?`**（查询串单独由 `token=` 规则管）。
+ * 于是 `wxxcx/platform/serverlist/getSunRunSchoolList` 判为路径（不掩），
+ * 而 `WXXCXAb3+/=Ab3+/=…` 仍按凭证掩掉。⚠️ 代价：形如 `aaa/bbb` 的真凭证会漏掩（极罕见，且会被字段名/前缀规则兜住）。
+ */
+export function looksLikePathOrUrl(s: string): boolean {
+  if (!s.includes('/')) return false
+  if (s.includes('?') || s.includes('+') || s.includes('=')) return false
+  const segs = s.split('/').filter((x) => x.length > 0)
+  if (segs.length < 2) return false
+  return segs.every((seg) => /^[A-Za-z0-9._~-]+$/.test(seg))
+}
+
+/**
  * 单个片段是不是"高熵裸凭证"（**O(n) 单遍、常数额外空间**，无回溯）。
  *
  * 两档判据（闸门复验的验收要求夹出来的）：
@@ -93,6 +117,8 @@ export function isRepeatedPattern(s: string): boolean {
  */
 export function looksLikeHighEntropySecret(s: string): boolean {
   if (s.length < 32) return false
+  /** URL / 端点路径不是凭证（见 `looksLikePathOrUrl` 的故障说明） */
+  if (looksLikePathOrUrl(s)) return false
   let hasLower = false
   let hasUpper = false
   let hasDigit = false

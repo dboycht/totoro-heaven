@@ -13,6 +13,7 @@ import {
   VERIFIED_SCHOOLS,
   SHARED_DOMAIN_HOST,
   LINE_NOT_REQUIRED_REASON,
+  RELAX_GATE_FOR_CAPTURE,
   evaluateRunGate,
   findVerifiedSchool,
   isNightBlocked,
@@ -34,6 +35,12 @@ const base = (overrides: Partial<RunGateInput> = {}): RunGateInput => ({
   cameraFlagLineId: 'line-a',
   // ⚠️ 必须给**白天时刻**：门禁新增了"22:30~06:00 夜间停用"，否则测试在晚上跑会因时段被拦
   now: new Date(2026, 8, 16, 15, 0, 0),
+  /**
+   * ⚠️ **显式跑"严格模式"**：pre3 采数据期 `RELAX_GATE_FOR_CAPTURE = true`（有命中项也只警告不拦），
+   *    而本文件下面的既有断言全是"该拦就拦"的**严格语义** ⇒ 这里显式 `relaxGate: false`。
+   *    放宽那一边由本文件末尾的新用例覆盖（两边都测，防以后改回严格时坏掉）。
+   */
+  relaxGate: false,
   ...overrides,
 })
 
@@ -205,4 +212,82 @@ test('门禁：lineRequired=false **只**放宽"线路"这一条 —— 夜间/�
   // 反过来：默认（不传 lineRequired）**必须逐字保持老行为**
   assert.equal(evaluateRunGate(base({ line: null, cameraFlagLineId: '' })).blockedBy, 'camera_unknown')
   assert.equal(evaluateRunGate(base({ line: null, cameraFlagLineId: '', lineRequired: true })).blockedBy, 'camera_unknown')
+})
+
+// ---------- 🔴 pre3「采集数据专用」放宽（2026-09-23，用户明确要求） ----------
+/**
+ * 用户原话：「用户相关提交的判定松一点，之前那种都是**你自己终止了**导致用户提交不了，
+ * 导致我们根本无法采集数据！这个 pre3 相当于就是专门来收集数据的」。
+ *
+ * 判据（两个方向都钉住，防"改回严格"时坏掉）：
+ *   · `RELAX_GATE_FOR_CAPTURE = true`（默认）⇒ **命中项只警告不拦**：`allow:true` + `warnings` 完整 + `relaxed:true`；
+ *   · 显式 `relaxGate:false`（= 严格/正式版）⇒ 逐字恢复"第一条命中就拦"：`allow:false` + `reason = warnings[0]`。
+ */
+test('🔴 pre3 放宽：默认（不传 relaxGate）跟随开关常量 —— pre3=true 时只警告不拦、warnings 完整', () => {
+  // 最坏输入：夜间 + 开关没读 + 没选线路 + 摄像头杆没读 ⇒ 严格模式会拦三条
+  const worst = evaluateRunGate({
+    schoolCode: '98765',
+    switches: null,
+    line: null,
+    cameraFlag: null,
+    cameraFlagLineId: '',
+    now: new Date(2026, 8, 16, 23, 10, 0),
+  })
+  /**
+   * ⚠️ 这里**按常量分叉**（而不是写死"必须 allow=true"）：这样把 `RELAX_GATE_FOR_CAPTURE` 临改 `false`
+   * 跑一遍单测时**整个文件仍然全绿** —— 那就是"临时改 false"的验收方式（见 DEVELOPMENT.md §37 续5）。
+   */
+  assert.equal(worst.allow, RELAX_GATE_FOR_CAPTURE ? true : false, 'allow 必须跟随开关（pre3 期 = 放行）')
+  assert.equal(worst.relaxed, RELAX_GATE_FOR_CAPTURE, 'relaxed 标记必须与开关一致（提交时据此上报诊断）')
+  assert.equal(worst.blockedBy, 'night', 'blockedBy 仍给"第一条命中项"（界面夜间提示等要用）')
+  assert.equal(worst.reason, worst.warnings[0], 'reason = 第一条命中项的文案')
+  assert.deepEqual(worst.warningCodes, ['night', 'switches_unknown', 'camera_unknown'], '命中项代号按判定顺序列全')
+  assert.equal(worst.warnings.length, 3, '每条"本该拦住的理由"都要在 warnings 里如实给出（与是否放宽无关）')
+  for (const w of worst.warnings) assert.ok(w.length > 8, `warning 要是完整人话：${w}`)
+})
+
+test('🔴 pre3 放宽：同一条输入在严格模式下 allow=false、放宽模式下 allow=true（两边一起钉）', () => {
+  const cases: { name: string; input: Partial<RunGateInput>; code: string }[] = [
+    { name: '夜间停用', input: { now: new Date(2026, 8, 16, 23, 0, 0) }, code: 'night' },
+    { name: '开关未读', input: { switches: null }, code: 'switches_unknown' },
+    { name: '开场人脸', input: { switches: { sunrunStartFace: '1', sunrunPointRandom: '0' } }, code: 'start_face' },
+    { name: '随机抽查', input: { switches: { sunrunStartFace: '0', sunrunPointRandom: '1' } }, code: 'point_random' },
+    { name: '未选线路', input: { line: null, cameraFlagLineId: '' }, code: 'camera_unknown' },
+    { name: '摄像头杆未读', input: { cameraFlag: null }, code: 'camera_unknown' },
+    { name: '摄像头杆已开', input: { cameraFlag: true }, code: 'camera_on' },
+    {
+      name: '未选本机路径（服务端未下发线路 + 本机没有可用几何）',
+      input: { line: null, cameraFlagLineId: '', lineRequired: false, localGeometryReady: false },
+      code: 'no_local_geometry',
+    },
+  ]
+  for (const c of cases) {
+    const strict = evaluateRunGate(base({ ...c.input, relaxGate: false }))
+    const relaxed = evaluateRunGate(base({ ...c.input, relaxGate: true }))
+    assert.equal(strict.allow, false, `严格模式：${c.name} 必须拦住`)
+    assert.equal(strict.blockedBy, c.code, `严格模式：${c.name} 的 blockedBy`)
+    assert.ok(strict.warnings.length >= 1, `严格模式也要带上 warnings（界面统一展示）`)
+    assert.equal(relaxed.allow, true, `pre3 放宽：${c.name} 仍要能提交`)
+    assert.equal(relaxed.relaxed, true, `pre3 放宽：${c.name} 要标 relaxed`)
+    assert.ok(
+      relaxed.warningCodes.includes(c.code as never),
+      `pre3 放宽：${c.name} 的理由必须在 warnings 里（实际 ${relaxed.warningCodes.join(',')}）`,
+    )
+  }
+})
+
+test('pre3 放宽：本地几何齐备/自由跑/一切正常时**不该**多出 warning', () => {
+  // 正常阳光跑任务
+  const ok = evaluateRunGate(base())
+  assert.deepEqual(ok.warnings, [])
+  assert.equal(ok.relaxed, false)
+  // 自由路线任务 + 本机有可用几何 ⇒ 只有"无需选择线路"的说明，不是 warning
+  const free = evaluateRunGate(base({ line: null, cameraFlagLineId: '', lineRequired: false, localGeometryReady: true }))
+  assert.deepEqual(free.warnings, [], '有可用几何 ⇒ 不该报 no_local_geometry')
+  assert.equal(free.reason, LINE_NOT_REQUIRED_REASON)
+  assert.equal(free.allow, true)
+  // 自由跑（runType=1）：厂商不打卡不取线路 ⇒ 开关未读也不算问题（与放宽与否无关）
+  const freeRun = evaluateRunGate(base({ runType: 1, switches: null, line: null, cameraFlagLineId: '' }))
+  assert.deepEqual(freeRun.warnings, [])
+  assert.equal(freeRun.allow, true)
 })

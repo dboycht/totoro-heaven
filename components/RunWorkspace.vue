@@ -104,10 +104,13 @@
             <!--
               🆕 2026-09-22（用户批准）：「本机路径」下拉 —— 只在"服务端未下发线路"的任务里出现。
               选项 = 本机路线库里几何可用的条目；选择按任务记住（键 mp_free_route_choice_v1），刷新后还在。
+              🆕 2026-09-23（pre3）：**一条可用几何都没有时也显示这个下拉**，里面放一条**可点占位项**
+              「（还没有本机路径 · 点我去画一条）」⇒ 点了等价于下面那个「一键去画一条本机路径」按钮
+              （用户原话："必定能选非法路径" ⇒ 我们要做到"**一定能选到东西**"）。
               🔴 它只影响本机几何：提交报文一个字都不变（lineId 仍空串、paperId 仍 taskId、路径点列仍按现口径）。
             -->
             <v-select
-              v-if="routeIsFree && libTotal > 0"
+              v-if="routeIsFree"
               v-model="freeRoutePick"
               :items="freeRouteOptions"
               item-title="title"
@@ -118,12 +121,23 @@
               class="mb-1"
             />
             <!-- ⚠️ 这里的说明只在"回退 / 上次那条已不可用"时出现（正常命中时上面那条警示里已经有"依据"那句了，别重复两遍） -->
-            <div v-if="routeIsFree && libTotal > 0 && (freeRouteIsFallback || freeRouteChoice.preferredUnavailable)" class="mb-2">
+            <div v-if="routeIsFree && freeRouteHasUsable && (freeRouteIsFallback || freeRouteChoice.preferredUnavailable)" class="mb-2">
               <span class="text-caption text-warning">⚠️ {{ freeRouteReason }}</span>
             </div>
-            <div v-if="routeIsFree && libTotal > 0" class="mb-2">
-              <v-btn size="x-small" variant="text" prepend-icon="mdi-vector-curve" to="/field/free-path">
-                去「非官方路径【测试】」画/改
+            <!--
+              🆕 2026-09-23（pre3，用户要求"弄一个一键跳转按钮"）：
+              · 本机**没有**可用几何 ⇒ 这是**主按钮**（最显眼）：一键跳到「非官方路径【测试】」并自动进入"圈型"绘制模式；
+              · 已经有可用几何 ⇒ 降级为次级入口（下拉默认已经选中一条可用的，不需要用户再点）。
+            -->
+            <div v-if="routeIsFree" class="mb-2">
+              <v-btn
+                :size="freeRouteHasUsable ? 'x-small' : 'small'"
+                :color="freeRouteHasUsable ? undefined : 'primary'"
+                :variant="freeRouteHasUsable ? 'text' : 'flat'"
+                prepend-icon="mdi-vector-curve"
+                :to="freePathDrawHref"
+              >
+                {{ freeRouteHasUsable ? '去「非官方路径【测试】」画/改' : '一键去画一条本机路径' }}
               </v-btn>
             </div>
             <!-- 跨校区提示：选了别的校区的线路（按坐标判定，不看名称） -->
@@ -331,20 +345,46 @@
       </v-alert>
 
       <v-alert v-if="!realReady && !demoMode" type="warning" variant="tonal" density="compact" class="mt-3">
-              还没读到任务：回<NuxtLink to="/">工作台</NuxtLink>粘贴 token → 点「读取真实账号与任务」；
-              或点上方「载入演示数据」只试界面与报文（不发请求）。
-              <!-- 🆕 2026-09-22：挂载时已先试过 `autoRestoreFromCache()`（不联网）。走到这条说明
-                   **本机缓存里也没有可用任务**（或缓存坏了）⇒ 仍给显式入口作为兜底：
-                   缓存里有 token 时它能"重建会话 + 联网读取"，没有 token 时会提示去取 token。 -->
-              <div v-if="hasCachedTask" class="d-flex flex-wrap ga-2 mt-2">
-                <v-btn size="small" variant="tonal" prepend-icon="mdi-history" @click="doRestoreCached">
-                  {{ cacheHasToken ? '恢复上次会话（重建会话并读取）' : '恢复上次会话（用 token 读取）' }}
-                </v-btn>
-                <span v-if="cacheTokenMask" class="text-caption align-self-center">
-                  已保存 token <code>{{ cacheTokenMask }}</code>
-                </span>
-              </div>
-            </v-alert>
+        <!--
+          🆕 2026-09-23（pre3 放宽，用户要求）：**"未读到任务"也只警告不阻断** ——
+          用户原话"你相关东西要做的不是没读取到就直接终止"。所以这里如实说明，而不是把他挡在门外。
+        -->
+        <div v-if="relaxGateForCapture" class="font-weight-bold">
+          ⚠️ pre3 采数据模式：<b>没读到任务也允许提交</b>（报文可能缺任务号，是否有效由服务端决定）
+        </div>
+        <div>
+          还没读到任务：回<NuxtLink to="/">工作台</NuxtLink>粘贴 token → 点「读取真实账号与任务」；
+          或点上方「载入演示数据」只试界面与报文（不发请求）。
+        </div>
+        <!-- 🆕 2026-09-22：挂载时已先试过 `autoRestoreFromCache()`（不联网）。走到这条说明
+             **本机缓存里也没有可用任务**（或缓存坏了）⇒ 仍给显式入口作为兜底：
+             缓存里有 token 时它能"重建会话 + 联网读取"，没有 token 时会提示去取 token。 -->
+        <div v-if="hasCachedTask" class="d-flex flex-wrap ga-2 mt-2">
+          <v-btn size="small" variant="tonal" prepend-icon="mdi-history" @click="doRestoreCached">
+            {{ cacheHasToken ? '恢复上次会话（重建会话并读取）' : '恢复上次会话（用 token 读取）' }}
+          </v-btn>
+          <span v-if="cacheTokenMask" class="text-caption align-self-center">
+            已保存 token <code>{{ cacheTokenMask }}</code>
+          </span>
+        </div>
+      </v-alert>
+
+      <!--
+        🆕 2026-09-23（pre3，用户要求）：门禁从"拦住"改成"只警告"以后，**这些理由必须照样看得见** ——
+        用户要知道自己在做什么。这里把 `gateStatus.warnings` 逐条列出来（严格模式下 allow=false 时由上一条错误卡负责）。
+      -->
+      <v-alert v-if="gateWarnings.length" type="warning" variant="tonal" density="comfortable" class="mt-3">
+        <div class="font-weight-bold">
+          ⚠️ pre3 采数据模式：下面 {{ gateWarnings.length }} 条本该拦住这次提交，现在<b>只警告、不阻断</b>
+        </div>
+        <ol class="text-body-2 pl-4 mt-1 mb-0">
+          <li v-for="(w, i) in gateWarnings" :key="`gate-warn-${i}`">{{ w }}</li>
+        </ol>
+        <div class="text-caption mt-1">
+          这些理由已经连同"仍允许提交"一起上报到诊断（导出包里能看到这笔提交是在放宽状态下发生的）。
+          正式版会把 `RELAX_GATE_FOR_CAPTURE` 改回 `false` 恢复严格拦截。
+        </div>
+      </v-alert>
             <v-alert type="info" variant="tonal" density="compact" class="mt-3">
               位置推进用「模拟倍速」代替真实 GPS；轨迹、拟合度、里程/配速都是<b>真实算法</b>算出来的
               （{{ demoMode ? '演示 20m/点' : '真实 3m/点 ≈1Hz' }}）；
@@ -374,7 +414,13 @@
           variant="flat"
           prepend-icon="mdi-cloud-upload-outline"
           :disabled="
-            !realReady || run.status !== 'finished' || submitInFlight || alreadySubmitted || staleSettlement || freeRunBlocked || !gateStatus.allow
+            (!realReady && !relaxGateForCapture) ||
+            run.status !== 'finished' ||
+            submitInFlight ||
+            alreadySubmitted ||
+            staleSettlement ||
+            freeRunBlocked ||
+            !gateStatus.allow
           "
           @click="openRealSubmit"
         >
@@ -587,6 +633,18 @@
           <v-alert type="warning" variant="tonal" density="compact" class="mb-3">
             这会在你的账号上<b>真实生成一条成绩</b>（会计入本学期的跑步次数）。请确认下列数值无误。
           </v-alert>
+          <!--
+            🆕 2026-09-23（pre3，用户要求）：确认时**把"本该拦住、现在只警告"的理由一并显示** ——
+            用户要在按下确认前就知道这笔提交是在什么状态下发生的（同时这些理由已上报诊断）。
+          -->
+          <v-alert v-if="gateWarnings.length" type="warning" variant="flat" density="comfortable" class="mb-3">
+            <div class="font-weight-bold">
+              ⚠️ pre3 放宽：以下 {{ gateWarnings.length }} 条本该拦住这次提交（现在只警告、仍会提交）
+            </div>
+            <ol class="text-body-2 pl-4 mt-1 mb-0">
+              <li v-for="(w, i) in gateWarnings" :key="`dlg-gate-warn-${i}`">{{ w }}</li>
+            </ol>
+          </v-alert>
           <v-list density="compact">
             <v-list-item title="线路" :subtitle="routeIsFree ? '本任务未下发线路（不指定路线）' : selectedLineName" prepend-icon="mdi-map-marker-path" />
             <v-list-item title="里程" :subtitle="`${run.result?.km.toFixed(2)} km（任务要求 ${activeTask?.mileage ?? '—'} km）`" prepend-icon="mdi-map-marker-distance" />
@@ -643,8 +701,14 @@ import {
   localEntryShapeText,
   resolveEntryName,
 } from '~/utils/mp/trackLibrary'
+// 🆕 2026-09-23（pre3）：一键跳转去画本机路径（`?draw=curve` ⇒ 落地页自动进圈型绘制模式）
+import { freePathDrawLink } from '~/utils/mp/routeGroups'
+// 🆕 2026-09-23（pre3）：门禁放宽开关（**只影响"拦不拦"**；界面据此把"本该拦住的理由"如实列出来）
+import { RELAX_GATE_FOR_CAPTURE } from '~/utils/mp/schoolGate'
 import { useMpReal } from '~/composables/useMpReal'
 import { logError, logInfo, logWarn } from '~/composables/useEventLog'
+// 🆕 2026-09-23（用户要求 2️⃣）：「点了真实提交但被本地判定拦下」要**显式上报**（诊断包里明写的事实）
+import { reportBlocked } from '~/composables/useDiagEventReporter'
 import { groupRoutesByCampus, toSelectItems, trackEditorLink, warnForSelection } from '~/utils/mp/routeGroups'
 // 🆕 2026-09-22（issue #12）：判"任务到底有没有下发线路"（纯函数，与门禁/自检/诊断同源）
 import { fitRequirementOf, routeRequirementOf } from '~/utils/mp/taskShape'
@@ -788,21 +852,34 @@ const freeRouteReason = computed(() => freeRouteChoice.value.reason)
 const freeRouteIsFallback = computed(() => freeRouteChoice.value.fallback)
 /**
  * 「本机路径」下拉的选项 = **几何可用**的本机条目（不可用的不列入：选了也跑不了）。
+ * 🆕 2026-09-23（pre3，用户要求"一定能选到东西"）：**一条可用的都没有时**，放一条**可点占位项** ——
+ * 选中它等价于点「一键去画一条本机路径」（跳到「非官方路径【测试】」并自动进圈型绘制模式）。
  * 标题用 `localEntryShapeText()`（与跑步页那条提示同源读数）；名字走 `resolveEntryName()`（改过名就用用户起的）。
  */
-const freeRouteOptions = computed(() =>
-  libEntries.value
+const FREE_ROUTE_DRAW_VALUE = '__draw_free_path__'
+const freePathDrawHref = freePathDrawLink()
+const freeRouteHasUsable = computed(() => libEntries.value.some((e) => entryGeometryUsable(e)))
+const freeRouteOptions = computed(() => {
+  const usable = libEntries.value
     .filter((e) => entryGeometryUsable(e))
-    .map((e) => ({ title: `${resolveEntryName(e) || String(e.lineId)} —— ${localEntryShapeText(e)}`, value: String(e.lineId) })),
-)
+    .map((e) => ({ title: `${resolveEntryName(e) || String(e.lineId)} —— ${localEntryShapeText(e)}`, value: String(e.lineId) }))
+  if (usable.length) return usable
+  return [{ title: '（还没有本机路径 · 点我去画一条）', value: FREE_ROUTE_DRAW_VALUE }]
+})
 /**
  * 下拉的绑定值 = **这次实际会用的那条**（而不是"记忆里那条"）：
  * 用户改选 ⇒ 记住（按 taskId 持久化）；记忆里那条没了/坏了 ⇒ 显示落回后的那条，并在下面如实提示"上次那条已不可用"。
+ * 🆕 选到那条**占位项**时 ⇒ **一键跳转**去画（不写进"记住的选择"里 —— 它不是一条真实路径）。
  */
 const freeRoutePick = computed({
   get: () => String(freeRouteChoice.value.entry?.lineId ?? ''),
   set: (v: string) => {
     const id = String(v ?? '').trim()
+    if (id === FREE_ROUTE_DRAW_VALUE) {
+      logInfo('run', '一键去画一条本机路径（下拉占位项）', { taskId: activeTask.value?.taskId ?? '' })
+      void navigateTo(freePathDrawHref)
+      return
+    }
     logInfo('run', '用户改了「本机路径」', { taskId: activeTask.value?.taskId ?? '', localLineId: id })
     setFreeRouteChoice(activeTask.value?.taskId, id)
   },
@@ -814,6 +891,14 @@ const freeRouteEntryName = computed(() => {
 })
 /** 那条几何的读数：形状 + 一圈多长 + 最近保存（`localEntryGeometryText`，纯函数、有单测） */
 const freeRouteEntryText = computed(() => (freeRouteEntry.value ? localEntryGeometryText(freeRouteEntry.value) : ''))
+/**
+ * 🆕 2026-09-23（pre3，用户明确要求）：**门禁放宽开关**（采数据专用）——
+ * `true` 时"本该拦住"的理由只警告不阻断，界面必须把它们**如实列出来**（见 `gateWarnings`）。
+ * 恢复严格模式：把 `utils/mp/schoolGate.ts` 的 `RELAX_GATE_FOR_CAPTURE` 改成 `false`（界面文案会跟着变）。
+ */
+const relaxGateForCapture = RELAX_GATE_FOR_CAPTURE
+/** 本该拦住、现在只警告的理由（门禁放宽时才可能非空；逐条展示 + 提交时一并显示） */
+const gateWarnings = computed(() => gateStatus.value.warnings ?? [])
 /** 本次是自由跑（提交口径：不选线路、不带任务号、不查打卡开关 —— 与小程序一致） */
 const isFreeRun = computed(() => run.value.runType !== 0)
 
@@ -1165,6 +1250,22 @@ const doRealSubmit = async () => {
   // 门禁失守直接返回（不调 getRunBegin，避免创建场次后才发现被拦）
   if (!gateStatus.value.allow) {
     logWarn('submit', '点了真实提交但门禁未通过', { blockedBy: gateStatus.value.blockedBy ?? '', reason: gateStatus.value.reason })
+    /**
+     * 🆕 2026-09-23（用户要求 2️⃣）：**这就是"用户点了但没动"的那一刻** ⇒ 显式上报一条 `blocked`。
+     * 以前只有一行 `logWarn`（而且按钮多半是 disabled 的，这一行根本不会触发）⇒
+     * "提交从未发出"只能靠"日志里没有写请求"**反推**；现在它是诊断包里**明写的事实**。
+     * `data` 只放**判定输入**（开关值/线路要求/是否夜间/时钟与时区偏移），**不放 token/身份原文**。
+     */
+    reportBlocked(gateStatus.value.blockedBy ? 'gate-blocked-ui' : 'gate-not-ready-ui', gateStatus.value.reason || '当前不允许真实提交', {
+      blockedBy: String(gateStatus.value.blockedBy ?? ''),
+      allow: Boolean(gateStatus.value.allow),
+      lineRequired: Boolean(activeLines.value.length > 0),
+      hasLine: Boolean(run.value.lineId),
+      nightWindow: String(gateStatus.value.blockedBy ?? '') === 'night',
+      nowIso: new Date().toISOString(),
+      tzOffsetMin: new Date().getTimezoneOffset(),
+      source: 'submit-button',
+    })
     showSnackbar(gateStatus.value.reason || '当前不允许真实提交', 'error')
     return
   }

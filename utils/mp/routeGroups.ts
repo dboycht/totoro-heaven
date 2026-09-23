@@ -267,6 +267,26 @@ export function lineIdFromQuery(raw: unknown): string {
   return typeof v === 'string' ? v.trim() : ''
 }
 
+/** 「非官方路径【测试】」子页路径（本机路径的绘制入口；**唯一来源**） */
+export const FREE_PATH_PATH = '/field/free-path'
+
+/**
+ * 🆕 2026-09-23（pre3，用户要求"弄一个一键跳转按钮"）：**一键去画一条本机路径** 的链接。
+ *
+ * `?draw=curve` ⇒ 落地页（`components/FreePathView.vue`）**自动进入"圈型"绘制模式**，
+ * 并显示一条顶部提示"画完点保存，再回跑步页即可选中" —— 用户点一下就能开始画，
+ * 不用自己找入口、也不用先想清楚选圈型还是折线型。
+ */
+export function freePathDrawLink(): string {
+  return `${FREE_PATH_PATH}?draw=curve`
+}
+
+/** 从路由 `query.draw` 里读"要不要自动进入绘制模式"（`'curve'` = 圈型；其它 ⇒ 空串 = 不自动进） */
+export function drawModeFromQuery(raw: unknown): 'curve' | '' {
+  const v = Array.isArray(raw) ? raw[0] : raw
+  return typeof v === 'string' && v.trim() === 'curve' ? 'curve' : ''
+}
+
 /** 下拉框选项（v-select 的 items）：分组标题（禁用项）+ 「名称（点数 · 长度 · 跨校区提示）」 */
 export interface RouteSelectItem {
   title: string

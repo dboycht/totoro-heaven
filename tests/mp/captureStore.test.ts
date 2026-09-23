@@ -211,6 +211,47 @@ test('captures：超预算 ⇒ 淘汰**最旧**、当天不删、台账累计（
   assert.ok(store.captureDirBytes() > 0, '目录占用要能算出来')
 })
 
+test('🔴 回归：日志行里的**端点路径**不许被判成凭证（否则整个日志文件被红线剔、包里 logs/ 为空）', async () => {
+  /**
+   * 实测故障（2026-09-23 第一次端到端验收）：`proxy` 行里的
+   * `"/wxxcx/platform/serverlist/getSunRunSchoolList"`（46 字符、含大小写与数字）**命中"高熵裸凭证"形态**
+   * ⇒ 掩码把它改成 `[token len=46]` ⇒ 红线判据（"掩码会不会改动它"）判命中 ⇒ **整个日志文件被剔出包**
+   * ⇒ 包里 `logs/` 为空、连"刷新前的事件"都没了。
+   */
+  const { maskTokenLike, hasUnmaskedCredential } = await import('../../utils/mp/logFormat.ts')
+  const { assertNoCredentials } = await import('../../utils/mp/diagnostics.ts')
+  const paths = [
+    '/wxxcx/platform/serverlist/getSunRunSchoolList',
+    '/wxxcx/sunrun/selectSunRunStartConfiguration',
+    'https://wxxcx.xtotoro.com/api/mp/wxxcx/sunrun/getSunrunPaper',
+    'GET /api/mp/wxxcx/sunrun/getRunBegin?x=1',
+  ]
+  for (const p of paths) {
+    assert.equal(maskTokenLike(p), p, `端点路径不该被掩：${p}`)
+    assert.equal(hasUnmaskedCredential(p), false, `端点路径不该被判成凭证：${p}`)
+  }
+  /** 一整行 `proxy` 日志（含路径、`upstream`、`respShape`）必须过红线 */
+  const line = JSON.stringify({
+    t: '2026-09-23T05:16:24.000Z',
+    level: 'info',
+    cat: 'proxy',
+    msg: 'POST /wxxcx/platform/serverlist/getSunRunSchoolList',
+    data: {
+      endpoint: '/wxxcx/platform/serverlist/getSunRunSchoolList',
+      http: 200,
+      bytes: 3811,
+      upstream: { status: '00', code: null },
+      respShape: { keys: ['body', 'status'], nested: ['body[0].schoolName'], arrays: {}, envelope: { status: '00' } },
+    },
+  })
+  const verdict = assertNoCredentials([line])
+  assert.equal(verdict.ok, true, `proxy 日志行必须过红线（否则整个日志文件被剔）：${verdict.hits.join(',')}`)
+  /** 反向：真 token（含 `+` `/` `=`）**仍然要掩**（第一版把含 `/` 的一律当路径 ⇒ 放过了真 token，单测当场抓到） */
+  const real = `WXXCX${'Ab3+/='.repeat(18)}`
+  assert.notEqual(maskTokenLike(real), real, '含 +/= 的 base64 token 必须仍被掩')
+  assert.equal(assertNoCredentials([real]).ok, false, '未掩的真 token 必须被红线拦住')
+})
+
 test('captures：窗口过滤（最近 N 天）+ 窗口内逐份可读', () => {
   const items = store.recentCaptures(3)
   assert.ok(items.length >= 1, `应当至少读到今天那份，实际 ${items.length}`)

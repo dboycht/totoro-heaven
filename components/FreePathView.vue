@@ -56,7 +56,8 @@ import { buildFreeShapeSave, startClearedNote } from '~/utils/mp/freePathSave'
 import { validateRings } from '~/utils/mp/trackEditor'
 import { LOCAL_FREE_LINE_ID, LOCAL_FREE_LINE_NAME, localFreeTrackLine } from '~/utils/mp/trackLibrary'
 // 🆕 2026-09-22（真实用户实测）：本页对"有官方线路的任务"不生效 ⇒ 给一条直达「跑道编辑」的出路
-import { trackEditorLink } from '~/utils/mp/routeGroups'
+// 🆕 2026-09-23（pre3）：跑步页的「一键去画一条本机路径」会带 `?draw=curve` 进来 ⇒ 自动进"圈型"绘制模式
+import { drawModeFromQuery, trackEditorLink } from '~/utils/mp/routeGroups'
 import type { MpRunLine } from '~/src/mp/types'
 
 /** 契约层坐标（latitude/longitude 可能是字符串） */
@@ -68,6 +69,10 @@ const num = (p: LatLng): N => ({ latitude: Number(p.latitude), longitude: Number
 // 与 run.vue / 跑道编辑页同一套取法：`useMpReal()` 返回 profile/status/task（真实链路），演示态用 useMpDemo 的 task 兜底
 const { status: realStatus, task: realTask, autoRestoreFromCache } = useMpReal()
 const { task: demoTask } = useMpDemo()
+/** 🆕 2026-09-23（pre3）：读 `?draw=curve`（跑步页「一键去画一条本机路径」跳过来时自动进圈型绘制模式） */
+const route = useRoute()
+/** 本次是"被一键跳转进来的"（用于显示顶部那条"画完点保存，再回跑步页即可选中"的提示） */
+const drawRequested = computed(() => drawModeFromQuery(route.query.draw) === 'curve')
 const activeTask = computed(() => realTask.value ?? demoTask.value)
 /** 任务下发的线路（**原样**；本页只用来"参照 + 定位"，从不写它、也不改它） */
 const activeLines = computed<MpRunLine[]>(() => activeTask.value?.runPointList ?? [])
@@ -211,6 +216,14 @@ onMounted(() => {
    *    正在填的趟数/正在画的草稿冲掉。
    */
   loadFreeDraft(lib.get(LOCAL_FREE_LINE_ID)?.freeShape)
+  /**
+   * 🆕 2026-09-23（pre3，用户要求"一键跳转"）：从跑步页的「一键去画一条本机路径」进来时带 `?draw=curve`
+   * ⇒ **自动进入"圈型"绘制模式**（用户点一下就能开始画，不用自己找形状按钮）。
+   * ⚠️ 只在**还没画过任何东西**时自动进（有落盘草稿/形状时按上面那步的结果走，别把用户的进度顶掉）。
+   */
+  if (drawModeFromQuery(route.query.draw) === 'curve' && freeMode.value === 'off' && draftFreePoints.value.length === 0 && draftPolyPoints.value.length === 0) {
+    freeMode.value = 'curve'
+  }
 })
 onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 
@@ -708,6 +721,18 @@ const pathOf = (pts: P[], close = false) => {
       🆕 2026-09-22（结构调整）：本页从「跑道编辑」里搬出来，与「签到区域」「跑道编辑」并列。
       提示链路照既有写法：先如实说任务状态，再如实说"这块 UI 在当前任务下到底生不生效"。
     -->
+    <!--
+      🆕 2026-09-23（pre3，用户要求"一键跳转"）：从跑步页的「一键去画一条本机路径」进来的提示 ——
+      用户点一下就到这儿、并且已经切到"圈型"绘制模式，这里只要把"下一步做什么"说清楚。
+    -->
+    <v-alert v-if="drawRequested" type="success" variant="tonal" density="comfortable" class="mb-3">
+      <div class="font-weight-bold">已为你切到「圈型（闭合曲线）」模式 —— 画完点保存，再回跑步页即可选中</div>
+      <div class="text-body-2 mt-1">
+        在卫星图上沿着操场的几个角<b>依次点一圈</b>（至少 3 个点才是真正的圈），然后点右侧的
+        「<b>保存到本机路线库</b>」；回到跑步页后，它会出现在「<b>本机路径</b>」下拉里。
+      </div>
+    </v-alert>
+
     <v-alert v-if="realStatus !== 'ready'" type="info" variant="tonal" density="compact" class="mb-3">
       还没读取真实任务：回「工作台」点「一键获取 token」后，本页才知道当前任务下发了什么（也可先用演示数据试手感）。
     </v-alert>

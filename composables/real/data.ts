@@ -12,6 +12,8 @@ import { MpApiWrapper, MP_DEFAULT_BASE_URL } from '~/src/wrappers/MpApiWrapper'
 import type { MpRunLine, MpSunrunTask } from '~/src/mp/types'
 import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
 import { routeRequirementOf } from '~/utils/mp/taskShape'
+// 🆕 2026-09-23（pre3）：门禁要判"本机有没有可用几何" ⇒ 与跑步页/引擎**同一处判据**
+import { freeRouteGeometryChoice } from '~/utils/mp/trackLibrary'
 import { looksLikeEnvelope, maskToken, normalizeCachePayload, restorePatchOf, serializeCachePayload, shouldAutoRestoreFromCache, type RealCachePayload } from '~/utils/mp/realCache'
 // 🆕 2026-09-22（issue #12 的正解）：`getSunrunPaper` 的**解包兜底**（规格没命中时任务本体可能在别的层）
 import { resolvePaperTask, type PaperTaskResolution } from '~/utils/mp/taskUnpack'
@@ -19,6 +21,8 @@ import { TOKEN_EXPIRED_HINT } from '~/utils/mp/tokenScan'
 import { looksLikeTokenExpired } from '~/src/mp/envelope'
 // 🆕 2026-09-22：成功读取后写一份「最近已知状态」（**纯诊断证据，不参与放行**，见该模块文件头）
 import { buildLastKnown, clearLastKnown, saveLastKnown } from '~/utils/mp/diagLastKnown'
+// 🆕 2026-09-23（用户要求 2️⃣）：门禁/本地判定拦下提交时**显式上报**（诊断包里"明写的事实"）
+import { reportBlocked } from '~/composables/useDiagEventReporter'
 import {
   evaluateRunGate,
   findVerifiedSchool,
@@ -33,6 +37,8 @@ export function useMpRealData() {
   // `setToken` 用于「恢复上次会话」时把缓存里的 token 写回会话（重建会话并落盘）
   const { session, clearSession, setToken } = useMpSession()
   const { setTask, setLines, task: currentTask, run, demoMode, disableDemo, clearLocalData } = useMpDemo()
+  // 🆕 2026-09-23（pre3）：门禁的 `localGeometryReady` 要读本机路线库（与跑步页同一份状态）
+  const lib = useTrackLibrary()
 
   const {
     profile,
@@ -333,7 +339,33 @@ export function useMpRealData() {
     // 门禁终值（日志）：方便事后核对"为什么拦住 / 为什么放行"
     const gate = gateStatus.value
     if (gate.allow) logInfo('gate', '门禁通过（三类开关均无阻碍）', { blockedBy: gate.blockedBy ?? '' })
-    else logWarn('gate', `门禁拦住：${gate.reason}`, { blockedBy: gate.blockedBy ?? '' })
+    else {
+      logWarn('gate', `门禁拦住：${gate.reason}`, { blockedBy: gate.blockedBy ?? '' })
+      /**
+       * 🆕 2026-09-23（用户要求 2️⃣）：**"读到数据了但门禁不让提交"本身就是用户可感知的失败** ⇒ 显式记一条。
+       *
+       * ⚠️ 判据是 **`!gate.allow`（不看 `blockedBy` 是否为空）** —— 实测踩到：
+       * 从本机缓存恢复任务、而缓存里没有开跑开关时，门禁停在"**尚未读取开关**"这个**软状态**
+       * （`allow=false` 但 `blockedBy=''`），只判 `blockedBy` 会漏掉这一类 —— 而那恰是用户最常遇到的"点了不能跑"。
+       *
+       * 为什么也放在这里（`submit.ts` 的提交入口已记一条）：两条路径都要覆盖 ——
+       * 用户可能**根本没点到提交按钮**（按钮 disabled / 页面在别处），此时 `submit.ts` 那条永远不会触发，
+       * 而"提交从未发出"仍需要在包里是**明写的事实**（不靠"日志里没有写请求"反推）。
+       * `data` 里只有**判定输入**，没有 token/身份原文（脱敏链路还会再兜一层）。
+       */
+      reportBlocked(gate.blockedBy ? 'gate-blocked-after-read' : 'gate-not-ready-after-read', gate.reason || '门禁未通过', {
+        blockedBy: String(gate.blockedBy ?? ''),
+        allow: Boolean(gate.allow),
+        switchesFound: Boolean(switches.value),
+        switchStartFace: String(switches.value?.sunrunStartFace ?? '-'),
+        switchPointRandom: String(switches.value?.sunrunPointRandom ?? '-'),
+        cameraFlag: cameraFlag.value === null ? 'unknown' : String(cameraFlag.value),
+        cameraFlagLineId: String(cameraFlagLineId.value ?? ''),
+        nowIso: new Date().toISOString(),
+        tzOffsetMin: new Date().getTimezoneOffset(),
+        source: 'after-read',
+      })
+    }
     return true
   }
 
@@ -760,6 +792,14 @@ export function useMpRealData() {
        * ⚠️ 传 `false` 只放宽"线路"这一条：开关/人脸/抽查/夜间一律照旧拦（见 `evaluateRunGate`）。
        */
       lineRequired: routeRequirementOf(task.value).kind === 'line',
+      /**
+       * 🆕 2026-09-23（pre3）：**本机有没有可用的本机路径几何**（只有"服务端未下发线路"的任务才有意义）。
+       * 判据与跑步页/引擎**同一处**：`freeRouteGeometryChoice()`（算法层）⇒ 界面那条"一键去画一条"的提示
+       * 与门禁的 `no_local_geometry` 警告不会分叉。严格模式下这一条会拦（放宽模式下只提示）。
+       */
+      localGeometryReady: Boolean(
+        freeRouteGeometryChoice(lib.entries.value, task.value, lib.freeRouteChoiceFor(task.value?.taskId ?? '')).entry,
+      ),
 
       /**
        * ⚠️ 必须带上**本次跑步类型**（2026-09-18 自由跑落地）：

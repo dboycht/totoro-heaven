@@ -210,6 +210,12 @@ export interface CaptureAccount {
   oldestKeptAt: string
   /** 窗口内的逐份清单（名字/大小/是否剥坐标） */
   entries: CaptureFileEntry[]
+  /**
+   * 🆕 2026-09-23：**这些原文分别来自哪些上游端点**（端点 → 份数）。
+   * 用途（用户要求"提交必记响应"的证据）：打开 manifest 一眼就能确认
+   * **提交成绩 / 轨迹明细这两个端点确实在留档范围内**（而不是靠人猜）。
+   */
+  byEndpoint?: Record<string, number>
 }
 
 /**
@@ -251,6 +257,274 @@ export interface DiagWindow {
   endedAtMs: number
   /** 坐标开关（随窗口一起保存；记录中可改，会 PATCH 到服务端窗口） */
   includeGeometry: boolean
+}
+
+/**
+ * 🆕 2026-09-23（用户要求：诊断必须"一份包就能定位问题"）**客户端事件上报**的契约。
+ *
+ * ## 为什么要"双写服务端"
+ * 用户的抱怨是"**用户刷新一下界面我们就丢失数据捕获**"。记录窗口/日志/captures 本来就在服务端（刷新不丢），
+ * **只有"客户端操作时间线"原先是页面内存 + localStorage** ⇒ 刷新后内存里那一段就没了。
+ * 现在：每条事件**同时**上报一份到服务端（落进服务端日志 ⇒ 自动受**记录窗口过滤** ⇒ 导出包里就有），
+ * 导出时把「**localStorage 兜底** / **页面内存** / **服务端日志**」三处按 `id` 去重合并 ⇒ 刷新前后都在。
+ *
+ * ## id 的形状（去重的唯一依据）
+ * `c<时间戳36进制>-<随机>`：**客户端生成**、稳定、可跨来源比对（服务端只把它原样记进日志）。
+ */
+
+/** 客户端事件上报的路径（**契约层的唯一来源**；界面与端点都用它，别处不要再写字面量） */
+export const DIAG_EVENT_PATH = '/api/local/diagnostics/event'
+
+/**
+ * 🆕 2026-09-23（用户要求「**每一个重要的地方都要记录**」）**心跳快照**的路径。
+ *
+ * 与 `DIAG_EVENT_PATH` 分开的理由：心跳是**状态摘要**（"此刻是什么样"），不是"发生了一件事"；
+ * 两者语义、限流口径、界面提示都不同（心跳被限流是正常的，不该让人以为"丢了操作"）。
+ */
+export const DIAG_HEARTBEAT_PATH = '/api/local/diagnostics/heartbeat'
+/** 客户端心跳间隔（30~60 秒之间取 45 秒；关键操作后**立即**补发一次） */
+export const DIAG_HEARTBEAT_INTERVAL_MS = 45_000
+/** 每窗口最多接受多少条心跳（比事件密，单独给上限；超限如实拒绝） */
+export const DIAG_HEARTBEAT_PER_WINDOW_MAX = 2000
+
+export interface DiagEvent {
+  /** 稳定 id（客户端生成；三来源去重靠它） */
+  id: string
+  /** 事件时间（ISO；本机时钟，与窗口边界同源可比） */
+  at: string
+  /** 等级：`info` / `warn` / `error`；🆕 `gate` = **被门禁/本地判定拦下**（用户要求 2️⃣ 的核心） */
+  level: 'info' | 'warn' | 'error' | 'gate'
+  /** 类别：`ui` / `blocked` / `client-error` / `run` / `submit` …（自由短串，进包便于按类筛） */
+  cat: string
+  /** 人话文本（**已脱敏**；长度受限） */
+  text: string
+  /** 🆕 小体积结构化补充（**扁平、短**；白名单见 `assertDiagEventPayload`） */
+  data?: Record<string, string | number | boolean | null>
+  /** 🆕 来源标记（导出合并后如实标注这条来自哪儿） */
+  source?: DiagEventSource
+}
+
+/** 事件来源（导出合并后逐条标注；`manifest.timeline` 里的计数也用它） */
+export type DiagEventSource = 'client' | 'localStorage' | 'server'
+
+/** 三来源合并后的计数（写进 `snapshot.timelineStats` 与 manifest） */
+export interface DiagEventMergeStats {
+  /** 每条来源**各自**多少条（去重前） */
+  client: number
+  localStorage: number
+  server: number
+  /** 按 id 去重后的总数 */
+  merged: number
+  /** 其中重复被丢掉的条数（`client+localStorage+server - merged`） */
+  duplicates: number
+}
+
+/**
+ * 单条事件的**长度上限**（用户要求 1️⃣："含栈摘要，**做长度上限**"）。
+ * 超长的 `text`/`data` 值在**客户端先截断**，服务端再兜一次 —— 两道都不许把整段栈塞进日志。
+ */
+export const DIAG_EVENT_TEXT_MAX = 600
+/** `data` 最多几个键（扁平、短；不许塞大对象） */
+export const DIAG_EVENT_DATA_MAX_KEYS = 12
+/** `data` 单个值最长多少字符（数字/布尔不受限） */
+export const DIAG_EVENT_DATA_VALUE_MAX = 200
+/** `cat` 最长多少字符 */
+export const DIAG_EVENT_CAT_MAX = 32
+/** 一次请求最多上报几条（客户端小批量合并后的上限） */
+export const DIAG_EVENT_BATCH_MAX = 40
+/**
+ * **每个记录窗口**最多接受多少条事件（用户要求：限流，防跑飞刷爆日志）。
+ * 2000 条 × ~300 字节 ≈ 600 KB —— 相对"日志单条上限 32 KB / 单文件 8 MB"是很小的一部分。
+ */
+export const DIAG_EVENT_PER_WINDOW_MAX = 2000
+/** 允许的事件等级（**白名单**；其余一律丢弃并计数） */
+export const DIAG_EVENT_LEVELS = ['info', 'warn', 'error', 'gate'] as const
+
+/** `assertDiagEventPayload()` 的结果（**只报告"拒绝了几条、为什么"**，不回显原文） */
+export interface DiagEventPayloadCheck {
+  /** 通过校验的事件（**已按上限截断**、`data` 只留白名单形状） */
+  accepted: DiagEvent[]
+  /** 被拒绝的条数 */
+  rejected: number
+  /** 拒绝原因（去重后的短标签，如 `unknown-level` / `bad-id` / `too-long`） */
+  reasons: string[]
+}
+
+const asShortString = (v: unknown, max: number): string | null => {
+  if (typeof v !== 'string') return null
+  const s = v.trim()
+  if (!s) return null
+  return s.length > max ? `${s.slice(0, max)}…[截断，原 ${s.length} 字符]` : s
+}
+
+/**
+ * **校验一条上报事件**（纯函数，客户端与服务端**共用同一份白名单**）。
+ *
+ * 判据（可执行，逐条对应"字段白名单 + 拒绝未知/超长字段"）：
+ *   · `id`：非空字符串、≤ 80 字符、且**只允许** `[A-Za-z0-9._:-]`（防止有人塞路径/引号/换行）；
+ *   · `at`：能被 `Date.parse` 解析（否则用不了窗口过滤）；
+ *   · `level`：必须在 `DIAG_EVENT_LEVELS` 里；
+ *   · `cat` / `text`：非空、按 `DIAG_EVENT_CAT_MAX` / `DIAG_EVENT_TEXT_MAX` 截断；
+ *   · `data`：**只接受扁平标量**（string/number/boolean/null），键数与单值长度受限，
+ *     **嵌套对象/数组一律丢掉该键**（"不许把整个对象原样透传"）。
+ *
+ * @returns `null` = 这条不合格（调用方计入 `rejected`）
+ */
+export function checkDiagEvent(raw: unknown): DiagEvent | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const o = raw as Record<string, unknown>
+  const id = asShortString(o.id, 80)
+  if (!id || !/^[A-Za-z0-9._:-]+$/.test(id)) return null
+  const at = asShortString(o.at, 40)
+  if (!at || !Number.isFinite(Date.parse(at))) return null
+  const level = String(o.level ?? '')
+  if (!(DIAG_EVENT_LEVELS as readonly string[]).includes(level)) return null
+  const cat = asShortString(o.cat, DIAG_EVENT_CAT_MAX)
+  if (!cat) return null
+  const text = asShortString(o.text, DIAG_EVENT_TEXT_MAX)
+  if (!text) return null
+  /** `data`：扁平标量白名单（嵌套/数组/超长一律不要） */
+  let data: Record<string, string | number | boolean | null> | undefined
+  if (o.data && typeof o.data === 'object' && !Array.isArray(o.data)) {
+    const out: Record<string, string | number | boolean | null> = {}
+    let n = 0
+    for (const [k, v] of Object.entries(o.data as Record<string, unknown>)) {
+      if (n >= DIAG_EVENT_DATA_MAX_KEYS) break
+      const key = asShortString(k, 40)
+      if (!key) continue
+      if (v === null || typeof v === 'boolean') {
+        out[key] = v
+        n++
+      } else if (typeof v === 'number' && Number.isFinite(v)) {
+        out[key] = v
+        n++
+      } else if (typeof v === 'string') {
+        const s = asShortString(v, DIAG_EVENT_DATA_VALUE_MAX)
+        if (s !== null) {
+          out[key] = s
+          n++
+        }
+      }
+      // 其余（对象/数组/函数/undefined）**直接丢掉这个键** —— 这就是"不许原样透传"
+    }
+    if (n > 0) data = out
+  }
+  return { id, at, level: level as DiagEvent['level'], cat, text, ...(data ? { data } : {}) }
+}
+
+/**
+ * 校验**一批**上报事件（服务端端点与单测共用）。
+ *
+ * @param raw 请求体里的数组（不是数组 ⇒ 全部拒绝）
+ * @param max 单请求条数上限（默认 `DIAG_EVENT_BATCH_MAX`，超出部分**如实拒绝**而不是静默丢）
+ */
+export function checkDiagEventPayload(raw: unknown, max: number = DIAG_EVENT_BATCH_MAX): DiagEventPayloadCheck {
+  const reasons = new Set<string>()
+  const accepted: DiagEvent[] = []
+  if (!Array.isArray(raw)) {
+    return { accepted, rejected: 0, reasons: ['not-array'] }
+  }
+  let rejected = 0
+  const cap = Math.max(0, Math.floor(max))
+  for (let i = 0; i < raw.length; i++) {
+    if (i >= cap) {
+      rejected++
+      reasons.add('over-batch-max')
+      continue
+    }
+    const ok = checkDiagEvent(raw[i])
+    if (!ok) {
+      rejected++
+      // 原因只给**短标签**（不回显任何原文/字段值，避免把用户的输入带进日志）
+      const o = (raw[i] ?? {}) as Record<string, unknown>
+      if (typeof o.id !== 'string' || !/^[A-Za-z0-9._:-]+$/.test(String(o.id))) reasons.add('bad-id')
+      else if (!Number.isFinite(Date.parse(String(o.at ?? '')))) reasons.add('bad-at')
+      else if (!(DIAG_EVENT_LEVELS as readonly string[]).includes(String(o.level ?? ''))) reasons.add('unknown-level')
+      else reasons.add('bad-field')
+      continue
+    }
+    accepted.push(ok)
+  }
+  return { accepted, rejected, reasons: [...reasons] }
+}
+
+/**
+ * **上报受理判定**（纯函数；端点与单测共用）—— 把"收不收、为什么拒"从端点里抽出来，便于离线钉住。
+ *
+ * 判据（逐条对应要求）：
+ *   ① **没有活动窗口 ⇒ 拒**（`reason: 'no-window'`；端点返回 **200** + `ok:false`，**不抛 4xx**）；
+ *   ② 单请求条数 ≤ `batchMax`；每窗口累计 ≤ `perWindowMax`（**超出如实拒绝并说明**，不静默丢）；
+ *   ③ 每条都要过字段白名单（`checkDiagEvent`）。
+ *
+ * @param raw           请求体里的 `events`（任何值）
+ * @param hasWindow     服务端**现在**有没有活动窗口
+ * @param countedInWindow 本窗口**已收**多少条（端点自己计数；纯函数不持有状态）
+ */
+export function acceptDiagEvents(
+  raw: unknown,
+  hasWindow: boolean,
+  countedInWindow: number,
+  batchMax: number = DIAG_EVENT_BATCH_MAX,
+  perWindowMax: number = DIAG_EVENT_PER_WINDOW_MAX,
+): { accepted: DiagEvent[]; rejected: number; reasons: string[]; ok: boolean; note: string; countedInWindow: number } {
+  if (!hasWindow) {
+    return { accepted: [], rejected: 0, reasons: ['no-window'], ok: false, note: '本次运行没有活动中的记录窗口（先点「开始记录」再复现问题）', countedInWindow }
+  }
+  const check = checkDiagEventPayload(raw, batchMax)
+  const room = Math.max(0, Math.floor(perWindowMax) - Math.max(0, Math.floor(countedInWindow)))
+  const accepted = check.accepted.slice(0, room)
+  const overWindowMax = check.accepted.length - accepted.length
+  const reasons = [...check.reasons, ...(overWindowMax > 0 ? ['over-window-max'] : [])]
+  return {
+    accepted,
+    rejected: check.rejected + overWindowMax,
+    reasons,
+    ok: accepted.length > 0,
+    note: accepted.length > 0 ? '' : check.reasons.includes('not-array') ? '上报内容不符合字段白名单（只接受 {id, at, level, cat, text, data?}）' : '本批没有可受理的事件',
+    countedInWindow: countedInWindow + accepted.length,
+  }
+}
+
+/**
+ * **三来源合并 + 按 id 去重**（用户要求：刷新前的在服务端/兜底里，刷新后的在内存里，合起来才是完整时间线）。
+ *
+ * 判据（可执行）：
+ *   · 输入是 `[{ source, events }]`（顺序即**优先级**：先来的赢，所以调用方按 `localStorage → client → server` 传，
+ *     意思是"同一条 id 以 localStorage 那份为准"——它最贴近事件**发生当时**的形态）；
+ *   · 逐条按 `id` 去重（**没有 id 的条目按其 `at|level|cat|text` 合成一个键**，兼容老数据）；
+ *   · 输出**按 `at` 升序**（同一时间戳保持输入顺序，稳定排序）；
+ *   · 每条的 `source` 标成它实际来自哪儿；**重复被丢掉的条数如实计数**。
+ */
+export function mergeDiagEvents(
+  groups: { source: DiagEventSource; events: DiagEvent[] }[],
+  max: number = DIAG_TIMELINE_MAX,
+): { items: DiagEvent[]; stats: DiagEventMergeStats } {
+  const stats: DiagEventMergeStats = { client: 0, localStorage: 0, server: 0, merged: 0, duplicates: 0 }
+  const seen = new Map<string, DiagEvent>()
+  for (const g of groups) {
+    for (const e of g.events) {
+      if (g.source === 'client') stats.client++
+      else if (g.source === 'localStorage') stats.localStorage++
+      else stats.server++
+      const key = e.id || `${e.at}|${e.level}|${e.cat}|${e.text}`
+      const prev = seen.get(key)
+      if (prev) {
+        stats.duplicates++
+        continue
+      }
+      seen.set(key, { ...e, source: g.source })
+    }
+  }
+  const items = [...seen.values()].sort((a, b) => {
+    const ta = Date.parse(String(a.at ?? ''))
+    const tb = Date.parse(String(b.at ?? ''))
+    if (Number.isFinite(ta) && Number.isFinite(tb) && ta !== tb) return ta - tb
+    return 0
+  })
+  const cap = Math.max(0, Math.floor(max))
+  const capped = items.length > cap ? [...items.slice(0, Math.floor(DIAG_TIMELINE_HEAD_KEEP)), ...items.slice(-(cap - Math.floor(DIAG_TIMELINE_HEAD_KEEP)))] : items
+  stats.merged = capped.length
+  return { items: capped, stats }
 }
 
 /** 界面与服务端共享的"当前记录状态"（`GET DIAG_RECORD_PATH` 的响应） */
@@ -379,7 +653,13 @@ export interface DiagSnapshot {
   /** 门禁：判定结果 + 依据（"为什么不让开跑"） */
   gate: { allow: boolean | null; reason: string; blockedBy: string; switches: unknown; cameraFlag: unknown; cameraFlagLineId: string; cameraFlagError: string }
   /** 应用内事件时间线（**已按记录窗口过滤**，超上限时见 `diagTimelineInWindow()` 的取舍，已脱敏） */
-  timeline: { at: string; level: string; cat: string; text: string }[]
+  timeline: { at: string; level: string; cat: string; text: string; id?: string; data?: unknown; source?: string }[]
+  /**
+   * 🆕 2026-09-23（用户要求 4️⃣"localStorage 同步兜底"）：客户端**离线兜底**那一份事件
+   * （键 `mp_diag_events_v1`；每条事件在写内存的同时也写它 ⇒ 连"还没上报就刷新"的 1~2 秒也不丢）。
+   * 服务端导出时把它与 `timeline`、服务端日志里的 ui 事件**按 id 去重合并**后再进包。
+   */
+  timelineFromStorage?: { id: string; at: string; level: string; cat: string; text: string; data?: unknown }[]
   /**
    * 🆕 2026-09-22：这一份快照是**为哪个记录窗口**采集的（服务端会拿它核对，口径不一致时在 manifest 里写明）。
    * **可选**字段：老快照没有它，服务端照旧能导出（退回"未按记录窗口过滤"）。

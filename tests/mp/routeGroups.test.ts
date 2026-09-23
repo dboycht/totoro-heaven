@@ -9,6 +9,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  FREE_PATH_PATH,
+  drawModeFromQuery,
+  freePathDrawLink,
   groupRoutesByCampus,
   warnForSelection,
   toSelectItems,
@@ -152,4 +155,24 @@ test('lineIdFromQuery：与 trackEditorLink 成对（字符串照收；数组/�
   const id = 'sunrunLine-20210918000001'
   const q = trackEditorLink(id).split('?line=')[1]!
   assert.equal(lineIdFromQuery(decodeURIComponent(q)), id)
+})
+
+// ---------- 🆕 2026-09-23（pre3）：一键跳转去画本机路径 ----------
+test('freePathDrawLink：指向「非官方路径【测试】」并带 `?draw=curve`（落地页据此自动进圈型模式）', () => {
+  assert.equal(FREE_PATH_PATH, '/field/free-path')
+  assert.equal(freePathDrawLink(), '/field/free-path?draw=curve')
+  // 写/读成对：链接里的 query 必须能被 `drawModeFromQuery()` 读回 'curve'
+  const q = freePathDrawLink().split('?draw=')[1]!
+  assert.equal(drawModeFromQuery(q), 'curve')
+})
+
+test('drawModeFromQuery：只认 `curve`（数组取第一个；其它/非法 ⇒ 空串 = 不自动进绘制模式）', () => {
+  assert.equal(drawModeFromQuery('curve'), 'curve')
+  assert.equal(drawModeFromQuery('  curve  '), 'curve')
+  assert.equal(drawModeFromQuery(['curve', 'polyline']), 'curve')
+  assert.equal(drawModeFromQuery('polyline'), '', '折线型不自动进（用户要求的是圈型那一条）')
+  assert.equal(drawModeFromQuery(undefined), '')
+  assert.equal(drawModeFromQuery(''), '')
+  assert.equal(drawModeFromQuery(42), '')
+  assert.equal(drawModeFromQuery({ bad: true }), '')
 })

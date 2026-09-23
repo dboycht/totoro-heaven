@@ -21,9 +21,14 @@ import { buildRunBeginRequest, buildScoreDetailRequest, buildScoreRequest, toSub
 import { evaluateRunGate } from '~/utils/mp/schoolGate'
 // 🆕 2026-09-22（issue #12）：门禁要按"任务到底要不要求线路"来判（纯函数，与只读侧 `gateStatus` 同源）
 import { routeRequirementOf } from '~/utils/mp/taskShape'
+// 🆕 2026-09-23（pre3）：门禁还要判"本机有没有可用几何"（同一判据 `freeRouteGeometryChoice`）
+import { freeRouteGeometryChoice } from '~/utils/mp/trackLibrary'
 import { TOKEN_EXPIRED_HINT } from '~/utils/mp/tokenScan'
 import { looksLikeTokenExpired } from '~/src/mp/envelope'
-import { logError, logInfo, logWarn } from '../useEventLog'
+import { logError, logEvent, logInfo, logWarn } from '../useEventLog'
+// 🆕 2026-09-23（用户要求 2️⃣）：被本地门禁/上下文检查拦下的提交要**显式上报**（诊断包里"明写的事实"）
+// 🆕 2026-09-23（pre3 要求 3️⃣）：**放宽放行**（本该拦住但只警告）也要逐条上报，便于从包里看出"这笔是在放宽状态下提交的"
+import { newEventId, reportBlocked, reportDiagEvent } from '../useDiagEventReporter'
 // 写操作"结果未知"的判定与措辞（2026-09-21 修 issue #11：超时 ≠ 失败，必须核实）
 import { classifyWriteOutcome, outcomeIsSuccess, writeOutcomeMessage } from '~/utils/mp/writeOutcome'
 // 提交过程清单的文案（2026-09-21 用户要求"要能看到现在在传什么"）
@@ -40,6 +45,8 @@ export function useMpRealSubmit() {
   const { session } = useMpSession()
   const { profile, task, switches, cameraFlag, cameraFlagLineId, phase, phaseMessage, remainingSeconds, result, submitProgress, markFreeRunUnsupported } =
     useRealState()
+  // 🆕 2026-09-23（pre3）：门禁的 `localGeometryReady` 与跑步页/引擎读同一份本机路线库状态
+  const lib = useTrackLibrary()
 
   // ---------- 真实提交 ----------
 
@@ -144,6 +151,16 @@ export function useMpRealSubmit() {
       phaseMessage.value = freeRun
         ? '缺少真实会话/档案，请先在工作台读取真实数据'
         : '缺少真实会话/档案/任务（或没有可提交的线路/任务号），请先在工作台读取真实数据'
+      /** 🆕 2026-09-23（用户要求 2️⃣）：这也是"提交从未发出"的一种，显式记一条（原因 + 判定输入摘要） */
+      reportBlocked('missing-context', '缺少真实会话/档案/任务（或没有可提交的线路/任务号）', {
+        hasToken: Boolean(token),
+        hasProfile: Boolean(profile.value),
+        hasTask: Boolean(task.value),
+        lineRequired,
+        hasLine: Boolean(input.line),
+        freeRun,
+        hasPaperId: Boolean(paperId),
+      })
       return null
     }
 
@@ -158,14 +175,64 @@ export function useMpRealSubmit() {
       cameraFlagLineId: cameraFlagLineId.value,
       // 🆕 2026-09-22（issue #12）：与只读侧 `gateStatus` **同一判据** —— 服务端未下发线路的任务不因"未选线路"拦
       lineRequired,
+      // 🆕 2026-09-23（pre3）：本机有没有可用几何（只对"未下发线路"的任务有意义；同一判据 `freeRouteGeometryChoice`）
+      localGeometryReady: Boolean(freeRouteGeometryChoice(lib.entries.value, task.value, lib.freeRouteChoiceFor(task.value?.taskId ?? '')).entry),
       runType,
       now: new Date(),
     })
     if (!gate.allow) {
       pushProgress('error', SUBMIT_PROGRESS.gateBlocked(gate.reason))
+      /**
+       * 🆕 2026-09-23（用户要求 2️⃣）：**被门禁挡住的提交必须显式记一条**。
+       * 以前只能靠"日志里没有写请求"**反推**"提交从未发出"—— 这是上一轮排查最费劲的一步。
+       * 现在把判定所需的关键输入摘要一起记下来（开关值 / 是否夜间 / 线路要求 / 时钟与时区偏移），
+       * 于是"提交被本地拦下"在诊断包里是**明写的事实**。
+       * 🔒 `data` 里**没有** token/学号/姓名（只有判定输入），脱敏仍由上报链路兜一层。
+       */
+      reportBlocked('gate-blocked', gate.reason || '门禁未通过', {
+        blockedBy: String(gate.blockedBy ?? ''),
+        lineRequired,
+        runType,
+        switchesFound: Boolean(switches.value),
+        switchStartFace: String(switches.value?.sunrunStartFace ?? '-'),
+        switchPointRandom: String(switches.value?.sunrunPointRandom ?? '-'),
+        cameraFlag: cameraFlag.value === null ? 'unknown' : String(cameraFlag.value),
+        hasLine: Boolean(input.line),
+        nightWindow: /夜间/.test(String(gate.reason ?? '')) || String(gate.blockedBy ?? '') === 'night',
+        nowIso: new Date().toISOString(),
+        tzOffsetMin: new Date().getTimezoneOffset(),
+      })
       phase.value = 'error'
       phaseMessage.value = `已停止（未创建场次）：${gate.reason}`
       return null
+    }
+    /**
+     * 🆕 2026-09-23（pre3，用户要求 3️⃣）：**"放宽放行"必须上报一条诊断事件** ——
+     * 这样我们从包里就能看到「这笔提交是在放宽状态下发生的」（而不是事后猜）。
+     * 每条命中项各报一条（`cat:'warn-relaxed'`），文案前缀 `pre3：`，便于在时间线里一眼筛出来。
+     * 🔒 只带判定输入摘要（与上面 `reportBlocked` 同一套字段），**没有** token/学号/姓名。
+     */
+    if (gate.relaxed) {
+      for (const [i, code] of gate.warningCodes.entries()) {
+        reportDiagEvent({
+          id: newEventId(),
+          at: new Date().toISOString(),
+          level: 'gate',
+          cat: 'warn-relaxed',
+          text: `pre3：${gate.warnings[i] ?? ''} —— 只警告未阻断，仍允许提交`,
+          data: {
+            reasonCode: code,
+            blockedBy: String(gate.blockedBy ?? ''),
+            lineRequired,
+            runType,
+            hasLine: Boolean(input.line),
+            switchesFound: Boolean(switches.value),
+            relaxGate: true,
+            tzOffsetMin: new Date().getTimezoneOffset(),
+          },
+        })
+      }
+      pushProgress('warn', `pre3 放宽：${gate.warnings.length} 条本该拦住的理由只警告未阻断（仍继续提交）`)
     }
     pushProgress('ok', SUBMIT_PROGRESS.gatePassed())
 
@@ -457,7 +524,41 @@ export function useMpRealSubmit() {
         message: out.scoreMessage,
       })
     }
+    /**
+     * 🆕 2026-09-23（用户要求：**"用户提交一下一定记录一下响应"**）：
+     * 无论**成功 / 上游业务失败 / 超时未确认**，都补一条**结论事件**进 UI 时间线（⇒ 双写进诊断包）。
+     *
+     * 为什么单独一条：日志里有细节（`submit` 那几条），但维护者打开包第一眼要看的是**结论**：
+     * 「这次提交到底成没成、失败是什么 code、超时算不算成功」。把结论写成一条**结构化**事件
+     * （`cat:'submit'`，`data.scoreOutcome` 是四态之一），一眼能筛。
+     *
+     * 🔴 同时**明确不自动重试**：`MP_RETRY_CONFIG` 只对 **GET** 重试（`methods:['get']`，有单测钉住），
+     * 提交/轨迹这些**非幂等写操作绝不重试**；超时后也只是**只读核实**（`fetchVerdict`/归档查询），
+     * 绝不重发写请求 —— 这里把这件事**写进事件摘要**，让包里也能看到"没有自动重试"。
+     */
+    logEvent(
+      outcome === 'ok' || outcome === 'timeout-landed' ? 'info' : outcome === 'timeout-unknown' ? 'warn' : 'error',
+      'submit',
+      `提交结果：${outcomeLabel(outcome)}${out.scoreMessage ? `（${out.scoreMessage}）` : ''}`,
+      {
+        scoreOutcome: outcome,
+        scoreOk,
+        scantronId,
+        detailOk: out.detailOk ?? null,
+        autoRetried: false,
+        retryPolicy: '写操作绝不重试（只有 GET 会重试一次）',
+        waitedSeconds: Math.round((submittedAt - startedAt) / 1000),
+      },
+    )
     return out
+  }
+
+  /** 四态结局的人话标签（与 `writeOutcome` 的文案口径一致：**超时 ≠ 失败**） */
+  function outcomeLabel(outcome: string): string {
+    if (outcome === 'ok') return '成功'
+    if (outcome === 'timeout-landed') return '超时但已核实入库（按成功处理）'
+    if (outcome === 'timeout-unknown') return '超时未确认（请勿自动重试，稍后自己看归档）'
+    return '上游业务失败'
   }
 
   /**

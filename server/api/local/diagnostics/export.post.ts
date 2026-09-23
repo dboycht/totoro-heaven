@@ -48,10 +48,11 @@
  * - 时间线（`snapshot.json` 里那份）由**客户端**按窗口过滤（它才持有 localStorage 里的事件日志）；
  *   服务端在这里只做**核对与如实记录**（数量对不上就在 manifest 里写明），不静默改写用户的证据。
  */
-import { DIAG_CAPTURE_DAYS, DIAG_CAPTURE_DIR, DIAG_EXPORT_PATH, DIAG_LOG_DAYS, DIAG_LOG_MAX_BYTES, DIAG_LOG_DIR, DIAG_MANIFEST_NAME, DIAG_SNAPSHOT_NAME, DIAG_TIMELINE_MAX, assertNoCredentials, captureStampToIso, diagManifestEntries, diagTimelineInWindow, diagWindowMatch } from '../../../../utils/mp/diagnostics'
-import type { CaptureAccount, CaptureFileEntry, DiagSnapshot, DiagWindow } from '../../../../utils/mp/diagnostics'
+import { DIAG_CAPTURE_DAYS, DIAG_CAPTURE_DIR, DIAG_EXPORT_PATH, DIAG_LOG_DAYS, DIAG_LOG_MAX_BYTES, DIAG_LOG_DIR, DIAG_MANIFEST_NAME, DIAG_SNAPSHOT_NAME, DIAG_TIMELINE_MAX, assertNoCredentials, diagManifestEntries, diagTimelineInWindow, diagWindowMatch, mergeDiagEvents } from '../../../../utils/mp/diagnostics'
+import type { CaptureAccount, CaptureFileEntry, DiagEvent, DiagSnapshot, DiagWindow } from '../../../../utils/mp/diagnostics'
 import { assertLocalRequest } from '../../../utils/tokenScanState'
 import { diagLogsLinesInWindow, partitionLogsByRedline, recentLogFiles, summarizeDiagLineAccount } from '../../../utils/diagLogs'
+import { serverEventsInWindow } from '../../../utils/diagEvents'
 import { CAPTURE_DIR, CAPTURE_MAX_BYTES, captureDirBytes, readEvictedLedger, recentCaptures } from '../../../utils/captureStore'
 import { stripGeometryFromRespBody, stripGeometryFromText } from '../../../../utils/mp/responseRecord'
 import { DIAG_INSTANCE_ID, ignoredPrevInstanceInfo, readSession, sessionElapsedSeconds } from '../../../utils/diagSession'
@@ -246,6 +247,16 @@ export default defineEventHandler(async (event) => {
   const preparedByName = new Map(capturePrepared.map((c) => [c.name, c]))
   const safeCaptureItems = safeCaptures.map((c) => preparedByName.get(c.name)!)
   const captureLedger = readEvictedLedger()
+  /**
+   * 🆕 **这些原文来自哪些端点**（用户要求"提交必记响应"的**证据**）：
+   * 从每份 capture 的 `.meta.json` 取 `endpoint`（没有 meta 就用文件名短名兜底）⇒ 端点 → 份数。
+   * 于是打开 manifest 就能确认「提交成绩 / 轨迹明细 / 开跑」这些端点**确实在留档范围内**，不用靠猜。
+   */
+  const captureByEndpoint: Record<string, number> = {}
+  for (const c of safeCaptureItems) {
+    const ep = String(c.raw.meta?.endpoint ?? '(未知)')
+    captureByEndpoint[ep] = (captureByEndpoint[ep] ?? 0) + 1
+  }
   const captureEntries: CaptureFileEntry[] = safeCaptureItems.map((c) => ({
     /** 🔴 用户要求 1️⃣：**写真实文件名**（新命名不触发掩码也不触发红线 ⇒ 与包内 `captures/` 条目逐字一致） */
     name: c.name,
@@ -263,8 +274,14 @@ export default defineEventHandler(async (event) => {
     ...(captureLedger.names.length > 50 ? { droppedMore: captureLedger.names.length - 50 } : {}),
     budgetBytes: CAPTURE_MAX_BYTES,
     usedBytes: captureDirBytes(),
-    oldestKeptAt: safeCaptureItems.length ? captureStampToIso(/^(\d{8}-\d{9})-/.exec(safeCaptureItems[0]!.name)?.[1] ?? '') : '',
+    /**
+     * 保留下来的**最旧**一份的时间：优先用它的 `.meta.json` 里的 `at`（权威）；
+     * ⚠️ 新命名 `c00001-…` 里**没有时间戳**（时间在 meta 里；旧格式才有），所以**不能**从文件名猜。
+     */
+    oldestKeptAt: safeCaptureItems.length ? String(safeCaptureItems[0]!.raw.meta?.at ?? '') : '',
     entries: captureEntries,
+    /** 🆕 端点 → 份数（"提交必记响应"的证据：提交/轨迹/开跑这些端点是否都在留档范围内） */
+    byEndpoint: captureByEndpoint,
   }
 
   // ---------- ④ 🔴 红线自检（**降级而非整包拒绝**，2026-09-21 父代理定）----------
@@ -276,7 +293,47 @@ export default defineEventHandler(async (event) => {
    * ⚠️ 顺序：**先按窗口过滤、再过红线、再算账**（审计 B1）——
    * 进包的文本才是要过红线和要统计的东西；先算账会把被剔文件的行数算进去，导致账与内容不自洽。
    */
-  const snapshotJson = JSON.stringify(snapshot, null, 2)
+  // ---------- ④c 🆕 客户端事件**三来源合并**（用户要求：刷新前 + 刷新后的操作都要在包里）----------
+  /**
+   * 客户端事件此前只有"页面内存"这一份 ⇒ **刷新一次，刷新前的操作全没了**（用户原话）。
+   * 现在客户端**双写**服务端（`POST /api/local/diagnostics/event` ⇒ 落服务端日志），另外每条还落一份 localStorage 兜底。
+   * 导出时三处按 `id` 去重合并：
+   *   · **localStorage**（客户端由快照带上来，`snap.timelineFromStorage`）：连"还没上报就刷新"的那 1~2 秒也在；
+   *   · **页面内存**（`snap.timeline`）：当前页面还在的事件；
+   *   · **服务端日志**（`serverEventsInWindow()` 从窗口内的日志行反解）：**刷新前**已经上报的那部分。
+   * 合并口径是**纯函数** `mergeDiagEvents()`（有单测），这里只负责取数与写账。
+   */
+  const serverEvents = serverEventsInWindow(win ? { startedAtMs: win.startedAtMs, endedAtMs: win.recording ? 0 : win.endedAtMs } : null)
+  const merged = mergeDiagEvents(
+    [
+      { source: 'localStorage', events: Array.isArray(snap?.timelineFromStorage) ? (snap.timelineFromStorage as DiagEvent[]) : [] },
+      { source: 'client', events: Array.isArray(snap?.timeline) ? (snap.timeline as unknown as DiagEvent[]) : [] },
+      { source: 'server', events: serverEvents.events },
+      /**
+       * 🆕 心跳快照也并进时间线（`cat:'heartbeat'`）：维护者筛时间线就能看到
+       * "崩溃/断电前最后一刻的状态"，不用自己去翻日志 JSON。来源标 `server`（它确实只存在于服务端日志里）。
+       */
+      { source: 'server', events: serverEvents.heartbeats },
+    ],
+    DIAG_TIMELINE_MAX,
+  )
+  /** 进包快照：**用合并后的时间线**（刷新前 + 刷新后都在），并把三来源计数如实写进 `timelineStats` */
+  const timelineForPackage = merged.items
+  const snapshotOut = {
+    ...(snapshot as Record<string, unknown>),
+    timeline: timelineForPackage,
+    timelineStats: {
+      ...((snap?.timelineStats as Record<string, unknown> | undefined) ?? {}),
+      /** 🆕 三来源的账（`client` / `localStorage` / `server` / `merged` / `duplicates`） */
+      sources: merged.stats,
+      /** 服务端从日志里反解到多少条、坏行跳过多少条、被服务端限流拒了多少条 */
+      serverParsed: { scanned: serverEvents.scanned, skipped: serverEvents.skipped, rejectedByServer: serverEvents.rejectedByServer },
+    },
+    /** 合并后不再单独保留"只有 localStorage 那份"（它已经并进 `timeline` 了，避免包里两份看起来像两组事件） */
+    timelineFromStorage: undefined,
+  }
+  const snapshotJson = JSON.stringify(snapshotOut, null, 2)
+
   const coreRedline = assertNoCredentials([snapshotJson])
   if (!coreRedline.ok) {
     logWarn('ui', '诊断导出被红线拦下（快照命中凭证样式）', { reasons: coreRedline.hits })
@@ -342,8 +399,120 @@ export default defineEventHandler(async (event) => {
     clientTimeline.map((e) => ({ at: String(e?.at ?? ''), level: String(e?.level ?? ''), cat: String(e?.cat ?? ''), text: String(e?.text ?? '') })),
     win ? { startedAtMs: win.startedAtMs, endedAtMs: win.recording ? 0 : win.endedAtMs } : null,
   )
+  /**
+   * 🆕 2026-09-23（用户要求 3️⃣）**捕获完整性自检** —— 目的：打开包**一眼就知道"这份够不够定位"**。
+   *
+   * 每一项都来自**本包实际进包的内容**（不是"我们打算收什么"）：
+   *   · `requests.byEndpointTop5`：从进包日志行里数 `cat==='proxy'` 的端点（**谁被调用过、各几次**）；
+   *   · `uiEvents` / `timeline`：客户端内存 / localStorage / 服务端日志三来源与合并后的条数；
+   *   · `clientErrors` / `blocked`：客户端错误与**被本地拦下的提交**（用户要求 1️⃣/2️⃣ 的核心证据）；
+   *   · `completeness`：**如实标出"哪一类缺了"**（没有窗口 / 日志被截断的文件 / 被淘汰的 captures / 被限流拒的事件），
+   *     并在 `notes` 里给人话解释。**绝不假装完整**。
+   */
+  const endpointCounts = new Map<string, number>()
+  let uiEventLines = 0
+  for (const { scope } of safeScoped) {
+    for (const line of scope.text.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const o = JSON.parse(line) as { cat?: unknown; msg?: unknown; data?: { endpoint?: unknown } }
+        if (String(o.cat ?? '') === 'proxy') {
+          const ep = String(o.data?.endpoint ?? '(未知)')
+          endpointCounts.set(ep, (endpointCounts.get(ep) ?? 0) + 1)
+        }
+        if (String(o.cat ?? '') === 'ui' && String(o.msg ?? '') === 'client-event') uiEventLines++
+      } catch {
+        /* 坏行跳过（与其它统计一致：不让一行坏 JSON 影响整包） */
+      }
+    }
+  }
+  const topEndpoints = [...endpointCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([endpoint, count]) => ({ endpoint, count }))
+  const byReason: Record<string, number> = {}
+  let clientErrors = 0
+  let lastClientErrorAt = ''
+  let blockedCount = 0
+  for (const e of timelineForPackage) {
+    if (String(e.cat ?? '') === 'client-error') {
+      clientErrors++
+      if (!lastClientErrorAt || String(e.at) > lastClientErrorAt) lastClientErrorAt = String(e.at)
+    }
+    if (String(e.cat ?? '') === 'blocked') {
+      blockedCount++
+      const r = String((e.data as Record<string, unknown> | undefined)?.reasonCode ?? '未标注')
+      byReason[r] = (byReason[r] ?? 0) + 1
+    }
+  }
+  const truncFiles = account.truncatedFiles
+  /**
+   * 🆕 2026-09-23（用户要求 1️⃣/2️⃣）从**进包日志行**里数两样东西：
+   *   · **心跳快照**条数（`ui/client-heartbeat`）—— 用来说明"最后一刻的状态"有没有留下；
+   *   · **提交结论**（`"cat":"submit"` 的日志行 + 时间线里的 `cat:'submit'` 事件）——
+   *     用户要求"提交一下一定记录一下响应"，manifest 里直接列出**每次提交的结论**（成功/失败/超时）。
+   */
+  let heartbeatLines = 0
+  for (const { scope } of safeScoped) {
+    for (const line of scope.text.split('\n')) {
+      if (line.includes('"client-heartbeat"')) heartbeatLines++
+    }
+  }
+  /**
+   * ⚠️ `linesInLogs` 是**前向扫日志**数出来的（按标记文本），`inTimeline` 是**合并后**时间线里 `cat==='heartbeat'`
+   * 的条数。两者口径不同（时间线受 `DIAG_TIMELINE_MAX` 上限与去重影响）⇒ manifest 里**两个都给**，
+   * 别让人以为"对不上就是丢数据"。自检断言用的也是 `inTimeline`（与包内 timeline 同源）。
+   */
+  const heartbeatsInTimeline = timelineForPackage.filter((e) => String(e.cat ?? '') === 'heartbeat').length
+  const submitEvents = timelineForPackage.filter((e) => String(e.cat ?? '') === 'submit')
+  const submitConclusions = submitEvents.slice(-10).map((e) => ({
+    at: String(e.at ?? ''),
+    outcome: String((e.data as Record<string, unknown> | undefined)?.scoreOutcome ?? ''),
+    ok: (e.data as Record<string, unknown> | undefined)?.scoreOk === true,
+    text: String(e.text ?? '').slice(0, 160),
+    /** 🔴 用户要求："超时/失败**不自动重试**" —— 包里能直接看到这一点 */
+    autoRetried: (e.data as Record<string, unknown> | undefined)?.autoRetried === true,
+  }))
+  const coverageNotes: string[] = []
+  if (!win) coverageNotes.push('本次没有记录窗口 ⇒ 日志/事件按"最近几天"兜底，无法保证"只含这一次复现"')
+  if (truncFiles > 0) coverageNotes.push(`有 ${truncFiles} 个日志文件因超过单文件上限被截断（保留文件尾，最新证据优先）`)
+  if (captureAccount.droppedFiles > 0) coverageNotes.push(`响应原文留档曾因总量预算淘汰 ${captureAccount.droppedFiles} 份（${captureAccount.droppedBytes} 字节）`)
+  if (serverEvents.rejectedByServer > 0) coverageNotes.push(`有 ${serverEvents.rejectedByServer} 条客户端事件因超出每窗口上限被拒（时间线不完整）`)
+  if (clientErrors === 0) coverageNotes.push('本次没有捕获到客户端未处理异常（不代表没发生过：钩子是在本次页面生命周期内装的）')
+  if (blockedCount === 0) coverageNotes.push('本次没有被本地门禁拦下的提交记录（若用户说"点了没反应"，请看 UI 事件与日志）')
+  if (heartbeatLines === 0) coverageNotes.push('本次没有心跳快照（客户端未上报或窗口外）——"最后一刻的状态"看不到')
+  if (submitEvents.length === 0) coverageNotes.push('本次包里没有提交结论事件（用户没点过真实提交，或提交链路没走到记录点）')
+  if (excludedScoped.length || excludedCaptures.length) coverageNotes.push('有文件因命中凭证红线被剔除（见 privacy.redlineExcluded*）')
+
   const manifest = {
     kind: 'totoro-heaven-diagnostics',
+    /** 🆕 **捕获完整性自检**（用户要求 3️⃣）：打开包先看这一节就知道"够不够定位" */
+    captureCoverage: {
+      windowActive: Boolean(win),
+      windowId: win?.id ?? '',
+      instanceId: win?.instanceId ?? DIAG_INSTANCE_ID,
+      requests: { total: account.keptLines ? [...endpointCounts.values()].reduce((s, n) => s + n, 0) : 0, byEndpointTop5: topEndpoints },
+      captures: { files: captureAccount.keptFiles, bytes: captureAccount.keptBytes, dropped: captureAccount.droppedFiles },
+      uiEvents: { client: merged.stats.client, localStorage: merged.stats.localStorage, server: merged.stats.server, merged: merged.stats.merged, duplicates: merged.stats.duplicates, linesInLogs: uiEventLines },
+      /** 🆕 心跳快照：进包几条（"最后一刻的状态"有没有留下）+ 被限流拒了几条 */
+      heartbeats: { linesInLogs: heartbeatLines, inTimeline: heartbeatsInTimeline, rejectedByServer: serverEvents.heartbeatsRejected },
+      /**
+       * 🆕 **提交结论**（用户要求"提交必记响应"）：每次提交一条（最多列 10 条），
+       * 含四态 `outcome`（`ok` / `timeout-landed` / `timeout-unknown` / 业务失败）与 `autoRetried:false`。
+       */
+      submits: { count: submitEvents.length, conclusions: submitConclusions },
+      /** 🆕 响应原文按**端点**的份数（确认"提交成绩 / 轨迹明细"这些端点确实在留档范围内） */
+      capturesByEndpoint: captureByEndpoint,
+      timeline: { client: merged.stats.client, localStorage: merged.stats.localStorage, server: merged.stats.server, merged: merged.stats.merged },
+      clientErrors: { count: clientErrors, lastAt: lastClientErrorAt },
+      blocked: { count: blockedCount, byReason },
+      completeness: {
+        missingWindow: !win,
+        logTruncatedFiles: truncFiles,
+        capturesDroppedFiles: captureAccount.droppedFiles,
+        eventsRejectedByServer: serverEvents.rejectedByServer,
+        redlineExcludedLogs: excludedScoped.length,
+        redlineExcludedCaptures: excludedCaptures.length,
+        notes: coverageNotes,
+      },
+    },
     /** 导出时刻（服务端本地时间 + ISO，便于跨时区对照） */
     exportedAt: now.toISOString(),
     exportedAtLocal: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`,
@@ -467,12 +636,19 @@ export default defineEventHandler(async (event) => {
               '不参与任何放行判断；真实提交前必须重新读取（开关可能已变）。',
           }
         : null,
-      /** 🆕 事件时间线的账（客户端按窗口过滤 + `DIAG_TIMELINE_MAX` 上限兜底的结果） */
+      /** 🆕 事件时间线的账（客户端按窗口过滤 + `DIAG_TIMELINE_MAX` 上限兜底 + **三来源合并**） */
       timeline: {
         max: DIAG_TIMELINE_MAX,
-        inPackage: clientTimeline.length,
+        inPackage: timelineForPackage.length,
         clientStats: snap?.timelineStats ?? null,
-        /** 服务端用**自己**的窗口口径复算了一遍：数量与客户端包里的对不上就写在这里（不改写证据） */
+        /** 🆕 三来源各多少条、去重后多少条（`{client, localStorage, server, merged, duplicates}`） */
+        sources: merged.stats,
+        /**
+         * 🆕 服务端从**日志**里反解到的事件账：`scanned` 扫过几行、`skipped` 跳过几条（坏行/不合格）、
+         * `rejectedByServer` 被**每窗口限流**拒了几条（>0 说明"这份包缺了事件"，如实写出来）。
+         */
+        serverParsed: { scanned: serverEvents.scanned, skipped: serverEvents.skipped, rejectedByServer: serverEvents.rejectedByServer },
+        /** 服务端用**自己**的窗口口径复算了一遍客户端内存那份：数量对不上就写在这里（不改写证据） */
         serverRecount: win ? timelineCheck.stats : null,
         matched: win ? timelineCheck.items.length === clientTimeline.length : null,
       },

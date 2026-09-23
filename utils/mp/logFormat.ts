@@ -30,6 +30,13 @@ export interface LogEntry {
   msg: string
   /** 附加字段（**必须已经脱敏**；本模块的 redact* 负责） */
   data?: Record<string, unknown>
+  /**
+   * 🆕 2026-09-23：**稳定事件 id**（`DiagEvent.id`，只有 `[A-Za-z0-9._:-]`）。
+   * 用途：这条事件同时上报了服务端（`POST /api/local/diagnostics/event`）⇒ 导出时要把
+   * 「页面内存 / localStorage 兜底 / 服务端日志」三份**按 id 去重合并**。
+   * **可选**：老数据（localStorage 里存的旧日志）没有它，合并时按"时间+文本"退化成同一个键。
+   */
+  id?: string
 }
 
 /** 前端环形缓冲上限 */

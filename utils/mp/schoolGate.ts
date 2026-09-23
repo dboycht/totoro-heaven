@@ -143,6 +143,18 @@ export interface RunGateInput {
    */
   lineRequired?: boolean
   /**
+   * 🆕 2026-09-23（pre3）：**本机有没有可用的本机路径几何**（服务端未下发线路时才有意义）。
+   * 调用方传 `freeRouteGeometryChoice(entries, task).entry !== undefined`（判据唯一来源）。
+   * · 省略 / `true` = 不报这一条（老调用方与老测试不受影响）；
+   * · `false` ⇒ 记一条 `no_local_geometry`（严格模式会拦；放宽模式只提示）。
+   */
+  localGeometryReady?: boolean
+  /**
+   * 🆕 2026-09-23（pre3）：**本次判定用不用"放宽"** —— 缺省取模块常量 `RELAX_GATE_FOR_CAPTURE`
+   * （pre3 采数据期 = `true`）。显式传 `false` 就是**跑严格那一遍**（单测这么用，保证"改回严格"不会坏）。
+   */
+  relaxGate?: boolean
+  /**
    * 本次跑步类型（提交口径：`0` 阳光跑 / `1` 自由跑）。
    * 自由跑只受夜间停用约束 —— 厂商的自由跑**不打卡、不取线路**（见 `evaluateRunGate` 说明）。
    */
@@ -151,18 +163,53 @@ export interface RunGateInput {
   now?: Date
 }
 
+/** 门禁命中项代号（`blockedBy` / `warningCodes` 共用） */
+export type RunGateBlockCode =
+  | 'night'
+  | 'switches_unknown'
+  | 'start_face'
+  | 'point_random'
+  | 'camera_on'
+  | 'camera_unknown'
+  /** 🆕 pre3：服务端未下发线路，而**本机一条可用几何都没有**（严格模式下会拦住） */
+  | 'no_local_geometry'
+
+/**
+ * 🔴🔴 **pre3「采集数据专用」放宽开关**（2026-09-23，用户明确要求）——**这不是永久放松**：
+ *
+ * 用户原话：「用户相关提交的判定松一点，之前那种都是**你自己终止了**导致用户提交不了，
+ * 导致我们根本无法采集数据！这个 pre3 相当于就是专门来收集数据的，**你相关东西要做的不是没读取到就直接终止**」。
+ *
+ * `true` ⇒ `evaluateRunGate()` **只收集 `warnings`、不阻断**（`allow` 恒为 true，界面**必须**把每条理由如实展示，
+ *   并在提交时上报一条诊断事件）；`false` ⇒ **恢复原本的"第一条命中就拦"语义**（代码路径完整保留，见函数体）。
+ *
+ * **怎么恢复严格模式**：把这一行改成 `false` 即可（**不要删任何判据代码**；单测两边都覆盖，
+ * `tests/mp/schoolGate.test.ts` 用 `relaxGate: false` 显式跑严格那一遍）。
+ * ⚠️ 它**只放宽"拦不拦"**：报文口径、门禁的判据集合、上报内容一个字都不变。
+ */
+export const RELAX_GATE_FOR_CAPTURE = true
+
 /** 门禁结论 */
 export interface RunGateResult {
-  /** true = 允许创建场次并开跑 */
+  /** true = 允许创建场次并开跑（⚠️ 放宽模式下**有命中项也会是 true**，见 `warnings` / `relaxed`） */
   allow: boolean
   /**
-   * 拒绝原因（allow=false 时必填）。
+   * 拒绝原因（严格模式 `allow=false` 时必填；放宽模式下这里是**第一条命中项**的文案，供夜间提示等复用）。
    * ⚠️ 例外：`lineRequired: false` 且没选线路时**放行**，`reason` 为 `LINE_NOT_REQUIRED_REASON`
    * （说明"这一条为什么不拦"，供日志/诊断核对；界面只在 `!allow` 时把它当错误显示）。
    */
   reason: string
-  /** 命中的否决项代号（便于界面/测试断言） */
-  blockedBy?: 'night' | 'switches_unknown' | 'start_face' | 'point_random' | 'camera_on' | 'camera_unknown'
+  /** 命中的否决项代号（便于界面/测试断言；放宽模式下 = 第一条命中项） */
+  blockedBy?: RunGateBlockCode
+  /**
+   * 🆕 全部"本该拦住"的理由（严格模式 = 命中项；放宽模式 = **只提示不拦**，界面必须如实展示）。
+   * 顺序与判定顺序一致（夜间 → 开关未读 → 开场人脸 → 随机抽查 → 线路/摄像头杆）。
+   */
+  warnings: string[]
+  /** 🆕 与 `warnings` 一一对应的机器码（诊断上报 / 断言用） */
+  warningCodes: RunGateBlockCode[]
+  /** 🆕 这次判定是否"**放宽放行**"（有命中项但 allow=true）⇒ 提交时要上报一条诊断事件 */
+  relaxed: boolean
 }
 
 /**
@@ -213,72 +260,89 @@ export function nightBlockReason(now: Date = new Date()): string {
  *   —— 详见 `RunGateInput.lineRequired` 与下面的分支注释。
  */
 export function evaluateRunGate(input: RunGateInput): RunGateResult {
+  /** ⓪ 放宽开关（pre3 采数据期 = true）：命中项**只收集不拦**；严格模式逐字恢复原语义 */
+  const relax = input.relaxGate ?? RELAX_GATE_FOR_CAPTURE
+  const hits: { code: RunGateBlockCode; reason: string }[] = []
+  const hit = (code: RunGateBlockCode, reason: string) => hits.push({ code, reason })
+  /** "不拦、但要说一句"的信息（如自由路线任务"无需选择线路"）——与 warnings 分开：它不是"本该拦住"的理由 */
+  let info = ''
+
   // ⓪ 夜间停用（最先判：到点就谁也别跑，避免留下深夜记录）
   const now = input.now ?? new Date()
-  if (isNightBlocked(now)) {
-    return { allow: false, reason: nightBlockReason(now), blockedBy: 'night' }
-  }
+  if (isNightBlocked(now)) hit('night', nightBlockReason(now))
 
-  // ⓪′ 自由跑：厂商不打卡、不取线路 ⇒ 跳过下面全部"阳光跑专属"校验
-  if (input.runType === 1) {
-    return { allow: true, reason: '' }
-  }
+  /**
+   * ⓪′ 自由跑：厂商不打卡、不取线路 ⇒ **跳过下面全部"阳光跑专属"校验**（只有夜间那一条对它有约束）。
+   * ⚠️ 与原来逐字一致：自由跑**不查开关**，所以"开关未读"对它不算问题（放宽模式下也不会多出一条 warning）。
+   */
+  if (input.runType !== 1) {
+    // ① 三个开关必须已读取（未知 ≠ 关闭）
+    if (!input.switches || typeof input.switches !== 'object') {
+      hit('switches_unknown', '尚未读取学校的开跑开关（人脸 / 随机抽查），请先在工作台「读取真实账号与任务」。')
+    } else {
+      // ② 开场人脸
+      if (String(input.switches.sunrunStartFace ?? '') === '1') {
+        hit(
+          'start_face',
+          '本任务「开场人脸校验」已开启（sunrunStartFace=1）：需要实时拍摄，网页无法完成 —— 已停止，未创建场次。',
+        )
+      }
+      // ③ 随机人脸抽查
+      if (String(input.switches.sunrunPointRandom ?? '') === '1') {
+        hit(
+          'point_random',
+          '本任务「随机人脸抽查」已开启（sunrunPointRandom=1）：跑动中会弹脸，网页无法完成 —— 已停止，未创建场次。',
+        )
+      }
+    }
 
-  // ① 三个开关必须已读取（未知 ≠ 关闭）
-  if (!input.switches || typeof input.switches !== 'object') {
-    return {
-      allow: false,
-      reason: '尚未读取学校的开跑开关（人脸 / 随机抽查），请先在工作台「读取真实账号与任务」。',
-      blockedBy: 'switches_unknown',
+    // ④ 线路 / 摄像头杆（**按线路**下发，且必须确认是"当前这条线路"的 flag）
+    const lineId = String(input.line?.pointId ?? '')
+    if (!lineId) {
+      /**
+       * - 默认（`lineRequired` 省略/true）⇒ 没选线路就记一条（严格模式拦，放宽模式只提示）；
+       * - `lineRequired === false`（服务端未下发线路 = 自由路线任务）⇒ **不因"未选线路"记**，
+       *   只说明依据（`LINE_NOT_REQUIRED_REASON`）；但**本机一条可用几何都没有**时记 `no_local_geometry`
+       *   （严格模式会拦：没有几何就没法生成轨迹）。
+       */
+      if (input.lineRequired === false) {
+        info = LINE_NOT_REQUIRED_REASON
+        if (input.localGeometryReady === false) {
+          hit(
+            'no_local_geometry',
+            '这台电脑还没有可用的本机路径几何（本任务未下发线路）：轨迹没法生成 —— 请先在「非官方路径【测试】」画一条。',
+          )
+        }
+      } else {
+        hit('camera_unknown', '尚未选择跑步线路。')
+      }
+    } else {
+      const flagLineId = String(input.cameraFlagLineId ?? '')
+      if (input.cameraFlag === null || input.cameraFlag === undefined || flagLineId !== lineId) {
+        hit(
+          'camera_unknown',
+          '当前线路的「摄像头杆」开关尚未读取（切换线路后需重新读取）——为避免误提交，已停止。',
+        )
+      } else if (input.cameraFlag === true) {
+        hit(
+          'camera_on',
+          '当前线路启用了「摄像头杆过点校验（getCameraConfig.flag=true）」：需真人到杆附近拍摄，网页无法完成 —— 已停止，未创建场次。',
+        )
+      }
     }
   }
 
-  // ② 开场人脸
-  if (String(input.switches.sunrunStartFace ?? '') === '1') {
-    return {
-      allow: false,
-      reason: '本任务「开场人脸校验」已开启（sunrunStartFace=1）：需要实时拍摄，网页无法完成 —— 已停止，未创建场次。',
-      blockedBy: 'start_face',
-    }
-  }
+  const warningCodes = hits.map((h) => h.code)
+  const warnings = hits.map((h) => h.reason)
+  if (!hits.length) return { allow: true, reason: info, warnings: [], warningCodes: [], relaxed: false }
 
-  // ③ 随机人脸抽查
-  if (String(input.switches.sunrunPointRandom ?? '') === '1') {
-    return {
-      allow: false,
-      reason: '本任务「随机人脸抽查」已开启（sunrunPointRandom=1）：跑动中会弹脸，网页无法完成 —— 已停止，未创建场次。',
-      blockedBy: 'point_random',
-    }
+  /**
+   * 🔴 pre3 采数据期：命中项**只警告、不阻断** —— `allow` 仍为 true，界面必须把 `warnings` 如实展示，
+   * 提交时另上报一条诊断事件（"这笔提交是在放宽状态下发生的"）。
+   * 严格模式（`relax === false`）⇒ **逐字恢复"第一条命中就拦"**（`reason`/`blockedBy` 取第一条）。
+   */
+  if (relax) {
+    return { allow: true, reason: warnings[0]!, blockedBy: warningCodes[0], warnings, warningCodes, relaxed: true }
   }
-
-  // ④ 摄像头杆（**按线路**下发，且必须确认是"当前这条线路"的 flag）
-  const lineId = String(input.line?.pointId ?? '')
-  if (!lineId) {
-    /**
-     * 🆕 2026-09-22（issue #12）：
-     * - 默认（`lineRequired` 省略/true）⇒ **保持原样**：没选线路就拒绝；
-     * - `lineRequired === false`（服务端未下发线路 = 自由路线任务）⇒ 放行并说明依据：
-     *   摄像头杆是**按线路**下发的，没有线路就没有"这条线路的开关"可查，
-     *   拿"未选线路"拦等于**自己造出一个服务端没提的要求**（任务本身不指定路线）。
-     */
-    if (input.lineRequired === false) return { allow: true, reason: LINE_NOT_REQUIRED_REASON }
-    return { allow: false, reason: '尚未选择跑步线路。', blockedBy: 'camera_unknown' }
-  }
-  const flagLineId = String(input.cameraFlagLineId ?? '')
-  if (input.cameraFlag === null || input.cameraFlag === undefined || flagLineId !== lineId) {
-    return {
-      allow: false,
-      reason: '当前线路的「摄像头杆」开关尚未读取（切换线路后需重新读取）——为避免误提交，已停止。',
-      blockedBy: 'camera_unknown',
-    }
-  }
-  if (input.cameraFlag === true) {
-    return {
-      allow: false,
-      reason: '当前线路启用了「摄像头杆过点校验（getCameraConfig.flag=true）」：需真人到杆附近拍摄，网页无法完成 —— 已停止，未创建场次。',
-      blockedBy: 'camera_on',
-    }
-  }
-
-  return { allow: true, reason: '' }
+  return { allow: false, reason: warnings[0]!, blockedBy: warningCodes[0], warnings, warningCodes, relaxed: false }
 }

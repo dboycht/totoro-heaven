@@ -192,8 +192,12 @@ import type { TrackRouteEntry } from '~/utils/mp/trackLibrary'
 import { extractTaskFromCachePayload, looksLikeTask } from '~/utils/mp/realCache'
 // 🆕 2026-09-22：「最近一次成功读取时的状态」（纯诊断证据，**不参与放行判断**）
 import { buildLastKnown, lastKnownSummary, readLastKnown } from '~/utils/mp/diagLastKnown'
+// 🆕 2026-09-23（用户要求 1️⃣）：心跳快照（当前内存态摘要）定期 + 关键操作后上报
+import { buildHeartbeatData, installHeartbeat } from '~/composables/useDiagEventReporter'
 // 🆕 2026-09-22（审计可疑 6）：坐标字段名**只有一份**（与服务端剥 respBody 坐标共用）
 import { COORD_KEYS } from '~/utils/mp/responseRecord'
+// 🆕 2026-09-23（用户要求 4️⃣）：localStorage 兜底那份事件（导出时三来源按 id 去重合并）
+import { readStoredEvents } from '~/composables/useDiagEventReporter'
 
 const logs = useEventLog()
 const showSnackbar = useNotice()
@@ -502,6 +506,13 @@ const startRecording = async () => {
     serverOk.value = true
     serverMessage.value = ''
     logs.log('info', 'ui', `开始记录诊断（服务端窗口 ${win.id}，接下来请按顺序复现问题）`)
+    /**
+     * 🆕 2026-09-23（用户要求 1️⃣「每一个重要的地方都要记录」）：**装上心跳快照**。
+     * 每 `DIAG_HEARTBEAT_INTERVAL_MS`（45 秒）一份 + 关键操作后立即补一份 ⇒
+     * 页面崩了/断电/用户直接关掉，我们**仍能看到"最后一刻的状态"**（任务/线路/本机路径/门禁/库/页面）。
+     * 采集的是**内存态摘要**（现算，不是缓存），失败只吞掉（`sendHeartbeat` 内部 fire-and-forget）。
+     */
+    installHeartbeat(heartbeatProvider())
     showSnackbar('已开始记录（服务端窗口）：刷新/切页都不中断，回来点「结束并导出」', 'success', { timeout: 6000 })
   } finally {
     starting.value = false
@@ -913,6 +924,10 @@ function timelineOf(pairs: { raw: string; masked: string }[]): { items: DiagSnap
     cat: String(e.cat ?? ''),
     // ⚠️ 文案过一遍身份脱敏：日志的 msg 是自由文本，可能整句带着学号/姓名
     text: redactText(String(e.msg ?? ''), pairs),
+    /** 🆕 稳定 id：服务端那份（同一 id）与本地兜底那份靠它去重合并 */
+    ...(e.id ? { id: String(e.id) } : {}),
+    /** 🆕 结构化摘要（判定输入：blockedBy / reasonCode / 开关值…）；同样过一遍身份脱敏 */
+    ...(e.data ? { data: redactSensitive(e.data, pairs) } : {}),
   }))
   const win = serverWindow.value
   const filtered = diagTimelineInWindow(mapped, win ? { startedAtMs: win.startedAtMs, endedAtMs: win.recording ? 0 : win.endedAtMs } : null)
@@ -1021,6 +1036,19 @@ function buildSnapshot(): DiagSnapshot {
     timeline: timeline.items,
     /** 🆕 这一次时间线的账（服务端会复算核对；维护者据此判断"是没操作还是被截断"） */
     timelineStats: timeline.stats,
+    /**
+     * 🆕 2026-09-23（用户要求 4️⃣）：**localStorage 兜底**那一份事件（每条事件写入内存时也写了它）。
+     * 服务端导出时与 `timeline`、服务端日志里的 ui 事件**按 id 去重合并** ⇒ 连"还没上报就刷新"的 1~2 秒也不丢。
+     * 这里同样过一遍身份脱敏（兜底里存的是上报前的形态）。
+     */
+    timelineFromStorage: readStoredEvents().map((e) => ({
+      id: String(e.id ?? ''),
+      at: String(e.at ?? ''),
+      level: String(e.level ?? 'info'),
+      cat: String(e.cat ?? ''),
+      text: redactText(String(e.text ?? ''), pairs),
+      ...(e.data ? { data: redactSensitive(e.data, pairs) } : {}),
+    })),
     /** 🆕 这一份快照是**为哪个窗口**采集的（服务端会与它自己那份核对，不一致会**拒绝导出**并说明原因） */
     window: win ? { id: win.id, startedAt: win.startedAt, endedAt: win.endedAt, includeGeometry: win.includeGeometry } : null,
     /** 🆕 采集时界面见过的服务端实例（服务端据此把提示语写准："程序重启过" vs "窗口被换掉"） */
@@ -1035,7 +1063,42 @@ function buildSnapshot(): DiagSnapshot {
 }
 
 /**
- * 采集「最近已知状态」：**当前实时态优先**（实时有值 = 刚刚读到），实时为空则退回 `localStorage` 里那份历史证据。
+ * 🆕 2026-09-23（用户要求 1️⃣）**心跳快照的内容**：此刻的内存态摘要（形状见 `buildHeartbeatData()`）。
+ * 每次调用**现算**（不是缓存）⇒ 拿到的永远是最新状态；全部走 `buildHeartbeatData` 的扁平标量口径。
+ * ⚠️ 只读**已经在本组件里拿到**的状态（`task` / `gate` / `realData` / 路线库），不引入新的数据依赖。
+ */
+function heartbeatProvider(): () => Record<string, string | number | boolean | null> {
+  return () => {
+    const rawTask = isPlainObject(task.value) ? (task.value as Record<string, unknown>) : null
+    const lib = trackLibraryOf(true)
+    return buildHeartbeatData({
+      page: String(route.path ?? ''),
+      task: rawTask
+        ? {
+            paperId: String(rawTask.taskId ?? rawTask.paperId ?? ''),
+            paperName: String(rawTask.paperName ?? ''),
+            km: Number(rawTask.mileage ?? 0),
+            runPointListCount: Array.isArray(rawTask.runPointList) ? (rawTask.runPointList as unknown[]).length : 0,
+          }
+        : null,
+      /** 线路：**选中的服务端线路 id** + "任务要不要求线路"（都没选则是空串，便于对照"到底选没选"） */
+      line: {
+        selectedId: String(realData.selectedLine.value?.pointId ?? ''),
+        required: Boolean(rawTask && Array.isArray(rawTask.runPointList) && (rawTask.runPointList as unknown[]).length > 0),
+      },
+      /**
+       * 本机路径：本组件拿不到"本机自由路径选择"的内部状态（那条线刚交付，不碰它的内部）⇒
+       * 只报库里有几条几何（`lib`）与"当前有没有选"（`line.selectedId`）—— 如实、不编造。
+       */
+      localPath: null,
+      gate: { allow: gate.value?.allow ?? null, warnings: [], blockedBy: String(gate.value?.blockedBy ?? '') },
+      lib: { entries: lib.count, total: lib.entries.reduce((s, e) => s + e.outerPoints + e.innerPoints, 0) },
+      status: { realStatus: String(realData.status.value ?? ''), restoredAt: Number(realData.restoredAt.value ?? 0) },
+    })
+  }
+}
+
+/**
  * 🔴 **只读不写**（闸门复验修正）：写点只有一个 —— `composables/real/data.ts` 成功读取之后。
  * 这里若"顺带写回"，会把 17:10 那份好证据覆盖成"有 task、无 switches"的导出时刻记录（见下面的说明）。
  *
