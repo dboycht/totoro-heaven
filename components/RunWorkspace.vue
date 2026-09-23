@@ -96,11 +96,35 @@
               :disabled="isBusy || routeIsFree"
               class="mb-2"
             />
-            <!-- 🆕 2026-09-22（issue #12）：服务端**未下发线路**时把下拉停用并就地说明 ——
-                 不再让"下拉为空"被误读成"你还没描跑道"。措辞只用客观事实（"未下发"），
-                 不写成"服务端不判路线"（我们无法证明服务端判定时怎么做）。 -->
+            <!-- 🆕 2026-09-22（issue #12）：服务端**未下发线路**时把线路下拉停用，并改用下面的「本机路径」——
+                 措辞只用客观事实（"未下发"），不写成"服务端不判路线"（我们无法证明服务端判定时怎么做）。 -->
             <div v-if="routeIsFree" class="text-caption text-medium-emphasis mb-2">
-              本任务<b>服务端未下发线路</b>（不指定路线）—— 线路下拉已停用；轨迹将用你<b>本机已有的跑道几何</b>生成。
+              本任务<b>服务端未下发线路</b>（不指定路线）⇒ <b>请选择你要用的本机路径</b>（下面的「本机路径」）；提交报文仍<b>不含线路信息</b>。
+            </div>
+            <!--
+              🆕 2026-09-22（用户批准）：「本机路径」下拉 —— 只在"服务端未下发线路"的任务里出现。
+              选项 = 本机路线库里几何可用的条目；选择按任务记住（键 mp_free_route_choice_v1），刷新后还在。
+              🔴 它只影响本机几何：提交报文一个字都不变（lineId 仍空串、paperId 仍 taskId、路径点列仍按现口径）。
+            -->
+            <v-select
+              v-if="routeIsFree && libTotal > 0"
+              v-model="freeRoutePick"
+              :items="freeRouteOptions"
+              item-title="title"
+              item-value="value"
+              label="本机路径（本任务不指定路线）"
+              density="comfortable"
+              :disabled="isBusy"
+              class="mb-1"
+            />
+            <!-- ⚠️ 这里的说明只在"回退 / 上次那条已不可用"时出现（正常命中时上面那条警示里已经有"依据"那句了，别重复两遍） -->
+            <div v-if="routeIsFree && libTotal > 0 && (freeRouteIsFallback || freeRouteChoice.preferredUnavailable)" class="mb-2">
+              <span class="text-caption text-warning">⚠️ {{ freeRouteReason }}</span>
+            </div>
+            <div v-if="routeIsFree && libTotal > 0" class="mb-2">
+              <v-btn size="x-small" variant="text" prepend-icon="mdi-vector-curve" to="/field/free-path">
+                去「非官方路径【测试】」画/改
+              </v-btn>
             </div>
             <!-- 跨校区提示：选了别的校区的线路（按坐标判定，不看名称） -->
             <v-alert v-if="crossCampusWarning" type="warning" variant="tonal" density="compact" class="mb-2">
@@ -612,7 +636,13 @@ import { formatClock, formatDuration, formatPace } from '~/utils/mp/runData'
 import { isStaleSettlement } from '~/utils/mp/writeOutcome'
 import { useMpDemo } from '~/composables/useMpDemo'
 // 🆕 2026-09-22：那条几何的**判据与读数**都在算法层（纯函数、有单测）—— 与跑步引擎**同一个函数**，界面不许另写一套
-import { freeRouteGeometryChoice, localEntryGeometryText, resolveEntryName } from '~/utils/mp/trackLibrary'
+import {
+  entryGeometryUsable,
+  freeRouteGeometryChoice,
+  localEntryGeometryText,
+  localEntryShapeText,
+  resolveEntryName,
+} from '~/utils/mp/trackLibrary'
 import { useMpReal } from '~/composables/useMpReal'
 import { logError, logInfo, logWarn } from '~/composables/useEventLog'
 import { groupRoutesByCampus, toSelectItems, trackEditorLink, warnForSelection } from '~/utils/mp/routeGroups'
@@ -719,7 +749,8 @@ const fitRequirementText = computed(() => fitRequirementOf(activeTask.value).rea
  *    判据改为"**当前任务里的线路确有配置**"（`activeLines.length > 0`），并为"库里有条目但都不属于当前任务"
  *    单独给一条带入口的提示。
  */
-const { entries: libEntries, load: loadTrackLibrary } = useTrackLibrary()
+// 🆕 2026-09-22：「本机路径」的选择按任务记住（键 `mp_free_route_choice_v1`；与提交报文无关）
+const { entries: libEntries, load: loadTrackLibrary, freeRouteChoiceFor, setFreeRouteChoice } = useTrackLibrary()
 onMounted(() => loadTrackLibrary())
 const configuredIds = computed(() => new Set(libEntries.value.map((e) => String(e.lineId))))
 /** 只列"本机路线库里配置过"的线路（**没有兜底**：没配置就是空列表） */
@@ -733,22 +764,49 @@ const hasConfigured = computed(() => configuredForTask.value > 0)
 const libEntriesNotForTask = computed(() => libTotal.value > 0 && configuredForTask.value === 0)
 
 /**
- * 🆕 2026-09-22（用户反馈 + 负责人批准改选择逻辑）：
- * **自由路线任务将要使用的本机几何** —— 判据与跑步引擎**同一个函数**
- * （`freeRouteGeometryChoice()`，算法层 `utils/mp/trackLibrary.ts`）；界面**不许**在这里另写一套
- * （否则"界面说用 A、实际用 B"会立刻骗到用户）。
+ * 🆕 2026-09-22（用户批准）：「本机路径」下拉 —— **给"服务端未下发线路"的任务真的选一条本机几何**。
  *
- * 现在的口径：**优先「非官方路径【测试】」保存的那条固定键 `local:free`**；没有它才退回"最近保存的那条"
- * （`fallback: true` ⇒ 下面必须如实说明，别让用户以为他画的那条被忽略了）。
+ * 判据仍然只有一处：`freeRouteGeometryChoice(entries, task, preferredLineId)`（算法层，纯函数、有单测）。
+ * 顺序：① 用户选的那条（几何可用）→ ② `local:free` → ③ 最近保存（`fallback: true`）→ ④ 库空。
+ * ⚠️ 用户选过的那条**被删了/几何坏了** ⇒ 判据会落回 ②/③ 并给出 `preferredUnavailable`，界面如实提示。
+ * 🔴 **只影响本机几何**：提交报文一个字都不变（`lineId` 仍空串、`paperId` 仍 taskId、路径点列仍按现口径）。
  */
+/**
+ * 本机**记住的**"这个任务选过哪条"（按 taskId 持久化；**可能是已被删除的旧 id**）。
+ * ⚠️ 判据要收它（而不是"实际生效的那条"）——否则"上次选的那条已不可用"这条提示永远不会出现。
+ */
+const freeRouteSavedId = computed(() => freeRouteChoiceFor(activeTask.value?.taskId))
 const freeRouteChoice = computed(() =>
-  routeIsFree.value ? freeRouteGeometryChoice(libEntries.value, activeTask.value) : { fallback: false, reason: '' },
+  routeIsFree.value
+    ? freeRouteGeometryChoice(libEntries.value, activeTask.value, freeRouteSavedId.value)
+    : { fallback: false, reason: '', preferredUnavailable: false },
 )
 const freeRouteEntry = computed(() => freeRouteChoice.value.entry)
 /** 这条几何**是怎么被选中的**（判据自己给的说法，界面直接复用，别另写措辞） */
 const freeRouteReason = computed(() => freeRouteChoice.value.reason)
 /** 是否是"退而求其次"（没有非官方路径 ⇒ 暂用最近保存的跑道）⇒ 界面上要更显眼地说 */
 const freeRouteIsFallback = computed(() => freeRouteChoice.value.fallback)
+/**
+ * 「本机路径」下拉的选项 = **几何可用**的本机条目（不可用的不列入：选了也跑不了）。
+ * 标题用 `localEntryShapeText()`（与跑步页那条提示同源读数）；名字走 `resolveEntryName()`（改过名就用用户起的）。
+ */
+const freeRouteOptions = computed(() =>
+  libEntries.value
+    .filter((e) => entryGeometryUsable(e))
+    .map((e) => ({ title: `${resolveEntryName(e) || String(e.lineId)} —— ${localEntryShapeText(e)}`, value: String(e.lineId) })),
+)
+/**
+ * 下拉的绑定值 = **这次实际会用的那条**（而不是"记忆里那条"）：
+ * 用户改选 ⇒ 记住（按 taskId 持久化）；记忆里那条没了/坏了 ⇒ 显示落回后的那条，并在下面如实提示"上次那条已不可用"。
+ */
+const freeRoutePick = computed({
+  get: () => String(freeRouteChoice.value.entry?.lineId ?? ''),
+  set: (v: string) => {
+    const id = String(v ?? '').trim()
+    logInfo('run', '用户改了「本机路径」', { taskId: activeTask.value?.taskId ?? '', localLineId: id })
+    setFreeRouteChoice(activeTask.value?.taskId, id)
+  },
+})
 /** 那条几何的名字（改过名就用用户起的名字） */
 const freeRouteEntryName = computed(() => {
   const e = freeRouteEntry.value

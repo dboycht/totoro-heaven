@@ -213,55 +213,137 @@ export function localFreeTrackLine(task: unknown): { lineId: string; lineName: s
 /**
  * 🆕 2026-09-22（用户反馈 + 负责人批准改选择逻辑）：**自由路线任务用哪一条本机几何** —— **唯一判据**。
  *
- * ## 为什么改成"优先 `local:free`"（原先只看"最近保存"）
+ * ## 为什么"优先 `local:free`"（原先只看"最近保存"）
  * 跑步引擎原先取"本机路线库第一条（= 最近保存的那条）"。可用户**刚在「非官方路径【测试】」画完**
  * 之后又保存了**别的东西**（另一条任务的跑道等）时，被采用的就不是他刚画的那条 ⇒ 他会以为"我画的没用上"
  * （他反馈"无法选择"，我们上一轮把这件事**显示出来**后，暴露的正是这条判据本身会"串味"）。
  * 现在：**自由路线任务优先认「非官方路径【测试】」那条固定键 `local:free`**；没有它（老用户从没画过）
  * 才退回"最近保存的那条"，且**回退必须如实说明**（`fallback: true` + `reason`，界面直接显示，别自己另写措辞）。
  *
- * ## 判据（顺序即优先级）
+ * ## 判据（顺序即优先级；2026-09-22 二次扩展：把"用户自己选的那条"放最前）
  * ① `routeRequirementOf(task).kind === 'line'`（服务端下发了线路）⇒ `entry: undefined`
  *    —— **官方线路任务零变化**（几何来自任务线路，与本机库无关）；
- * ② `kind === 'free'` ⇒ 库里 `lineId === LOCAL_FREE_LINE_ID` 的那条（**复用常量，不写死字符串**）；
- * ③ 没有 ⇒ 退回库里第一条（最新在前 = 最近保存），并标 `fallback: true`；
- * ④ 库空 ⇒ `entry: undefined`（调用方按"还没有几何"提示，绝不假装有一条）。
+ * ② `kind === 'free'` 且**用户在「本机路径」下拉里选过**（`preferredLineId`）**且那条几何可用** ⇒ 用它；
+ * ③ 否则 `lineId === LOCAL_FREE_LINE_ID` 且几何可用（**复用常量，不写死字符串**）；
+ * ④ 否则退回"最近保存的**几何可用**条目"（`fallback: true`）；
+ * ⑤ 库空/全不可用 ⇒ `entry: undefined`（调用方按"还没有几何"提示，绝不假装有一条）。
+ * ⚠️ 用户选过的那条**被删了/几何坏了** ⇒ 落回 ③/④，并把 `preferredUnavailable: true` 交给界面
+ *    （界面据此如实提示"你上次选的那条已不可用，已改用 X"）。
  *
  * ⚠️ **界面与跑步引擎共用这一个函数**（`composables/demo/runner.ts` 与 `RunWorkspace.vue`），
  *    不许出现第二套判据 —— 否则"界面说用 A、实际用 B"会立刻骗到用户。
+ * 🔴 **红线**：这个选择**只决定本机几何**；提交报文一个字都不变（`lineId` 仍空串、`paperId` 仍 taskId、
+ *    `sunrunPathPointList` 仍按现口径），`local:free` **绝不**进报文。
  */
 export interface FreeRouteGeometryChoice {
-  /** 选中的本机条目（没有 ⇒ `undefined`：有线路的任务 / 本机库为空） */
+  /** 选中的本机条目（没有 ⇒ `undefined`：有线路的任务 / 本机库为空 / 全不可用） */
   entry?: TrackRouteEntry
-  /** `true` = 没有 `local:free`，退回到"最近保存的那条"⇒ **界面必须如实说明** */
+  /** `true` = 用的是"最近保存"的回退项（不是用户选的、也不是 `local:free`）⇒ **界面必须如实说明** */
   fallback: boolean
   /** 给人看的一句依据（界面直接复用，避免各处各写一套说法） */
   reason: string
+  /** 🆕 用户上次选的那条已不可用（被删/几何坏了）⇒ 界面要如实提示 */
+  preferredUnavailable: boolean
 }
 
-export function freeRouteGeometryChoice(entries: TrackRouteEntry[], task: unknown): FreeRouteGeometryChoice {
-  if (routeRequirementOf(task).kind !== 'free') return { fallback: false, reason: '' }
+/** 一条本机条目的几何**能不能拿来跑图**（与跑步引擎 `resolveTrackGeometry` 同判据：形状可用 或 内外圈各 ≥3 点） */
+export function entryGeometryUsable(e: TrackRouteEntry | null | undefined): boolean {
+  if (!e || typeof e !== 'object') return false
+  if (usableFreePathShape(e.freeShape)) return true
+  const outer = Array.isArray(e.outer) ? e.outer.length : 0
+  const inner = Array.isArray(e.inner) ? e.inner.length : 0
+  return outer >= 3 && inner >= 3
+}
+
+export function freeRouteGeometryChoice(
+  entries: TrackRouteEntry[],
+  task: unknown,
+  preferredLineId?: string | null,
+): FreeRouteGeometryChoice {
+  const none: FreeRouteGeometryChoice = { fallback: false, reason: '', preferredUnavailable: false }
+  if (routeRequirementOf(task).kind !== 'free') return none
   const list = Array.isArray(entries) ? entries : []
-  const preferred = list.find((e) => String(e?.lineId) === LOCAL_FREE_LINE_ID)
-  if (preferred) {
+  const usable = list.filter((e) => entryGeometryUsable(e))
+  const want = String(preferredLineId ?? '').trim()
+  /** 用户选过就不算"没选"；选过但不可用 ⇒ 下面如实提示并落回 ③/④ */
+  const picked = want ? list.find((e) => String(e?.lineId) === want) : undefined
+  if (picked && entryGeometryUsable(picked)) {
+    return { entry: picked, fallback: false, reason: '用你在「本机路径」里选的那条本机几何', preferredUnavailable: false }
+  }
+  const preferredUnavailable = Boolean(want)
+  const localFree = usable.find((e) => String(e?.lineId) === LOCAL_FREE_LINE_ID)
+  if (localFree) {
     return {
-      entry: preferred,
+      entry: localFree,
       fallback: false,
-      reason: '本任务未下发线路 ⇒ 用你在「非官方路径【测试】」保存的那条本机几何',
+      reason: preferredUnavailable
+        ? `你上次选的那条已不可用（可能被删或几何不完整），已改用「非官方路径【测试】」保存的那条`
+        : '本任务未下发线路 ⇒ 用你在「非官方路径【测试】」保存的那条本机几何',
+      preferredUnavailable,
     }
   }
-  const first = list[0]
-  if (!first) return { fallback: false, reason: '本机还没有任何已保存的几何' }
+  const recent = usable[0]
+  if (!recent) {
+    return {
+      ...none,
+      preferredUnavailable,
+      reason: preferredUnavailable ? '你上次选的那条已不可用，而且本机现在没有别的可用几何' : '本机还没有任何已保存的几何',
+    }
+  }
   return {
-    entry: first,
+    entry: recent,
     fallback: true,
-    reason: '本机还没有「非官方路径」形状 ⇒ 暂用最近保存的那条跑道几何；建议去「非官方路径【测试】」画一条',
+    reason: preferredUnavailable
+      ? `你上次选的那条已不可用（可能被删或几何不完整），暂用最近保存的那条跑道几何`
+      : '本机还没有「非官方路径」形状 ⇒ 暂用最近保存的那条跑道几何；建议去「非官方路径【测试】」画一条',
+    preferredUnavailable,
   }
 }
 
 /** 只要"哪一条"的调用方（跑步引擎）用它 —— **同一实现的薄包装**，判据只有 `freeRouteGeometryChoice()` 一处 */
-export function freeRouteLocalEntry(entries: TrackRouteEntry[], task: unknown): TrackRouteEntry | undefined {
-  return freeRouteGeometryChoice(entries, task).entry
+export function freeRouteLocalEntry(
+  entries: TrackRouteEntry[],
+  task: unknown,
+  preferredLineId?: string | null,
+): TrackRouteEntry | undefined {
+  return freeRouteGeometryChoice(entries, task, preferredLineId).entry
+}
+
+// ---------- 🆕 2026-09-22：把"本机路径"的选择按任务持久化（**纯函数**；IO 在 composable 里） ----------
+/**
+ * 「自由路线任务用哪条本机路径」的持久化键。
+ *
+ * ⚠️ **刻意不写进 `mp_real_task_v1`**：那份缓存的契约是 `{at, task, lineId, token}` 四项
+ *    （见 `utils/mp/realCache.ts` 与其单测），塞进去会破坏"恢复会话"的既有语义。
+ *    这里按 **taskId** 各记各的（换任务互不影响）。
+ */
+export const FREE_ROUTE_CHOICE_KEY = 'mp_free_route_choice_v1'
+
+/** 解析"按任务记住的本机路径选择"（纯函数；坏数据/异形一律安全降级成空表，绝不抛错） */
+export function parseFreeRouteChoices(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const key = String(k ?? '').trim()
+    const val = typeof v === 'string' ? v.trim() : ''
+    if (key && val) out[key] = val
+  }
+  return out
+}
+
+/** 写入/覆盖一条选择（返回**新对象**，不改原对象；`lineId` 为空串 = 清掉该任务的选择） */
+export function withFreeRouteChoice(
+  map: Record<string, string> | null | undefined,
+  taskId: string | null | undefined,
+  lineId: string | null | undefined,
+): Record<string, string> {
+  const out = { ...parseFreeRouteChoices(map) }
+  const key = String(taskId ?? '').trim()
+  if (!key) return out
+  const val = String(lineId ?? '').trim()
+  if (val) out[key] = val
+  else delete out[key]
+  return out
 }
 
 /** 坐标是否可解析成一对有限数（**不要求是数字类型**：契约层允许字符串坐标） */
@@ -416,17 +498,30 @@ export function startSummaryText(e: Pick<TrackRouteEntry, 'outer' | 'start'>): s
 export function localEntryGeometryText(e: TrackRouteEntry): string {
   const saved = e.updatedAt || e.createdAt
   const when = saved ? ` · 最近保存 ${formatLocalDateTime(String(saved))}` : ''
+  return `${localEntryShapeText(e)}${when}`
+}
+
+/**
+ * 🆕 2026-09-22：**只讲形状**的那半句（不带"最近保存"时间）—— 给「本机路径」下拉的选项标题用
+ * （下拉里每一行要短，时间由旁边的说明承担）。
+ *
+ * 口径与 `localEntryGeometryText()` **完全同源**（后者就是"这一句 + 最近保存时间"）：
+ *   · 有 `freeShape` ⇒ `freePathShapeText()`（圈型/折线型的同一套读数）；
+ *   · 老双圈条目 ⇒ `内外双圈（第 N 道/M）：外圈 X 点 · 内圈 Y 点 · 一圈约 Z m`（跑步引擎同一条车道线算式）；
+ *   · 内外圈点数不够 ⇒ **如实说不可用**（`entryGeometryUsable()` 会把它排除在下拉之外）。
+ */
+export function localEntryShapeText(e: TrackRouteEntry): string {
   const shape = freePathShapeText(e.freeShape)
-  if (shape) return `${shape}${when}`
+  if (shape) return shape
   const outer = Array.isArray(e.outer) ? e.outer.length : 0
   const inner = Array.isArray(e.inner) ? e.inner.length : 0
   const lane = e.laneNo ? `第 ${e.laneNo} 道${e.laneCount ? `/${e.laneCount}` : ''}` : '道次未记录'
   if (outer < 3 || inner < 3) {
-    return `内外双圈几何不完整（外圈 ${outer} 点 · 内圈 ${inner} 点）——跑步页拿不到几何，请回「跑道编辑」补好内外圈并保存${when}`
+    return `内外双圈几何不完整（外圈 ${outer} 点 · 内圈 ${inner} 点）——跑步页拿不到几何，请回「跑道编辑」补好内外圈并保存`
   }
   const loop = laneLoop({ outer: e.outer, inner: e.inner }, laneRatioFor(e.laneNo ?? 3, e.laneCount ?? 6), 240)
   const lap = ringLengthM(loop)
-  return `内外双圈（${lane}）：外圈 ${outer} 点 · 内圈 ${inner} 点 · 一圈约 ${Math.round(lap)} m${when}`
+  return `内外双圈（${lane}）：外圈 ${outer} 点 · 内圈 ${inner} 点 · 一圈约 ${Math.round(lap)} m`
 }
 
 /**

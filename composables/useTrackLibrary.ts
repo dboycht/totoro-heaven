@@ -13,13 +13,16 @@ import type { LatLng } from '~/utils/mp/routeSimilarity'
 // 🆕 2026-09-22「非官方路径绘制」：本机条目可以存"圈型闭合曲线 / 直线型折返"（可选字段）
 import { parseFreePathShape, type FreePathShape } from '~/utils/mp/pathShape'
 import {
+  FREE_ROUTE_CHOICE_KEY,
   isValidTrackEntry,
+  parseFreeRouteChoices,
   prependHistory,
   saveSummaryText,
   TRACK_LIBRARY_KEY,
   TRACK_LIBRARY_KEY_LEGACY,
   normalizeLibrary,
   sanitizeLineName,
+  withFreeRouteChoice,
   type TrackRouteEntry,
   type TrackStart,
 } from '~/utils/mp/trackLibrary'
@@ -27,6 +30,47 @@ import {
 export function useTrackLibrary() {
   const { appVersion } = useUpdateCheck()
   const entries = useState<TrackRouteEntry[]>('mpTrackLibrary', () => [])
+  /**
+   * 🆕 2026-09-22（用户批准）：**「本机路径」下拉的选择**，按任务各记各的（`{[taskId]: lineId}`）。
+   *
+   * ⚠️ 刻意**不写进 `mp_real_task_v1`**（那份缓存的契约是 `{at, task, lineId, token}` 四项，见 `realCache.ts`），
+   *    也**不进任何提交报文** —— 它只决定"本机用哪条几何生成轨迹"。
+   * 读写在下面（`loadFreeRouteChoices` / `freeRouteChoiceFor` / `setFreeRouteChoice`），键名与纯解析函数在算法层。
+   */
+  const freeRouteChoices = useState<Record<string, string>>('mpFreeRouteChoices', () => ({}))
+
+  /** 从本机读回"按任务记住的本机路径选择"（坏数据安全降级成空表） */
+  const loadFreeRouteChoices = (): Record<string, string> => {
+    if (!import.meta.client) return freeRouteChoices.value
+    let parsed: Record<string, string> = {}
+    try {
+      parsed = parseFreeRouteChoices(JSON.parse(localStorage.getItem(FREE_ROUTE_CHOICE_KEY) || 'null'))
+    } catch {
+      /* 坏数据（JSON 解析失败）⇒ 当作还没选过；不打扰用户 */
+      parsed = {}
+    }
+    freeRouteChoices.value = parsed
+    return parsed
+  }
+
+  /** 取某个任务记住的那条本机路径（没记过 ⇒ 空串） */
+  const freeRouteChoiceFor = (taskId: string | null | undefined): string =>
+    String(freeRouteChoices.value[String(taskId ?? '').trim()] ?? '')
+
+  /**
+   * 记住"这个任务用哪条本机路径"（`lineId` 传空串 = 清掉该任务的选择）。
+   * 尽力落盘：写失败只影响"下次记不记得"，本次运行照旧。
+   */
+  const setFreeRouteChoice = (taskId: string | null | undefined, lineId: string | null | undefined): void => {
+    const next = withFreeRouteChoice(freeRouteChoices.value, taskId, lineId)
+    freeRouteChoices.value = next
+    if (!import.meta.client) return
+    try {
+      localStorage.setItem(FREE_ROUTE_CHOICE_KEY, JSON.stringify(next))
+    } catch {
+      /* 配额/隐私模式：内存里已生效，只是"下次开程序"记不住 —— 尽力而为，可静默 */
+    }
+  }
 
   /** 从本机读取（含旧格式迁移：旧键里有、而新键里没有的，补进来） */
   const load = () => {
@@ -59,6 +103,8 @@ export function useTrackLibrary() {
     }
     entries.value = merged
     if (migrated) persist()
+    // 🆕 2026-09-22：顺带把「本机路径」的选择也读回来（同一个"本机数据"入口，省得各处再记一次）
+    loadFreeRouteChoices()
     return merged
   }
 
@@ -204,5 +250,19 @@ export function useTrackLibrary() {
   const get = (lineId: string | undefined | null) =>
     lineId ? entries.value.find((e) => String(e.lineId) === String(lineId)) : undefined
 
-  return { entries, load, persist, upsert, remove, rename, get, appVersion }
+  return {
+    entries,
+    load,
+    persist,
+    upsert,
+    remove,
+    rename,
+    get,
+    appVersion,
+    // 🆕 2026-09-22：「本机路径」下拉的选择（按任务记；与提交报文无关）
+    freeRouteChoices,
+    loadFreeRouteChoices,
+    freeRouteChoiceFor,
+    setFreeRouteChoice,
+  }
 }

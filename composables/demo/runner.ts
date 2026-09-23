@@ -193,7 +193,13 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
      * ⚠️ 选哪一条**由 `freeRouteGeometryChoice()` 唯一说了算**（跑步页那条提示也调用它 ⇒ 界面与实际不会分叉）。
      */
     const routeIsFree = routeRequirementOf(task.value).kind === 'free'
-    const fallbackEntry = freeRouteGeometryChoice(lib.entries.value, task.value).entry
+    /**
+     * 🔴 用户在跑步页「本机路径」下拉里选的那条要**真的生效**（否则又变成"界面说用 A、实际用 B"）：
+     * 选择按 taskId 记在 `useTrackLibrary()` 里（键 `mp_free_route_choice_v1`），判据仍是唯一那一处
+     * `freeRouteGeometryChoice()`。⚠️ 它只影响**本机几何**：提交报文一个字都不变（`lineId` 空串等）。
+     */
+    const preferredLocalId = lib.freeRouteChoiceFor(task.value?.taskId ?? '')
+    const fallbackEntry = freeRouteGeometryChoice(lib.entries.value, task.value, preferredLocalId).entry
     const localFallback = fallbackEntry
       ? localTrackLines([fallbackEntry], task.value?.taskId ?? '')[0]
       : undefined

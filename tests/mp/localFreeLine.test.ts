@@ -13,14 +13,30 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  FREE_ROUTE_CHOICE_KEY,
   LOCAL_FREE_LINE_ID,
   LOCAL_FREE_LINE_NAME,
   LOCAL_FREE_LINE_NAME_NO_TASK,
+  entryGeometryUsable,
   freeRouteGeometryChoice,
   freeRouteLocalEntry,
   localFreeTrackLine,
+  parseFreeRouteChoices,
+  withFreeRouteChoice,
   type TrackRouteEntry,
 } from '../../utils/mp/trackLibrary.ts'
+import type { FreePathShape } from '../../utils/mp/pathShape.ts'
+
+/** 一个几何可用的"圈型非官方路径"（给 `entryGeometryUsable` / 选择判据的用例用） */
+const CURVE: FreePathShape = {
+  kind: 'curve',
+  points: [
+    { latitude: 32, longitude: 118.8 },
+    { latitude: 32.0006, longitude: 118.8 },
+    { latitude: 32.0006, longitude: 118.8006 },
+    { latitude: 32, longitude: 118.8006 },
+  ],
+}
 
 test('localFreeTrackLine：任务未下发线路 ⇒ 固定键名的本机条目', () => {
   for (const task of [
@@ -121,4 +137,64 @@ test('freeRouteGeometryChoice：**有线路的任务零变化**（永远不选�
   assert.equal(choice.fallback, false)
   assert.equal(choice.reason, '')
   assert.equal(freeRouteLocalEntry(entries, LINE_TASK), undefined)
+})
+
+// ---------- 🆕 2026-09-22（用户批准）：跑步页「本机路径」下拉 —— 用户自己选的那条优先 ----------
+test('🔴 freeRouteGeometryChoice：**用户选的那条**（几何可用）优先于 `local:free` 与"最近保存"', () => {
+  const entries = [entry('sunrunLine-other', '2026-09-22T14:50:00.000Z'), entry(LOCAL_FREE_LINE_ID, '2026-09-22T14:31:00.000Z')]
+  const choice = freeRouteGeometryChoice(entries, FREE_TASK, 'sunrunLine-other')
+  assert.equal(choice.entry?.lineId, 'sunrunLine-other', '用户选的必须生效（否则又是"界面说用 A、实际用 B"）')
+  assert.equal(choice.fallback, false)
+  assert.equal(choice.preferredUnavailable, false)
+  assert.match(choice.reason, /本机路径/)
+  // 便捷包装（跑步引擎用）也要给出同一条
+  assert.equal(freeRouteLocalEntry(entries, FREE_TASK, 'sunrunLine-other')?.lineId, 'sunrunLine-other')
+  // 没选过（空串/undefined）⇒ 仍按原口径回落到 local:free
+  assert.equal(freeRouteGeometryChoice(entries, FREE_TASK, '').entry?.lineId, LOCAL_FREE_LINE_ID)
+  assert.equal(freeRouteGeometryChoice(entries, FREE_TASK, undefined).entry?.lineId, LOCAL_FREE_LINE_ID)
+})
+
+test('🔴 freeRouteGeometryChoice：用户选的那条**已被删除** ⇒ 落回 `local:free` 并标记 `preferredUnavailable`', () => {
+  const entries = [entry(LOCAL_FREE_LINE_ID, '2026-09-22T14:31:00.000Z')]
+  const choice = freeRouteGeometryChoice(entries, FREE_TASK, 'sunrunLine-已删除')
+  assert.equal(choice.entry?.lineId, LOCAL_FREE_LINE_ID, '被删了要落回现有可用的那条')
+  assert.equal(choice.preferredUnavailable, true, '界面据此如实提示"你上次选的那条已不可用"')
+  assert.match(choice.reason, /已不可用/)
+  // 连 local:free 也没有 ⇒ 落回"最近保存"并仍是 preferredUnavailable
+  const onlyRecent = [entry('sunrunLine-recent', '2026-09-22T14:50:00.000Z')]
+  const fallback = freeRouteGeometryChoice(onlyRecent, FREE_TASK, 'sunrunLine-已删除')
+  assert.equal(fallback.entry?.lineId, 'sunrunLine-recent')
+  assert.equal(fallback.fallback, true)
+  assert.equal(fallback.preferredUnavailable, true)
+  assert.match(fallback.reason, /已不可用/)
+})
+
+test('entryGeometryUsable：有形状 / 双圈够点 ⇒ 可用；双圈点数不够 ⇒ 不可用（与引擎同判据）', () => {
+  assert.equal(entryGeometryUsable({ lineId: 'a', lineName: 'a', outer: [], inner: [], createdAt: '', appVersion: '', freeShape: CURVE } as TrackRouteEntry), true)
+  assert.equal(entryGeometryUsable(entry('ring', '2026-09-22T14:00:00.000Z')), true)
+  const broken = { lineId: 'b', lineName: 'b', outer: [{ latitude: 1, longitude: 2 }], inner: [], createdAt: '', appVersion: '' } as TrackRouteEntry
+  assert.equal(entryGeometryUsable(broken), false)
+  assert.equal(entryGeometryUsable(null), false)
+  // 选了一条"几何坏了"的 ⇒ 与"被删"同样处理（落回 + 提示），不选它
+  const entries = [broken, entry(LOCAL_FREE_LINE_ID, '2026-09-22T14:31:00.000Z')]
+  const choice = freeRouteGeometryChoice(entries, FREE_TASK, 'b')
+  assert.equal(choice.entry?.lineId, LOCAL_FREE_LINE_ID)
+  assert.equal(choice.preferredUnavailable, true)
+})
+
+test('🔴 持久化（纯函数）：解析坏数据安全降级；写入按 taskId 各记各的、清空用空串', () => {
+  assert.deepEqual(parseFreeRouteChoices(null), {})
+  assert.deepEqual(parseFreeRouteChoices('nonsense'), {})
+  assert.deepEqual(parseFreeRouteChoices([]), {}, '数组不算映射')
+  assert.deepEqual(parseFreeRouteChoices({ T1: 'local:free', T2: '  ', '': 'x', T3: 42 }), { T1: 'local:free' }, '空白/非字符串/空键一律丢掉')
+  assert.equal(FREE_ROUTE_CHOICE_KEY, 'mp_free_route_choice_v1', '键名是持久化契约，改它等于让所有人的选择失效')
+
+  const a = withFreeRouteChoice({}, 'T1', 'local:free')
+  assert.deepEqual(a, { T1: 'local:free' })
+  const b = withFreeRouteChoice(a, 'T2', 'sunrunLine-x')
+  assert.deepEqual(b, { T1: 'local:free', T2: 'sunrunLine-x' }, '**换任务各记各的**（互不影响）')
+  assert.deepEqual(a, { T1: 'local:free' }, '返回新对象，绝不改原对象')
+  assert.deepEqual(withFreeRouteChoice(b, 'T1', 'other'), { T1: 'other', T2: 'sunrunLine-x' }, '同任务覆盖')
+  assert.deepEqual(withFreeRouteChoice(b, 'T1', ''), { T2: 'sunrunLine-x' }, '空串 = 清掉该任务的选择')
+  assert.deepEqual(withFreeRouteChoice(b, '', 'x'), { T1: 'local:free', T2: 'sunrunLine-x' }, '没有 taskId ⇒ 不写')
 })
