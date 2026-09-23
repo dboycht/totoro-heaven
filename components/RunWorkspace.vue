@@ -352,7 +352,7 @@
           :disabled="
             !realReady || run.status !== 'finished' || submitInFlight || alreadySubmitted || staleSettlement || freeRunBlocked || !gateStatus.allow
           "
-          @click="confirmOpen = true"
+          @click="openRealSubmit"
         >
           真实提交
         </v-btn>
@@ -513,6 +513,36 @@
       :lapDriftM="run.lapDriftM"
     />
 
+    <!--
+      🆕 2026-09-22（用户批准）：里程没跑够时的二次确认（不硬拦）。
+      用户原话："系统没有指定路线，只要跑 2.4km 即可" —— 中途手动结束时实际里程会短于任务要求，
+      这时必须把数字说清再让他决定；但不许替服务端下结论
+      （只写"可能判定无效，是否有效由服务端决定"）。
+    -->
+    <v-dialog v-model="shortKmOpen" max-width="560">
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon color="warning" class="mr-2">mdi-map-marker-distance</v-icon>
+          里程没到位，仍要提交吗？
+        </v-card-title>
+        <v-card-text>
+          <div class="text-body-2">
+            本次累计 <b>{{ settledKm.toFixed(2) }} km</b>，任务要求 <b>{{ requiredKm.toFixed(2) }} km</b>，
+            <b class="text-warning">还差 {{ shortKm.toFixed(2) }} km</b> —— 服务端<b>可能</b>判定无效
+            （是否有效由服务端决定）。
+          </div>
+          <div class="text-caption text-medium-emphasis mt-2">
+            想补齐里程：可以点「重置」后重跑一次；点「继续提交」则按现在这组数据上报。
+          </div>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="shortKmOpen = false">先不提交</v-btn>
+          <v-btn color="warning" variant="flat" @click="continueAfterShortKm">继续提交</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <!-- 真实提交确认框 -->
     <v-dialog v-model="confirmOpen" max-width="620">
       <v-card>
@@ -638,6 +668,18 @@ const {
 const showSnackbar = useNotice()
 
 const confirmOpen = ref(false)
+/**
+ * 🆕 2026-09-22（用户批准）：**里程没跑够时的"二次确认"** 弹窗状态。
+ * 判据 = 实际累计里程 < 任务 `mileage`（与路线类型无关）⇒ 弹框把数字说清，**不硬拦**（是否有效由服务端决定）。
+ */
+const shortKmOpen = ref(false)
+
+/** 本次结算的**实际累计里程**（公里；未结算 ⇒ 0） */
+const settledKm = computed(() => Number(run.value?.result?.km ?? 0))
+/** 任务要求里程（公里）；字段缺失/为 0 ⇒ 不判、不打扰 */
+const requiredKm = computed(() => Number(activeTask.value?.mileage ?? 0))
+/** 还差多少公里（`> 0` = 没达标；达标或任务没写 mileage ⇒ 0，界面据此不弹框） */
+const shortKm = computed(() => (requiredKm.value > 0 ? Math.max(0, requiredKm.value - settledKm.value) : 0))
 
 const realReady = computed(() => realStatus.value === 'ready' && Boolean(realTask.value))
 /** 当前生效的任务：真实任务优先，其次演示任务（默认都为空 = 未载入） */
@@ -1021,9 +1063,36 @@ onMounted(() => {
   applyToRunner()
 })
 
+/**
+ * 🆕 2026-09-22（用户批准）：点「真实提交」的**入口分流**。
+ *
+ * 判据（与路线类型无关）：**实际累计里程 < 任务 `mileage`** ⇒ 先弹"里程没到位"的**二次确认**；
+ * 达标（或任务没写 mileage）⇒ **不打扰**，直接进原有确认框。
+ * ⚠️ 只是"多问一句"，**不硬拦**：是否有效由服务端决定，提交本身仍由门禁 + 服务端决定。
+ */
+const openRealSubmit = () => {
+  if (shortKm.value > 0) {
+    logWarn('submit', '里程未达标：提交前二次确认', {
+      km: Number(settledKm.value.toFixed(2)),
+      requiredKm: Number(requiredKm.value.toFixed(2)),
+      shortKm: Number(shortKm.value.toFixed(2)),
+    })
+    shortKmOpen.value = true
+    return
+  }
+  confirmOpen.value = true
+}
+
+/** 「继续提交」⇒ 关掉里程提示，进入原有确认框（那一步仍有完整的三条警告与数值复核） */
+const continueAfterShortKm = () => {
+  shortKmOpen.value = false
+  confirmOpen.value = true
+}
+
 /** 真实提交：确认后走 useMpReal 的完整流程（门禁 → 开跑 → 真实等待 → 提交 → 读判定） */
 const doRealSubmit = async () => {
   confirmOpen.value = false
+  shortKmOpen.value = false
   /**
    * ⚠️ 2026-09-19 审计 S2/S3：这里原先**没有 try/catch**，也没有入口互斥。
    *   · `submitRealRun` 会创建服务端场次（非幂等写），内部一旦抛异常（例如等待期间档案被清空

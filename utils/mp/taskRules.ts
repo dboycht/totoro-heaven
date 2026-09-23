@@ -19,9 +19,13 @@
  *    `fitDegree` 缺失 / null / 空串 / 非数字 / ≤0 ⇒ **本任务没有下发阈值** ⇒ 自检那条
  *    **不判失败**（`ok: true` + `skipped: true`，界面显示成"提示"），也不再默认按 `0.6` 判。
  *    历史上的 `Number(task.fitDegree ?? 0.6)` 会**自己造出一个服务端没提的要求**（详见 taskShape.ts 抬头）。
+ *
+ * ⚠️ **本任务未下发线路（`kind === 'free'`）⇒ 拟合度整项不适用**（2026-09-22，用户批准）：
+ *    没有可对照的路线，自算必然接近 0；此时**哪怕服务端字段里有 `fitDegree`**（如"研途健行"的 0.60）
+ *    也不许按阈值判 —— 否则自检表会显示 `0.00 / 0.60` 这种**看起来像不合格**的反话。
  */
 import type { MpSunrunTask } from '../../src/mp/types'
-import { fitRequirementOf } from './taskShape'
+import { fitRequirementOf, routeRequirementOf } from './taskShape'
 
 export type TaskRuleConfidence = 'hard' | 'inferred' | 'info'
 
@@ -139,10 +143,28 @@ export function evaluateRunAgainstTask(input: TaskCheckInput): TaskCheckResult {
   })
   if (!kmOk) problems.push(`里程不足：${km.toFixed(2)} < ${requiredKm} km`)
 
-  // 2) 拟合度阈值（**只有服务端下发了有限且 > 0 的阈值时才是 hard 项**）
-  //    判据来自纯函数 `fitRequirementOf()`：缺失/null/空串/非数字/≤0 ⇒ 本任务没有下发阈值。
+  // 2) 拟合度阈值
+  //    ⚠️ 判据分两层，顺序不能颠倒：
+  //      ① **本任务未下发线路**（`kind === 'free'`）⇒ **拟合度不适用** —— 没有可对照的路线，
+  //         自算必然接近 0；此时哪怕服务端字段里有 `fitDegree`（如"研途健行"的 0.60），
+  //         也**不许**按阈值判（否则自检表会显示"0.00 / 0.60"这种**看起来像不合格**的反话）。
+  //      ② 剩下才看"服务端有没有下发阈值"（`fitRequirementOf()`）：缺失/null/空串/非数字/≤0 ⇒ 不要求。
+  //    两条判据都来自纯逻辑层（`./taskShape`），本文件不引 composables / 框架。
+  const route = routeRequirementOf(task)
   const fit = fitRequirementOf(task)
-  if (!fit.required) {
+  if (route.kind === 'free') {
+    items.push({
+      key: 'fitDegree',
+      label: '拟合度达标',
+      // ⚠️ **不得判失败**：这不是"不达标"，而是**本任务没有路线可拟合**（不适用）。
+      //    同时 `confidence: 'info'` + `skipped: true` ⇒ 既不进 `pass`，界面也显示成"提示"。
+      ok: true,
+      detail: `本任务未下发线路（不指定路线）⇒ 拟合度不适用；本次自算 ${fitDegree.toFixed(2)} 仅作展示、不参与判定`,
+      confidence: 'info',
+      skipped: true,
+      note: '服务端未下发线路 ⇒ 本机没有可对照的路线（自算必然接近 0）；是否判定拟合度由服务端决定',
+    })
+  } else if (!fit.required) {
     items.push({
       key: 'fitDegree',
       label: '拟合度达标',

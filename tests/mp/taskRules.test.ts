@@ -27,6 +27,11 @@ const makeTask = (overrides: Partial<MpSunrunTask> = {}): MpSunrunTask => ({
   ...overrides,
 })
 
+/** 一条服务端下发的线路（`kind === 'line'` 的任务用；**拟合度的 hard 口径只在这类任务上验**） */
+const LINE = { pointId: 'L1', pointName: '西操场', pointList: [{ latitude: '31.9', longitude: '118.8' }, { latitude: '31.9001', longitude: '118.8001' }] }
+/** 「服务端下发了线路」的任务（与之相对的是默认的 `runPointList: []` = 未下发线路/自由路线） */
+const makeLineTask = (overrides: Partial<MpSunrunTask> = {}): MpSunrunTask => makeTask({ runPointList: [LINE], ...overrides })
+
 const itemOf = (result: ReturnType<typeof evaluateRunAgainstTask>, key: string) =>
   result.items.find((item) => item.key === key)!
 
@@ -64,7 +69,8 @@ test('里程不足 → hard 不通过，pass=false 且给出原因', () => {
 })
 
 test('里程与拟合度都达标 → pass=true', () => {
-  const result = evaluateRunAgainstTask({ task: makeTask(), km: 3.02, durationSeconds: 1100, fitDegree: 0.97 })
+  // ⚠️ 用**有线路**的任务：拟合度的 hard 口径只在这种任务上成立（未下发线路的任务整项不适用，见下面那条）
+  const result = evaluateRunAgainstTask({ task: makeLineTask(), km: 3.02, durationSeconds: 1100, fitDegree: 0.97 })
   assert.equal(result.pass, true)
   assert.equal(result.problems.length, 0)
   assert.equal(itemOf(result, 'mileage').confidence, 'hard')
@@ -79,9 +85,9 @@ test('里程与拟合度都达标 → pass=true', () => {
  * 新判据来自纯函数 `fitRequirementOf()`（`utils/mp/taskShape.ts`）：
  * 缺失 / null / 空串 / 非数字 / ≤0 ⇒ `skipped: true` + `ok: true` + `confidence: 'info'`（不进 pass）。
  */
-test('拟合度：服务端未下发阈值（fitDegree 缺失）⇒ 只提示、不判失败、不进 pass', () => {
+test('拟合度：**有线路**的任务下，服务端未下发阈值（fitDegree 缺失）⇒ 只提示、不判失败、不进 pass', () => {
   const result = evaluateRunAgainstTask({
-    task: makeTask({ fitDegree: undefined }),
+    task: makeLineTask({ fitDegree: undefined }),
     km: 3.05,
     durationSeconds: 1100,
     // ⚠️ 这个值若还按历史兜底 0.6 判就会失败 —— 正是本条要防的回归
@@ -100,7 +106,7 @@ test('拟合度：服务端未下发阈值（fitDegree 缺失）⇒ 只提示、
 test('拟合度：阈值 0 / 非数字 / 空串 同样按"未下发"处理（只提示，不判失败）', () => {
   for (const v of [0, '0', 'abc', '']) {
     const result = evaluateRunAgainstTask({
-      task: makeTask({ fitDegree: v }),
+      task: makeLineTask({ fitDegree: v }),
       km: 3.05,
       durationSeconds: 1100,
       fitDegree: 0.1,
@@ -112,6 +118,38 @@ test('拟合度：阈值 0 / 非数字 / 空串 同样按"未下发"处理（只
   }
 })
 
+/**
+ * 🔴 2026-09-22（用户批准）：**本任务未下发线路 ⇒ 拟合度整项"不适用"**。
+ *
+ * 现场（研究生院「研途健行」）：他任务里 `fitDegree=0.60` 字段**是有的**，但**根本没有路线可拟合**
+ * ⇒ 自算必然 0.00 ⇒ 自检表出现"拟合度达标 0.00 / 0.60"，**看起来像不合格**（实际不拦）。
+ * 判据：`routeRequirementOf(task).kind === 'free'` ⇒ 该行 `skipped/info/ok:true`，且**不看阈值**。
+ */
+test('🔴 拟合度：**未下发线路**的任务（kind=free）⇒ 整项"不适用"，**即使 fitDegree 有值也不按阈值判**', () => {
+  const result = evaluateRunAgainstTask({
+    task: makeTask({ fitDegree: 0.6, mileage: 2.4, runPointList: [] }), // 他那个任务的形态：有阈值字段、但没有线路
+    km: 2.45,
+    durationSeconds: 1100,
+    fitDegree: 0, // 没有路线 ⇒ 自算必然是 0
+  })
+  const item = itemOf(result, 'fitDegree')
+  assert.equal(item.skipped, true, '不适用 ⇒ 必须带 skipped（界面显示成"提示"）')
+  assert.equal(item.confidence, 'info', '不进 pass')
+  assert.equal(item.ok, true, '不得判失败')
+  assert.doesNotMatch(item.detail, /阈值 0\.6/, '不许再显示"0.00 / 0.60"这种看起来像不合格的反话')
+  assert.match(item.detail, /本任务未下发线路/, item.detail)
+  assert.match(item.detail, /不适用/, item.detail)
+  assert.match(item.detail, /仅作展示/, item.detail)
+  assert.deepEqual(result.problems, [])
+  // 里程仍按任务字段判（他的是 2.4 km）——与拟合度这一项互不影响
+  assert.equal(itemOf(result, 'mileage').ok, true)
+  assert.equal(result.pass, true)
+  // 连阈值都没下发时也走同一条 free 分支（措辞一致，不看 `fitRequirementOf`）
+  const noThreshold = evaluateRunAgainstTask({ task: makeTask({ fitDegree: undefined }), km: 2.45, durationSeconds: 1100, fitDegree: 0 })
+  assert.equal(itemOf(noThreshold, 'fitDegree').skipped, true)
+  assert.match(itemOf(noThreshold, 'fitDegree').detail, /本任务未下发线路/)
+})
+
 test('拟合度：服务端下发了阈值，但"低于阈值"只作提示、不判负（2026-09-22 issue #12 实测修正）', () => {
   /**
    * 依据：issue #12 的用户实测 —— 任务卡片显示拟合度要求 0.60，但他在官方小程序里
@@ -119,7 +157,7 @@ test('拟合度：服务端下发了阈值，但"低于阈值"只作提示、不
    * 所以低于阈值时：不进 `problems`、不拉低 `pass`，只用 `inferred`（只提示不阻断）如实标注。
    */
   const low = evaluateRunAgainstTask({
-    task: makeTask({ fitDegree: 0.6 }),
+    task: makeLineTask({ fitDegree: 0.6 }),
     km: 3.05,
     durationSeconds: 1100,
     fitDegree: 0.42,
@@ -135,7 +173,7 @@ test('拟合度：服务端下发了阈值，但"低于阈值"只作提示、不
   )
 
   const ok = evaluateRunAgainstTask({
-    task: makeTask({ fitDegree: 0.6 }),
+    task: makeLineTask({ fitDegree: 0.6 }),
     km: 3.05,
     durationSeconds: 1100,
     fitDegree: 0.97,
