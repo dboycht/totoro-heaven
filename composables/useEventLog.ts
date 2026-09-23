@@ -11,7 +11,9 @@
  */
 import { LOG_RING_MAX, countByLevel, entriesToText, pushRing, redactObject } from '~/utils/mp/logFormat'
 import type { LogEntry, LogLevel } from '~/utils/mp/logFormat'
-import { newEventId, reportDiagEvent } from '~/composables/useDiagEventReporter'
+import { buildHeartbeatData, newEventId, reportDiagEvent } from '~/composables/useDiagEventReporter'
+import { useRealState } from '~/composables/real/state'
+import { useMpReal } from '~/composables/useMpReal'
 
 const STORAGE_KEY = 'totoro_event_logs_v1'
 
@@ -120,3 +122,41 @@ function flattenForReport(data: Record<string, unknown> | undefined): Record<str
 export const logInfo = (cat: string, msg: string, data?: Record<string, unknown>) => logEvent('info', cat, msg, data)
 export const logWarn = (cat: string, msg: string, data?: Record<string, unknown>) => logEvent('warn', cat, msg, data)
 export const logError = (cat: string, msg: string, data?: Record<string, unknown>) => logEvent('error', cat, msg, data)
+
+/**
+ * 🆕 2026-09-23（复验 B2 修）：**心跳的"现算摘要"全局提供者**。
+ *
+ * ## 为什么放在这里（而不是诊断卡片里）
+ * 复验实测：卡片只在点「开始记录」时装心跳，且**切页/卸载后没人重装** ⇒ 刷新后心跳停摆、
+ * 包里看不到"结算/提交之后"的状态（正是最要紧的那段）。
+ * 这里用的是**单例状态**（`useRealState()` / `useMpReal()` 都是 SPA 单例，不依赖任何组件实例）
+ * ⇒ 诊断页刷新后仍可用、**离开诊断页去别的页面也照常上报**。
+ *
+ * ⚠️ 每次调用**现算**（不是缓存快照）⇒ 定时器拿到的是"此刻"的任务/线路/门禁/页面；
+ * 形状与脱敏口径全在 `buildHeartbeatData()`（扁平标量白名单，服务端还会再掩一道）。
+ */
+export function liveHeartbeatData(): Record<string, string | number | boolean | null> {
+  const real = useRealState()
+  /**
+   * ⚠️ `useMpReal()` 在这里是**函数体内**才调用（不是模块顶层）⇒ 即使 `useEventLog` 与 `real/submit`
+   * 之间存在模块循环，运行时也不会撞上"未初始化"（函数体执行时模块早已求值完）。
+   */
+  const realData = useMpReal()
+  const rawTask = real.task.value && typeof real.task.value === 'object' ? (real.task.value as Record<string, unknown>) : null
+  const runPoints = rawTask && Array.isArray(rawTask.runPointList) ? (rawTask.runPointList as unknown[]).length : 0
+  const gate = realData.gateStatus.value
+  return buildHeartbeatData({
+    page: typeof window !== 'undefined' ? window.location.pathname : '',
+    task: rawTask
+      ? {
+          paperId: String(rawTask.taskId ?? rawTask.paperId ?? ''),
+          paperName: String(rawTask.paperName ?? ''),
+          km: Number(rawTask.mileage ?? 0),
+          runPointListCount: runPoints,
+        }
+      : null,
+    line: { selectedId: String(realData.selectedLine.value?.pointId ?? ''), required: runPoints > 0 },
+    gate: { allow: gate?.allow ?? null, warnings: [], blockedBy: String(gate?.blockedBy ?? '') },
+    status: { realStatus: String(real.status.value ?? ''), restoredAt: Number(real.loadedAt.value ?? 0) },
+  })
+}

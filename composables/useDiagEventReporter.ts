@@ -384,3 +384,24 @@ export function installHeartbeat(provider: () => Record<string, string | number 
 export function heartbeatState(): { sent: number; rejected: number; lastAt: number } {
   return { sent: hbSent, rejected: hbRejected, lastAt: lastHeartbeatAt }
 }
+
+/**
+ * 🆕 2026-09-23（复验 B2 修）：**停掉心跳**（幂等）。
+ *
+ * 什么时候调：**结束记录 / 只结束记录 / 开始新记录** —— 语义是"心跳跟着**记录窗口**走，不跟着页面走"。
+ * ⚠️ 故意**不**在界面组件卸载时调：用户复现问题的路径要跨页（工作台 → 跑步 → 结算 → 提交），
+ * 组件卸载时把心跳停掉，恰好丢掉"结算/提交之后那一段"最要紧的状态（实测就是这么丢的）。
+ */
+export function stopHeartbeat(): void {
+  if (hbTimer !== null) {
+    clearInterval(hbTimer)
+    hbTimer = null
+  }
+  /** 复位"上次发送时刻"⇒ 下一轮开始记录时能**立刻**发一份基线（否则会被节流挡掉） */
+  lastHeartbeatAt = 0
+}
+
+/** 🆕 心跳定时器是否在跑（界面/验收用；`installHeartbeat()` 幂等的判据就是它） */
+export function heartbeatIsRunning(): boolean {
+  return hbTimer !== null
+}

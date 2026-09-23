@@ -39,10 +39,13 @@
  * - `server/utils/**` → `../../../utils/...`（与 `server/api/local/logs/*.ts`、`token-scan/*.ts` 完全一致）
  *
  * ## 已知取舍（写在这里，免得后人以为是漏了）
- * - 日志截断后**仍然进包**（只取**文件头** `DIAG_LOG_MAX_BYTES` 字节），并在 `manifest.json` 的
+ * - 日志截断后**仍然进包**（只取**文件尾** `DIAG_LOG_MAX_BYTES` 字节 —— 见 `recentLogFiles()` 的实现，
+ *   同文件 `:374`/`:475` 的文案也写的是"保留文件尾"），并在 `manifest.json` 的
  *   `files[].note` 里注明原始大小；整包不会因为一个超大日志而失败。
- *   （为什么是文件头而不是尾部：日志是"一天一个文件、顺序追加"，截尾部会把**同一天里最早的追查线索**丢掉；
- *   截头部则可能切在一行 JSON 中间 —— 后者影响有限，`JSON.parse` 失败的行本来就是跳过的。）
+ *   （为什么是文件尾而不是头部：日志"一天一个文件、顺序追加" ⇒ **最新的追查线索在尾部**，
+ *   而用户报的是"刚刚发生"的事；截尾部丢的是**同一天更早**的线索，影响相对小。
+ *   代价如实写：截在文件尾会切在一行 JSON 中间 —— `JSON.parse` 失败的行本来就是跳过的。）
+ *   ⚠️ 2026-09-23 复验 B5：这段注释原先写反了（写"取文件头"），与实现和同文件其它文案矛盾，已改正。
  * - 日志里的凭证已被 `logger.ts` 掩码，所以正常情况红线不会命中；真命中说明**有人绕过了掩码**
  *   —— 此时宁可让导出失败，也不能把凭证发出去。
  * - 时间线（`snapshot.json` 里那份）由**客户端**按窗口过滤（它才持有 localStorage 里的事件日志）；
@@ -461,7 +464,9 @@ export default defineEventHandler(async (event) => {
    * 别让人以为"对不上就是丢数据"。自检断言用的也是 `inTimeline`（与包内 timeline 同源）。
    */
   const heartbeatsInTimeline = timelineForPackage.filter((e) => String(e.cat ?? '') === 'heartbeat').length
-  const submitEvents = timelineForPackage.filter((e) => String(e.cat ?? '') === 'submit')
+  const submitEvents = timelineForPackage.filter(
+    (e) => String(e.cat ?? '') === 'submit' && Boolean((e.data as Record<string, unknown> | undefined)?.scoreOutcome),
+  )
   const submitConclusions = submitEvents.slice(-10).map((e) => ({
     at: String(e.at ?? ''),
     outcome: String((e.data as Record<string, unknown> | undefined)?.scoreOutcome ?? ''),
@@ -470,6 +475,14 @@ export default defineEventHandler(async (event) => {
     /** 🔴 用户要求："超时/失败**不自动重试**" —— 包里能直接看到这一点 */
     autoRetried: (e.data as Record<string, unknown> | undefined)?.autoRetried === true,
   }))
+  /**
+   * 🔴 复验 B3 修：上面只挑**结论事件**（`data.scoreOutcome` 非空）——**不要**把"过程"事件也算进来。
+   * 原先对 `cat:'submit'` 取 `slice(-10)`，而一次提交会产出多条过程事件 ⇒ **两次提交就把第一次的结论挤掉**（复验实测）。
+   * 过程事件条数单列出来，写进 manifest（让人知道"结论之外还有多少过程记录"，而不是静默忽略）。
+   */
+  const submitProcessEvents = timelineForPackage.filter(
+    (e) => String(e.cat ?? '') === 'submit' && !(e.data as Record<string, unknown> | undefined)?.scoreOutcome,
+  )
   const coverageNotes: string[] = []
   if (!win) coverageNotes.push('本次没有记录窗口 ⇒ 日志/事件按"最近几天"兜底，无法保证"只含这一次复现"')
   if (truncFiles > 0) coverageNotes.push(`有 ${truncFiles} 个日志文件因超过单文件上限被截断（保留文件尾，最新证据优先）`)
@@ -497,7 +510,7 @@ export default defineEventHandler(async (event) => {
        * 🆕 **提交结论**（用户要求"提交必记响应"）：每次提交一条（最多列 10 条），
        * 含四态 `outcome`（`ok` / `timeout-landed` / `timeout-unknown` / 业务失败）与 `autoRetried:false`。
        */
-      submits: { count: submitEvents.length, conclusions: submitConclusions },
+      submits: { count: submitEvents.length, processEvents: submitProcessEvents.length, conclusions: submitConclusions },
       /** 🆕 响应原文按**端点**的份数（确认"提交成绩 / 轨迹明细"这些端点确实在留档范围内） */
       capturesByEndpoint: captureByEndpoint,
       timeline: { client: merged.stats.client, localStorage: merged.stats.localStorage, server: merged.stats.server, merged: merged.stats.merged },

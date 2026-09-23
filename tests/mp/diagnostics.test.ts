@@ -85,6 +85,28 @@ test('diagnostics：maskDigitRuns —— 掩学号/手机号，但**放过窗口
   assert.equal(maskDigitRuns('编号 20260922-130240'), `编号 ${maskId('20260922')}-130240`)
 })
 
+/**
+ * 🆕 2026-09-23（复验 B4）**`scantronId` 必须原样可读**。
+ *
+ * 实测现场：厂商归档的记录定位符 `sunrunId20260924AUDIT1` 被数字兜底掩成
+ * `sunrunId20****24AUDIT1` ⇒ **没法与厂商归档对齐**（"这条成绩到底存不存在"查不了了）。
+ * 它**不含身份信息**（服务端生成的记录号），与窗口 id 同理 ⇒ 必须豁免。
+ * 反向也要钉住：**裸学号照掩**（豁免只对"整串是记录号形态"成立）。
+ */
+test('diagnostics：maskDigitRuns —— **放过 scantronId**（厂商归档定位符），裸学号照掩', () => {
+  for (const id of ['sunrunId20260924AUDIT1', 'sunrunId20260921505', 'sunrunId20260924AUDIT2']) {
+    assert.equal(maskDigitRuns(`提交结果：上游业务失败（scantronId=${id}）`), `提交结果：上游业务失败（scantronId=${id}）`, `记录号不许被掩：${id}`)
+  }
+  // 记录号与学号同句：记录号原样、学号照掩
+  assert.equal(maskDigitRuns('记录号 sunrunId20260924AUDIT1 / 学号 2021101234'), `记录号 sunrunId20260924AUDIT1 / 学号 ${maskId('2021101234')}`)
+  /** 反向：裸学号 / 手机号 / 纯数字编号**仍然要掩**（豁免只看"整串是记录号形态"） */
+  assert.equal(maskDigitRuns('学号 2021101234'), `学号 ${maskId('2021101234')}`)
+  assert.equal(maskDigitRuns('手机 13812345678'), `手机 ${maskPhone('13812345678')}`)
+  assert.equal(maskDigitRuns('纯数字编号 202609240001'), `纯数字编号 ${maskId('202609240001')}`)
+  /** 反向：字母太少（像"变量名 + 日期"）不算记录号 ⇒ 照掩（避免把 `id20260924` 这种当记录号放过） */
+  assert.equal(maskDigitRuns('id20260924'), `id${maskId('20260924')}`)
+})
+
 test('diagnostics：常量口径（包内文件名 / 日志目录 / 天数与上限）', () => {
   assert.equal(DIAG_MANIFEST_NAME, 'manifest.json')
   assert.equal(DIAG_SNAPSHOT_NAME, 'snapshot.json')

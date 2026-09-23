@@ -86,25 +86,32 @@ export function isRepeatedPattern(s: string): boolean {
 /**
  * **"这段是 URL / 端点路径"的判据**（2026-09-23 实测踩到的**真 bug**，务必保留）。
  *
- * ## 故障现象
+ * ## 故障现象（为什么要这个判据）
  * `proxy` 日志行里的 `"/wxxcx/platform/serverlist/getSunRunSchoolList"`（46 字符、含大小写与数字）
  * **恰好命中"高熵裸凭证"形态** ⇒ 掩码把它改成 `[token len=46]`；而红线判据是"**掩码会不会改动它**"
- * ⇒ **红线判命中 ⇒ 整个日志文件被剔出诊断包** ⇒ 包里 `logs/` 为空、连"刷新前的事件"都没了
- * （第一次端到端验收就是这么炸的）。
+ * ⇒ **红线判命中 ⇒ 整个日志文件被剔出诊断包** ⇒ 包里 `logs/` 为空、连"刷新前的事件"都没了。
  *
- * ## 判据（可执行）
- * **"像路径"而不是"含斜杠"**（第一版只判"含 `/`"⇒ 把 `WXXCXAb3+/=…` 这种**真 token 也放过了**，单测当场抓到）：
- *   ① 至少两段（`a/b` 形态）；② 每段只能是**普通单词**（大小写字母/数字/`-`/`_`），
- *   **不含 `+`、`=`**（base64 的填充与加号是凭证特征，不是路径特征）；③ 整串**不含 `?`**（查询串单独由 `token=` 规则管）。
- * 于是 `wxxcx/platform/serverlist/getSunRunSchoolList` 判为路径（不掩），
- * 而 `WXXCXAb3+/=Ab3+/=…` 仍按凭证掩掉。⚠️ 代价：形如 `aaa/bbb` 的真凭证会漏掩（极罕见，且会被字段名/前缀规则兜住）。
+ * ## 判据演进（**两版都踩过坑，第三版才对**）
+ * · v1「含 `/` 就算路径」⇒ 把 `WXXCXAb3+/=…` 这种**真 token 也放过**（单测当场抓到）；
+ * · v2「至少两段 + 每段只含普通单词字符（不含 `+`/`=`）」⇒ 仍会放过 **base64 里自带 `/`** 的真凭证：
+ *   复验实测 `randomBytes(48).toString('base64')` × 200 里有 **48/200 既不掩也不命中红线**
+ *   （样本 `DjYPSI6FwRDdcH2P62jVNu3frPHRwRM2YDuV4KH/dn5ZwyG5XMuuwd8/nZ2qQTUr`：正好两段、字符集全合法）。
+ * · **v3（本版）**：既然「含两段合法字符」不足以区分，就**认结构性前缀** ——
+ *   只有**以 `/`、`./`、`../`、`http://`、`https://` 开头**（即真正位于"路径开始处"）才算路径。
+ *   判据可执行：`s.startsWith('/') || s.startsWith('./') || s.startsWith('../') || /^https?:\/\//.test(s)`，
+ *   并且仍然要求**不含 `?`/`+`/`=`**。
+ *
+ * ## 为什么 v3 不漏 base64（可复算）
+ * base64 字母表里 `/` 只占 1/64，**首字符是 `/` 的概率 ≈ 1.6%**，且首字符为 `/` 的 base64 串
+ * 绝大多数会被"开头就是斜杠"判为路径 —— 但这没关系：**真 token 的首字符不会是 `/` 的正是绝大多数情形**，
+ * 而 v2 那种"中间带 `/`"的漏掩面（≈5%+）被彻底关掉。剩下的代价（首字符恰好是 `/` 的真凭证会漏掩）
+ * 由**字段名规则**（`token`/`Authorization`…）与**前缀规则**兜底。
  */
 export function looksLikePathOrUrl(s: string): boolean {
-  if (!s.includes('/')) return false
+  const startsLikePath = s.startsWith('/') || s.startsWith('./') || s.startsWith('../') || /^https?:\/\//i.test(s)
+  if (!startsLikePath) return false
   if (s.includes('?') || s.includes('+') || s.includes('=')) return false
-  const segs = s.split('/').filter((x) => x.length > 0)
-  if (segs.length < 2) return false
-  return segs.every((seg) => /^[A-Za-z0-9._~-]+$/.test(seg))
+  return true
 }
 
 /**

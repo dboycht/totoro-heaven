@@ -569,6 +569,36 @@ export const tokenFingerprint = (token: unknown): string => {
 export const DIAG_WINDOW_ID_RE = /^w-\d{8}-\d{6}-[0-9a-f]{1,16}$/i
 
 /**
+ * 🆕 2026-09-23（复验 B4）**成绩记录号（`scantronId`）的形状** —— 与窗口 id 同理，**不许掩**。
+ *
+ * ## 为什么必须放过它
+ * `scantronId` 是**厂商归档里的记录定位符**（如 `sunrunId20260924AUDIT1`、`sunrunId20260921505`）。
+ * 数字兜底掩码会把中间的 8 位日期当学号 ⇒ `sunrunId20****24AUDIT1` ⇒
+ * **维护者再也没法与厂商归档对齐**（"这条成绩到底存不存在"就查不了了）——
+ * 而它**根本不含身份信息**（是服务端生成的记录号，不是学号）。
+ *
+ * ## 判据（可执行）
+ * 整串形如 `<字母开头><字母数字下划线 11~47 位>`，且**至少含 4 位数字**、**至少含 1 个字母**。
+ * 只对**紧邻上下文的整串**成立才豁免（见 `maskDigitRuns()`），不会把裸学号放过：
+ * 裸学号（纯 8~18 位数字）**不以字母开头** ⇒ 照旧掩掉。
+ */
+export const SCANTRON_ID_RE = /^[A-Za-z][A-Za-z0-9_]{11,47}$/
+
+/** 这一段（含上下文）是不是 `scantronId` 形态（决定要不要放过里面的数字段） */
+function looksLikeScantronId(whole: string, start: number, end: number): boolean {
+  /** 往两边扩到"整串"边界（字母/数字/下划线都算串内） */
+  let s = start
+  let e = end
+  while (s > 0 && /[A-Za-z0-9_]/.test(whole[s - 1]!)) s--
+  while (e < whole.length && /[A-Za-z0-9_]/.test(whole[e]!)) e++
+  const token = whole.slice(s, e)
+  if (!SCANTRON_ID_RE.test(token)) return false
+  const digits = (token.match(/\d/g) ?? []).length
+  const letters = (token.match(/[A-Za-z]/g) ?? []).length
+  return digits >= 4 && letters >= 2
+}
+
+/**
  * **数字兜底掩码**：把自由文本里 8~18 位的纯数字当学号/手机号掩掉（见界面上那段"身份脱敏"的说明）。
  *
  * 🔴 但**窗口 id 里的数字段必须放过**（2026-09-22 真实浏览器导出解包时实测抓到）：
@@ -585,6 +615,11 @@ export function maskDigitRuns(text: string): string {
     const before = whole.slice(Math.max(0, offset - 2), offset)
     const after = whole.slice(offset + m.length, offset + m.length + 24).split(/\s/)[0] ?? ''
     if (before === 'w-' && DIAG_WINDOW_ID_RE.test(`w-${m}${after.replace(/[^0-9a-f-]/gi, '')}`)) return m
+    /**
+     * 🆕 复验 B4：整串是 `scantronId` 形态（厂商归档的记录定位符，**不含身份**）⇒ 原样保留，
+     * 否则 `sunrunId20260924AUDIT1` 会被掩成 `sunrunId20****24AUDIT1`、**无法与归档对齐**。
+     */
+    if (looksLikeScantronId(whole, offset, offset + m.length)) return m
     return /^1\d{10}$/.test(m) ? maskPhone(m) : maskId(m)
   })
 }

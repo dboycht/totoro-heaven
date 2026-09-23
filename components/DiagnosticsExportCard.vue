@@ -193,7 +193,7 @@ import { extractTaskFromCachePayload, looksLikeTask } from '~/utils/mp/realCache
 // 🆕 2026-09-22：「最近一次成功读取时的状态」（纯诊断证据，**不参与放行判断**）
 import { buildLastKnown, lastKnownSummary, readLastKnown } from '~/utils/mp/diagLastKnown'
 // 🆕 2026-09-23（用户要求 1️⃣）：心跳快照（当前内存态摘要）定期 + 关键操作后上报
-import { buildHeartbeatData, installHeartbeat } from '~/composables/useDiagEventReporter'
+import { buildHeartbeatData, installHeartbeat, stopHeartbeat } from '~/composables/useDiagEventReporter'
 // 🆕 2026-09-22（审计可疑 6）：坐标字段名**只有一份**（与服务端剥 respBody 坐标共用）
 import { COORD_KEYS } from '~/utils/mp/responseRecord'
 // 🆕 2026-09-23（用户要求 4️⃣）：localStorage 兜底那份事件（导出时三来源按 id 去重合并）
@@ -440,6 +440,15 @@ async function refreshRecordState(): Promise<void> {
     if (!myWindowId.value && nextId) myWindowId.value = nextId
     applyWindow(win, typeof data?.elapsedSeconds === 'number' ? data.elapsedSeconds : 0)
     serverOk.value = true
+    /**
+     * 🆕 2026-09-23（复验 B2 修）：**只要服务端有活动窗口，就确保心跳在跑**。
+     *
+     * 原先只在点「开始记录」时装一次 ⇒ **页面刷新后没有任何人重装**，
+     * 实测"刷新后 100 秒零新增"，包里只剩刷新前那两条心跳（**看不到结算/提交之后的状态**，正是最要紧的那段）。
+     * 现在挂在这里：`onMounted` 与**每 25 秒的轮询**都会走到 ⇒ 刷新/切页回来都能自愈；
+     * `installHeartbeat()` 本身**幂等**（`hbTimer !== null` 直接返回）⇒ 重复调用安全、不会装出多个定时器。
+     */
+    if (win) installHeartbeat(heartbeatProvider())
   } catch (err) {
     serverOk.value = false
     const msg = err instanceof Error ? err.message : String(err)
@@ -555,6 +564,12 @@ const stopOnly = async () => {
     exportError.value = ''
     serverMessage.value = ''
     logs.log('info', 'ui', `诊断记录已结束（窗口 ${sealed.id} 已封存，未导出）`)
+    /**
+     * 🆕 复验 B2：**记录结束就停心跳** —— 语义是"心跳跟着**记录窗口**走"：
+     * 窗口封存后再上报只会落进"窗口外"（白费流量），也会让 manifest 的计数看起来奇怪。
+     * ⚠️ 只在**确实封存成功**的这一支停（上面两种失败分支都 `return` 了）。
+     */
+    stopHeartbeat()
     showSnackbar('已结束记录（窗口保存在服务端）：随时可以点「结束并导出」', 'success', { timeout: 6000 })
   } finally {
     stopping.value = false
@@ -582,6 +597,14 @@ onBeforeUnmount(() => {
     clearInterval(pollTimer)
     pollTimer = null
   }
+  /**
+   * 🆕 2026-09-23（复验 B2 修的一部分）：**心跳不跟着本组件卸载**。
+   *
+   * 为什么：本组件在**离开诊断页时会被卸载**（单页应用切页），而用户复现问题的路径恰恰是
+   * "工作台 → 跑步 → 结算 → 提交"—— 那段时间正是我们最需要"最后一刻状态"的时候。
+   * 所以 `installHeartbeat()` 定时器**故意不在这里清**，而是由 `stopHeartbeat()` 在
+   * 「结束记录 / 只结束记录 / 开始新记录」时收掉（见那些函数）—— 语义即"心跳跟着**记录窗口**走，不跟着页面走"。
+   */
 })
 
 /**
@@ -1262,6 +1285,12 @@ const finishAndExport = async () => {
     }
     applyWindow(sealed, Math.max(serverElapsed.value, Math.round((sealed.endedAtMs - sealed.startedAtMs) / 1000)))
     logs.log('info', 'ui', `记录窗口已封存（${sealed.id}），开始采集快照`)
+    /**
+     * 🆕 复验 B2：窗口一封存就**停心跳**（"心跳跟着记录窗口走"）。
+     * ⚠️ 必须在**采集快照之前**停：快照里的 `timeline` 与随后服务端合并要一致，
+     * 而且封存后再发的心跳本来就会落到"窗口外"（白费且让计数看起来奇怪）。
+     */
+    stopHeartbeat()
 
     // ② 采集快照（时间线按窗口过滤；快照里带上窗口 id，服务端会拿它核对）
     const snapshot = buildSnapshot()

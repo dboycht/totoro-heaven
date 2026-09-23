@@ -217,18 +217,39 @@ test('🔴 回归：日志行里的**端点路径**不许被判成凭证（否�
    * `"/wxxcx/platform/serverlist/getSunRunSchoolList"`（46 字符、含大小写与数字）**命中"高熵裸凭证"形态**
    * ⇒ 掩码把它改成 `[token len=46]` ⇒ 红线判据（"掩码会不会改动它"）判命中 ⇒ **整个日志文件被剔出包**
    * ⇒ 包里 `logs/` 为空、连"刷新前的事件"都没了。
+   *
+   * ⚠️ **路径判据已收紧到 v3**（复验 B1）：只有**以 `/` 或 `http(s)://` 开头**才算路径 ⇒
+   * 下面钉的是**以 `/` 开头**的端点串；整条 `https://…` URL 现在会被高熵规则掩掉（**安全侧**，不影响日志收录）。
    */
   const { maskTokenLike, hasUnmaskedCredential } = await import('../../utils/mp/logFormat.ts')
   const { assertNoCredentials } = await import('../../utils/mp/diagnostics.ts')
-  const paths = [
-    '/wxxcx/platform/serverlist/getSunRunSchoolList',
-    '/wxxcx/sunrun/selectSunRunStartConfiguration',
-    'https://wxxcx.xtotoro.com/api/mp/wxxcx/sunrun/getSunrunPaper',
-    'GET /api/mp/wxxcx/sunrun/getRunBegin?x=1',
-  ]
+  const paths = ['/wxxcx/platform/serverlist/getSunRunSchoolList', '/wxxcx/sunrun/selectSunRunStartConfiguration', '/api/mp/wxxcx/sunrun/getRunBegin']
   for (const p of paths) {
     assert.equal(maskTokenLike(p), p, `端点路径不该被掩：${p}`)
     assert.equal(hasUnmaskedCredential(p), false, `端点路径不该被判成凭证：${p}`)
+  }
+  /**
+   * 🆕 **B1 复验要求的反例**：随机 base64（**含 `/`**）必须仍被掩且命中红线。
+   * v2 判据（"至少两段、每段字符集合法"）实测放过 **48/200**；v3 起 **0/200**。
+   * 下面这个串是复验方给出的确切样本。
+   */
+  const exact = 'DjYPSI6FwRDdcH2P62jVNu3frPHRwRM2YDuV4KH/dn5ZwyG5XMuuwd8/nZ2qQTUr'
+  assert.notEqual(maskTokenLike(exact), exact, '含 / 的 base64 样本必须被掩')
+  assert.equal(assertNoCredentials([exact]).ok, false, '含 / 的 base64 样本必须命中红线')
+  /**
+   * **确定性**地钉住"含 `/` 但不是路径开头"这一类（不靠随机）：
+   * 下面这串**不以 `/` 开头**、含 4 个 `/`、字符集全是 base64 合法字符 —— v2 会整串判成路径放过它。
+   */
+  for (const s of [
+    'Zk9Qc2lMcU5hQmNkRWZHaElqS2xNbg/OpQrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWxYz/0123456789abcdefghij',
+    'AbCdEfGhIjKlMnOpQrS/TuVwXyZ0123456789/AbCdEfGhIjKlMnOpQrStUvWxYz0123',
+  ]) {
+    assert.notEqual(maskTokenLike(s), s, `含 / 的裸凭证必须被掩：${s.slice(0, 40)}…`)
+    assert.equal(assertNoCredentials([s]).ok, false, `含 / 的裸凭证必须命中红线：${s.slice(0, 40)}…`)
+  }
+  /** 🆕 反向：**确实以 `/` 开头**的端点路径必须**原样不动**（两版判据都必须成立的行为） */
+  for (const p of ['/wxxcx/platform/serverlist/getSunRunSchoolList', '/api/mp/wxxcx/sunrun/getRunBegin']) {
+    assert.equal(maskTokenLike(p), p, `以 / 开头的端点路径不该被掩：${p}`)
   }
   /** 一整行 `proxy` 日志（含路径、`upstream`、`respShape`）必须过红线 */
   const line = JSON.stringify({

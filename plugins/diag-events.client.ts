@@ -13,7 +13,8 @@
  *
  * ⚠️ 全程**只上报、不改变行为**：任何异常都吞掉（采集坏了也不能影响用户）。
  */
-import { installClientErrorHooks, newEventId, reportBlocked, reportDiagEvent } from '~/composables/useDiagEventReporter'
+import { installClientErrorHooks, installHeartbeat, newEventId, reportBlocked, reportDiagEvent } from '~/composables/useDiagEventReporter'
+import { liveHeartbeatData } from '~/composables/useEventLog'
 
 export default defineNuxtPlugin((nuxtApp) => {
   try {
@@ -33,6 +34,20 @@ export default defineNuxtPlugin((nuxtApp) => {
 
     /** ① 全局异常（onerror / unhandledrejection） */
     installClientErrorHooks({ source: 'plugin' })
+
+    /**
+     * 🆕 2026-09-23（复验 B2 修）：**在应用启动时就把心跳定时器装好**（幂等）。
+     *
+     * 为什么必须在插件里装（而不是在诊断卡片里）：卡片**离开诊断页就会被卸载**，
+     * 而用户复现问题的路径恰恰跨页（工作台 → 跑步 → 结算 → 提交）——
+     * 卡里那份定时器会随卸载消失，刷新/切页后也没人重装 ⇒ 实测"刷新后 100 秒零新增"、
+     * 包里看不到结算/提交之后的状态（正是最要紧的那段）。
+     *
+     * 这里用**单例状态** `liveHeartbeatData()`（`useRealState` / `useMpReal` 都是 SPA 单例，
+     * 不依赖组件实例）⇒ 任何页面、刷新之后都能上报；`installHeartbeat()` 幂等，重复调用安全；
+     * 心跳**只跟着记录窗口走**：没有窗口时端点回 `ok:false`（不报错），结束时界面调 `stopHeartbeat()`。
+     */
+    installHeartbeat(liveHeartbeatData)
 
     /** ② Vue 组件异常：**链式**接（保留已有 handler，别人装了也照旧调用） */
     const app = nuxtApp.vueApp
