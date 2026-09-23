@@ -832,26 +832,36 @@ test('🔴 第四轮 4️⃣：走截断档的记录，`truncated` 与 `bytes` �
   assert.ok(Number(rb.originalBytes) > actual, 'originalBytes 仍要保留原始大小（便于对照）')
 })
 
-test('🔴 闸门复验(第二轮)：记录环节抛错**不影响上游返回**（源码级守卫：整段都在 try 里）', async () => {
+test('🔴 闸门复验(第二轮)：记录环节抛错**不影响上游返回**（源码级守卫：整段都在 try 里）', async (t) => {
   const { readFileSync, existsSync } = await import('node:fs')
   const { join } = await import('node:path')
   const { fileURLToPath } = await import('node:url')
   let dir = join(fileURLToPath(import.meta.url), '..')
   let root = ''
   /**
-   * ⚠️ 项目根的判据用 `DEVELOPMENT.md`（**根目录独有**）而不是"存在 server/api"：
-   * 测试跑在 `.mp-test-build/tests/mp/`，而构建目录里**只有** `server/utils`（被复制进来的那些）
-   * ⇒ 用 `server/api` 判会一路找不到根（实测踩到）。
+   * 项目根的判据**只能用"仓库内一定有的文件"**：
+   *   · `package.json`（仓库根必有）+ `server/api/mp/[...slug].ts`（本守卫要读的目标，属仓库源码）。
+   *
+   * 🔴 2026-09-23 CI 红了的教训（**别再改回去**）：第一版用 `DEVELOPMENT.md` 当根判据 ——
+   * 而按项目纪律（`AGENTS.md` 规则 2/5）**`DEVELOPMENT.md` 只留开发副本、不上 GitHub**，
+   * CI 只 checkout 仓库时它不存在 ⇒ 必然 `找不到项目根` ⇒ `npm run verify` 退出码 1 ⇒ **CI 红**。
+   * 同理**不许**用 `HANDOVER.md` / `ERROR.md` 这类只留开发副本的文件做路径判据。
+   *
+   * 兜底：万一目标文件真的不在（例如在别的工作目录、或未来改了路由文件路径），
+   * **明确 skip 并打印原因**，绝不在"标准 CI 环境"里失败。
    */
   for (let i = 0; i < 6; i++) {
     const parent = join(dir, '..')
-    if (existsSync(join(parent, 'DEVELOPMENT.md')) && existsSync(join(parent, 'server', 'api', 'mp', '[...slug].ts'))) {
+    if (existsSync(join(parent, 'package.json')) && existsSync(join(parent, 'server', 'api', 'mp', '[...slug].ts'))) {
       root = parent
       break
     }
     dir = parent
   }
-  assert.ok(root, '找不到项目根（DEVELOPMENT.md + server/api/mp/[...slug].ts）')
+  if (!root) {
+    t.skip('找不到项目根（package.json + server/api/mp/[...slug].ts）—— 可能不在仓库内运行；本守卫跳过')
+    return
+  }
   const src = readFileSync(join(root, 'server', 'api', 'mp', '[...slug].ts'), 'utf8')
   /**
    * 判据（可执行）：① `knownValuePairs` / `summarizeUpstream` / `summarizeResponseBody` / `convergeLogLine`

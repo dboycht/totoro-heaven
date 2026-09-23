@@ -12,6 +12,7 @@ import assert from 'node:assert/strict'
 import {
   entryDetailRows,
   entrySummaryText,
+  formatLocalDateTime,
   hasValidRings,
   isValidTrackEntry,
   localEntryGeometryText,
@@ -188,7 +189,18 @@ test('localEntryGeometryText：带非官方路径形状 ⇒ 复用 freePathShape
   }
   const text = localEntryGeometryText(withCurve)
   assert.match(text, /^圈型（闭合曲线）：4 个点 · 一圈 /, text)
-  assert.match(text, /最近保存 2026-09-22 22:31/, `时间必须是本机时区（UTC 14:31 ⇒ 22:31）：${text}`)
+  /**
+   * ⚠️ **不要断言"某个固定时区下的格式化文本"**：`最近保存` 走的是 `formatLocalDateTime()`（**本机时区**），
+   *    而 CI（GitHub Actions）跑在 **UTC** ⇒ 同一份数据会格式化成 `14:31` 而不是本机的 `22:31`
+   *    ⇒ 写死文本在 CI 里**必然失败**（run #120 实测踩到）。
+   * 判据：**期望值用同一个格式化函数现算**（任何时区都成立），并顺带钉住"这一段来自 `updatedAt` 那个 epoch"。
+   */
+  const expectedSaved = formatLocalDateTime('2026-09-22T14:31:00.000Z')
+  assert.ok(text.includes(`最近保存 ${expectedSaved}`), `时间必须与 updatedAt 的 epoch 对应（随时区自动变化）：${text}`)
+  assert.ok(
+    !text.includes(`最近保存 ${formatLocalDateTime('2026-09-22T14:00:00.000Z')}`),
+    `"最近保存"要取 updatedAt（不是 createdAt）：${text}`,
+  )
 
   const withBent: TrackRouteEntry = { ...withCurve, freeShape: bent }
   assert.match(localEntryGeometryText(withBent), /^折线型（折返）：3 个点 · 单程 /, localEntryGeometryText(withBent))

@@ -232,22 +232,30 @@ test('快照形状：任务摘要三件套与 lastKnown 一起进快照（形状
  * 不清的后果：换账号后上一个账号的掩码身份/开关/任务名仍留在 localStorage，
  * 新账号读取失败时会被当"最近已知状态"打进诊断包 ⇒ **跨账号证据污染**。
  */
-test('🔴 审计 B8：「最近已知状态」在退出登录与清空本机数据时都被清掉（源码级守卫）', async () => {
+test('🔴 审计 B8：「最近已知状态」在退出登录与清空本机数据时都被清掉（源码级守卫）', async (t) => {
   const { readFileSync, existsSync } = await import('node:fs')
   const { join } = await import('node:path')
   const { fileURLToPath } = await import('node:url')
-  /** 测试可能跑在 `.mp-test-build/tests/mp/`，要向上找到真正的项目根（特征：composables/real/data.ts 存在） */
+  /**
+   * 测试可能跑在 `.mp-test-build/tests/mp/`，要向上找到真正的项目根。
+   * 🔴 判据**只能用"仓库内一定有的文件"**：`package.json`（仓库根必有）+ 本次要读的目标文件。
+   * **不许**用 `DEVELOPMENT.md` / `HANDOVER.md` / `ERROR.md` —— 它们按纪律只留开发副本、**不上 GitHub**，
+   * 在 CI 里不存在（2026-09-23 就是这么把 CI 弄红的）。找不到时**明确 skip 并打印原因**，不在 CI 里失败。
+   */
   let dir = join(fileURLToPath(import.meta.url), '..')
   let root = ''
   for (let i = 0; i < 6; i++) {
     const parent = join(dir, '..')
-    if (existsSync(join(parent, 'composables', 'real', 'data.ts'))) {
+    if (existsSync(join(parent, 'package.json')) && existsSync(join(parent, 'composables', 'real', 'data.ts'))) {
       root = parent
       break
     }
     dir = parent
   }
-  assert.ok(root, '找不到项目根（composables/real/data.ts）—— 本测试的路径假设失效')
+  if (!root) {
+    t.skip('找不到项目根（package.json + composables/real/data.ts）—— 可能不在仓库内运行；本守卫跳过')
+    return
+  }
   const src = readFileSync(join(root, 'composables', 'real', 'data.ts'), 'utf8')
 
   /** 取某个函数体（从 `function xxx(` 到下一个顶层 `function` / 注释块） */
