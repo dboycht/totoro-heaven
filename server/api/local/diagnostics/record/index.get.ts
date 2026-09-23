@@ -15,9 +15,14 @@
  * `window: null` = 这一次运行还没点过「开始记录」（**关掉程序再启动就是这个状态**，不继承上次的窗口）。
  *
  * ⚠️ 接口**只返回 id / 时间 / 开关**，不返回也不接受任何身份或凭证字段（窗口里本来就没有）。
+ *
+ * 🆕 2026-09-23：额外返回 **captures 的占用情况**（`captures`）——用户要求"响应原文必须完整可分析"，
+ * 而原文是**单独留档**的，所以界面上要如实告诉用户"现在攒了多少、占多大、预算多大"。
+ * 只给**计数与字节**，不给文件名（文件名里也只是端点短名与时间，但没必要捎带）。
  */
 import { assertLocalRequest } from '../../../../utils/tokenScanState'
 import { DIAG_INSTANCE_ID, DIAG_INSTANCE_STARTED_MS, readSession, sessionElapsedSeconds } from '../../../../utils/diagSession'
+import { CAPTURE_MAX_BYTES, DIAG_CAPTURE_DAYS, captureDirBytes, readEvictedLedger, recentCaptures } from '../../../../utils/captureStore'
 
 export default defineEventHandler((event) => {
   assertLocalRequest(event)
@@ -26,5 +31,13 @@ export default defineEventHandler((event) => {
     window: win,
     elapsedSeconds: sessionElapsedSeconds(win),
     serverInstance: { instanceId: DIAG_INSTANCE_ID, startedAtMs: DIAG_INSTANCE_STARTED_MS, pid: process.pid },
+    /** 🆕 响应原文留档的占用（界面提示 + 「这个包里会包含什么」那一行用） */
+    captures: {
+      files: recentCaptures(DIAG_CAPTURE_DAYS).length,
+      usedBytes: captureDirBytes(),
+      budgetBytes: CAPTURE_MAX_BYTES,
+      droppedFiles: readEvictedLedger().files,
+      droppedBytes: readEvictedLedger().bytes,
+    },
   }
 })

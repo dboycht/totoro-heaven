@@ -252,6 +252,16 @@ const serverOk = ref<boolean | null>(null)
 const serverInstanceId = ref('')
 const serverMessage = ref('')
 /**
+ * 🆕 2026-09-23 **响应原文留档（captures）的占用**：用户要求"响应原文必须完整可分析"，
+ * 原文单独成文件存在本机 `captures/` 目录；这几个数由 `GET /api/local/diagnostics/record` 捎回来，
+ * 用于「这个包里会包含什么」那一行如实报出"现在攒了多少、占多大、预算多大、淘汰过几份"。
+ */
+const captureFiles = ref(0)
+const captureUsedBytes = ref(0)
+const captureBudgetBytes = ref(0)
+const captureDroppedFiles = ref(0)
+const captureDroppedBytes = ref(0)
+/**
  * 坐标开关：**以服务端窗口里的为准**（刷新后从服务端读回）。
  * 用一个局部 ref 承接 `v-switch` 的 v-model，再 watch 它 PATCH 到服务端（见下面的两个 watch）。
  */
@@ -328,6 +338,18 @@ const formatDuration = (seconds: number): string => {
 }
 const durationText = computed(() => formatDuration(serverElapsed.value))
 
+/**
+ * 🆕 2026-09-23 字节数的人话显示（captures 体量提示用）。
+ * 口径：B / KB / MB / GB，保留 1 位小数（够用且不啰嗦）；负数与非有限值一律按 0。
+ */
+const formatBytes = (n: number): string => {
+  const b = Number.isFinite(n) && n > 0 ? n : 0
+  if (b < 1024) return `${Math.round(b)} B`
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
+  if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`
+  return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
 const stopTimer = () => {
   if (timer !== null) {
     clearInterval(timer)
@@ -375,10 +397,19 @@ async function refreshRecordState(): Promise<void> {
       serverMessage.value = `读取服务端记录状态失败：HTTP ${res.status}`
       return
     }
-    const data = (await res.json()) as { window?: unknown; elapsedSeconds?: unknown; serverInstance?: unknown }
+    const data = (await res.json()) as { window?: unknown; elapsedSeconds?: unknown; serverInstance?: unknown; captures?: unknown }
     const win = isDiagWindow(data?.window) ? data.window : null
     const inst = (data?.serverInstance ?? null) as { instanceId?: unknown } | null
     if (typeof inst?.instanceId === 'string') serverInstanceId.value = inst.instanceId
+    /** 🆕 响应原文留档的占用（给「这个包里会包含什么」那一行用；读不到就保持上一次的值） */
+    const cap = (data?.captures ?? null) as { files?: unknown; usedBytes?: unknown; budgetBytes?: unknown; droppedFiles?: unknown; droppedBytes?: unknown } | null
+    if (cap && typeof cap.files === 'number') {
+      captureFiles.value = cap.files
+      captureUsedBytes.value = typeof cap.usedBytes === 'number' ? cap.usedBytes : 0
+      captureBudgetBytes.value = typeof cap.budgetBytes === 'number' ? cap.budgetBytes : 0
+      captureDroppedFiles.value = typeof cap.droppedFiles === 'number' ? cap.droppedFiles : 0
+      captureDroppedBytes.value = typeof cap.droppedBytes === 'number' ? cap.droppedBytes : 0
+    }
     /**
      * 🆕（审计 B4）轮询到的窗口与界面手里那个"变了"时**如实提示**，让用户在导出**之前**就知道，
      * 而不是等导出被 409 拒。首次读回（刷新/切页回来）不算"变了"，正常恢复即可、不吓唬用户。
@@ -613,6 +644,23 @@ const manifestPreview = computed(() => {
         '——注意：服务端日志始终会记录坐标（除非导出时按上面这个开关剔除），' +
         '所以关掉开关的含义是"导出包里不含坐标"，而不是"本机不再记录坐标"；' +
         '若上游响应是"负载藏在信封里"的形状，还会写明 `unpack: suspect: <建议路径>`。',
+    },
+    /**
+     * 🆕 2026-09-23 **响应完整原文**（captures）—— 用户原话：
+     * 「裁剪的话要是有重要数据不就无法获得了？……主要是我们拿到数据进行分析」
+     * ⇒ 每个请求的**完整**响应正文单独留档进包（已脱敏，**不裁单条**）；体积由本机总量预算 + 淘汰兜。
+     * ⚠️ 文案里不许出现 markdown 星号（有守卫扫本组件的 note 字面量）。
+     */
+    {
+      name: `（响应完整原文：${captureFiles.value} 份 / ${formatBytes(captureUsedBytes.value)}）`,
+      note:
+        `包含每个请求的完整响应原文（已脱敏；不做单条裁剪，便于直接拿去做分析），放在包内 captures/ 目录下，` +
+        `每份都带一个同名 .meta.json（本机时间、端点、状态码、耗时、字节数、是否裁剪）。` +
+        `本机累计 ${captureFiles.value} 份、约占 ${formatBytes(captureUsedBytes.value)}` +
+        `${captureBudgetBytes.value ? `（总量预算 ${formatBytes(captureBudgetBytes.value)}，超出时按最旧先淘汰并记账）` : ''}；` +
+        `${includeGeometry.value ? '坐标（经纬度）会随原文一起收录（上面的开关是打开的）' : '坐标已在导出时按上面的开关从这些原文里逐份剔除（文本响应的坐标无法逐字段剥离，会原样保留）'}。` +
+        `${captureDroppedFiles.value ? `本机曾因预算淘汰过 ${captureDroppedFiles.value} 份（约 ${formatBytes(captureDroppedBytes.value)}），清单里列了文件名。` : ''}` +
+        '与日志的区别：日志里的响应内容是"小而可读"的摘要（便于扫一眼），要完整数据看这里的原文。',
     },
     /**
      * 🆕 2026-09-22（用户原话："你刚刚说刷新后就丢了，我们直接丢之前记录下来不行吗"）：

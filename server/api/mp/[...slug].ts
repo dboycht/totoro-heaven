@@ -27,6 +27,7 @@ import { MP_API_PREFIX, MP_HOST, MP_PATH_PREFIXES, MP_UPSTREAM_HEADER } from '..
 import { summarizeUpstream } from '../../../utils/mp/logFormat'
 import { RESP_BODY_MAX_BYTES, convergeLogLine, knownValuePairs, summarizeRespShape, summarizeResponseBody, unpackNote } from '../../../utils/mp/responseRecord'
 import { logError, logRawLine, summarizeRequestBody, logWarn } from '../../utils/logger'
+import { CAPTURE_MAX_BYTES, writeCapture } from '../../utils/captureStore'
 import { fingerprintOf } from '../../utils/tokenScanState'
 
 // ⚠️ 2026-09-17（D 轮）收口：**不再在本文件重复声明**前缀数组 —— 唯一来源是
@@ -196,8 +197,30 @@ export default defineEventHandler(async (event) => {
     const known = knownValuePairs(safeParseJson(body))
     const upstream = parsed !== undefined ? summarizeUpstream(parsed, known) : { kind: 'non-json', bytes: text.length }
     const respShape = parsed !== undefined ? summarizeRespShape(parsed, {}, known) : undefined
+    /**
+     * 🆕 2026-09-23 **响应原文单独留档**（用户要求"完整可分析、不裁单条"）：
+     *   ① `respBody`（**给日志行**）＝ 小而可读的摘要（32 KB 上限，**行为与以前逐字不变**）；
+     *   ② `captureBody`（**给 captures**）＝ 同一套脱敏产物，但上限换成 `CAPTURE_MAX_BYTES`（64 MB）且非 JSON 记全文
+     *      ⇒ 正常**永不裁**（`truncated=false`），写一份到 `captures/`，日志行里只留一个**指针**。
+     * 体积由"总量预算 + 淘汰记账"兜（见 `server/utils/captureStore.ts`）。
+     * ⚠️ 两次调用**共用同一套脱敏**（同一个函数、同一份 known）—— 只是"裁不裁"不同，绝不另写一份脱敏口径。
+     */
     const respBody = summarizeResponseBody(text, parsed, known, undefined, res.headers.get('content-type') || '')
+    const captureBody = summarizeResponseBody(text, parsed, known, undefined, res.headers.get('content-type') || '', {
+      bodyMaxBytes: CAPTURE_MAX_BYTES,
+      textWhole: true,
+    })
     const unpack = parsed !== undefined ? unpackNote(parsed) : undefined
+    const captureName = captureBody
+      ? writeCapture({
+          endpoint: suffix,
+          http: res.status,
+          ms: t0 - startedAt,
+          originalBytes: captureBody.originalBytes,
+          payload: captureBody,
+          unpack: unpack ? (unpack.status === 'suspect' ? `suspect: ${unpack.hint}` : 'ok') : undefined,
+        })
+      : null
     const entry = {
       t: nowIso,
       level: (res.status >= 400 || (parsed === undefined && text.length > 0) ? 'error' : 'info') as 'info' | 'warn' | 'error',
@@ -212,8 +235,12 @@ export default defineEventHandler(async (event) => {
         upstream,
         /** 🆕 响应**结构**摘要（只记键名与数组长度，不记值；**自带上限**） */
         ...(respShape ? { respShape } : {}),
-        /** 🆕 响应**内容**（已脱敏；超上限会按字节预算逐键填充并在 note 里注明） */
-        ...(respBody ? { respBody } : {}),
+        /**
+         * 🆕 响应**内容摘要**（已脱敏；**仍然小而可读**，超上限会按字节预算逐键填充并在 note 里注明）。
+         * 🆕 `capture` = **该请求完整原文的留档文件名**（相对 `captures/`；要分析就去那儿拿原文）。
+         * 没有这个字段 = 留档失败或响应为空（此时只有摘要可看）。
+         */
+        ...(respBody ? { respBody: captureName ? { ...respBody, capture: captureName } : respBody } : {}),
         /** 🆕 解包退化留痕（负载疑似藏在信封里时就写 `suspect: …`；正常时写 `ok`） */
         ...(unpack ? { unpack: unpack.status === 'suspect' ? `suspect: ${unpack.hint}` : 'ok', ...(unpack.status === 'suspect' ? { unpackDetail: { payloadKeys: unpack.payloadKeys, envelopeField: unpack.envelopeField } } : {}) } : {}),
         body: summarizeRequestBody(suffix, body),

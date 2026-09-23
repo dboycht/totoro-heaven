@@ -583,12 +583,12 @@ export function convergeLogLine(entry: { t: string; level: string; cat: string; 
   // 之后的阶梯以"已截断版"为基准
   const trimmed: Record<string, unknown> = { ...base, upstream: truncateDeep(base.upstream), respShape: truncateDeep(base.respShape), respBody: truncatedBody }
 
-  /** ① `respBody` 缩成一句"已收缩"的说明（内容由后面几档负责保住结构） */
+  /** ① `respBody` 缩成一句"已收缩"的说明（内容由后面几档负责保住结构）——**原文指针 `capture` 必须保住** */
   if (isObj(trimmed.respBody)) {
     const rb = trimmed.respBody as Record<string, unknown>
     text = build({
       ...trimmed,
-      respBody: { kind: 'text', originalBytes: Number(rb.originalBytes ?? 0), bytes: 0, truncated: true, note: `响应内容过大，已按整行上限 ${maxBytes} 字节收缩` },
+      respBody: { kind: 'text', originalBytes: Number(rb.originalBytes ?? 0), bytes: 0, truncated: true, ...(rb.capture !== undefined ? { capture: rb.capture } : {}), note: `响应内容过大，已按整行上限 ${maxBytes} 字节收缩（完整原文见 captures/）` },
     })
     degraded.push('respBody 缩预算')
     if (size(text) <= maxBytes) return { text, degraded }
@@ -668,6 +668,12 @@ export interface RespBodyRecord {
   text?: string
   /** 截断说明（人话，落盘可见） */
   note?: string
+  /**
+   * 🆕 2026-09-23 **该请求完整原文的留档文件名**（相对 `captures/`）。
+   * 日志行里的 `respBody` 是"小而可读"的摘要；**要完整数据做分析**就用这个指针去 `captures/` 取原文。
+   * 没有这个字段 = 原文留档失败或响应为空（本次只有摘要）。
+   */
+  capture?: string
 }
 
 /**
@@ -799,6 +805,17 @@ function briefOf(v: unknown): string {
  * @param known     `knownValuePairs()` 的产物（从请求体取到的学号/姓名/手机）
  * @param maxBytes  单条内容上限（默认 `RESP_BODY_MAX_BYTES`）
  * @param contentType 上游 `content-type`（非 JSON 时记下来，便于判断是什么东西）
+ * @param opts      🆕 **原文留档**用（见 `CAPTURE_MAX_BYTES`）：
+ *   · `bodyMaxBytes` —— 上限**只用于"这份记录要不要被裁"的判定**（传 `CAPTURE_MAX_BYTES` 就基本永不裁）；
+ *   · `textWhole`（`true` 才算，默认 false）—— 记**全文**而不是 512 字符预览（**只有原文留档才传 true**）。
+ *
+ * ## 🔴 用户要求（2026-09-23）：响应原文必须**完整可分析**
+ * 「裁剪的话要是有重要数据不就无法获得了？……主要是我们拿到数据进行分析」
+ * ⇒ **两步是分开的**，别再把它们绑在一起：
+ *   ① **脱敏**：按字节预算逐键填充（`redactForRecordWithStats` / `redactFreeText`）—— 与体积无关，**照旧**；
+ *   ② **裁剪**：只有在**确实超过 `bodyMaxBytes`** 时才发生。
+ * 结果：传 `CAPTURE_MAX_BYTES` 时**既不做字节裁剪、也不把非 JSON 砍成 512 字符预览**（`truncated=false`）。
+ * 唯一的硬安全阀是 `CAPTURE_MAX_BYTES`（默认 64 MB）：真超过它才裁（并如实报 `truncated=true`）。
  */
 export function summarizeResponseBody(
   text: string,
@@ -806,8 +823,13 @@ export function summarizeResponseBody(
   known: { raw: string; masked: string }[] = [],
   maxBytes: number = RESP_BODY_MAX_BYTES,
   contentType = '',
+  opts: { bodyMaxBytes?: number; textWhole?: boolean } = {},
 ): RespBodyRecord {
   const raw = String(text ?? '')
+  const cap = Math.max(1024, Math.floor(opts.bodyMaxBytes ?? maxBytes))
+  const textWhole = opts.textWhole === true
+  /** "这份会不会被裁"用 `cap` 判定；`maxBytes` 只作显示/兼容（两者默认相同 ⇒ 老行为逐字不变） */
+  void maxBytes
   const originalBytes = byteLen(raw)
   if (raw.trim() === '') return { kind: 'empty', originalBytes, bytes: 0, truncated: false, ...(contentType ? { contentType } : {}) }
   if (parsed === undefined) {
@@ -818,7 +840,7 @@ export function summarizeResponseBody(
      * 一个跨越第 512 字节的 token 会被切成 `WXXCXAb3kZ9_`（不匹配 token 正则、红线也不命中）**留在盘上**。
      * 现在：对"512 + 64 余量"的整段脱敏 → 截 512 → **末尾再补一次 `maskTokenLike`**（防边界残段）。
      */
-    const PREVIEW = RESP_TEXT_PREVIEW_CHARS
+    const PREVIEW = textWhole ? Math.max(0, cap) : RESP_TEXT_PREVIEW_CHARS
     const SLACK = 64
     const head = raw.slice(0, PREVIEW + SLACK)
     let redacted = String(redactForRecord(head, known))
@@ -826,22 +848,40 @@ export function summarizeResponseBody(
     redacted = maskTokenLike(redacted)
     const clipped = redacted.length > PREVIEW ? redacted.slice(0, PREVIEW) : redacted
     const safe = maskTokenLike(clipped)
+    /**
+     * 是否被裁：**看"输入有多少、我们留下了多少"**，别看掩码前后字符串的长度 ——
+     * 掩码会把长串换成 `[token len=N]`，长度会变（实测踩到：`'x'.repeat(1024)` 被掩成 17 字符的标记，
+     * 于是"掩码后不长了"被误判成"没裁"）。判据：`raw` 比留下的还多 ⇒ 裁过。
+     */
+    const wasClipped = raw.length > clipped.length
     return {
       kind: 'text',
       originalBytes,
       bytes: byteLen(safe),
-      truncated: raw.length > PREVIEW,
+      truncated: wasClipped,
       ...(contentType ? { contentType } : {}),
       text: safe,
-      ...(raw.length > PREVIEW ? { note: `非 JSON，只记前 ${PREVIEW} 字符（已脱敏；截断边界又补了一次凭证掩码）` } : {}),
+      ...(wasClipped
+        ? { note: textWhole ? `非 JSON，超过留档上限 ${PREVIEW} 字符，已截断（已脱敏）` : `非 JSON，只记前 ${PREVIEW} 字符（已脱敏；截断边界又补了一次凭证掩码）` }
+        : {}),
     }
   }
-  const stats = redactForRecordWithStats(parsed, known)
+  /**
+   * ⚠️ `arrayCap` 是**脱敏阶段的数组裁剪上限**（老口径 20，日志行照旧）；
+   * **原文留档**时传一个大到"等于不裁"的值（`Number.MAX_SAFE_INTEGER`）——
+   * 因为"响应 300 条 → 留档 20 条"对"拿数据做分析"来说同样是**数据丢失**（用户要的就是完整）。
+   */
+  const stats = redactForRecordWithStats(parsed, known, RECORD_REDACT_MAX_DEPTH, textWhole ? Number.MAX_SAFE_INTEGER : 20)
   const redacted = stats.value
   /** 脱敏阶段裁掉过长数组时也要如实说（否则"响应 300 条 → 日志 20 条"看不出来） */
   const droppedNote = stats.droppedItems > 0 ? `脱敏时裁掉过长数组的 ${stats.droppedItems} 个元素（${stats.trimmedPaths.slice(0, 3).join('、')}）` : ''
   let text2 = JSON.stringify(redacted)
-  if (byteLen(text2) <= maxBytes) {
+  /**
+   * ⚠️ **原文留档口径**（2026-09-23）：判定用 `cap`（留档时传 `CAPTURE_MAX_BYTES`，默认 64 MB）⇒ 正常**永不裁**；
+   * 日志行仍传 `RESP_BODY_MAX_BYTES`（32 KB）⇒ 行为与以前**逐字不变**。两者默认相同。
+   * 注意 `truncated` 里**仍然包含**"脱敏阶段裁掉过长数组"（那是脱敏判据，不是体积裁剪）。
+   */
+  if (byteLen(text2) <= cap) {
     return {
       kind: 'json',
       originalBytes,
@@ -851,10 +891,10 @@ export function summarizeResponseBody(
       body: redacted,
     }
   }
-  // ① 瘦身：大数组只留头尾（**保留总长度**）
+  // ① 瘦身：大数组只留头尾（**保留总长度**）—— 只有真超过 `cap` 才会走到这里
   const shrunk = shrink(redacted, 0, 20, { head: 10, tail: 2 })
   text2 = JSON.stringify(shrunk)
-  if (byteLen(text2) <= maxBytes) {
+  if (byteLen(text2) <= cap) {
     return {
       kind: 'json',
       originalBytes,
@@ -862,23 +902,23 @@ export function summarizeResponseBody(
       truncated: true,
       ...(stats.droppedItems > 0 ? { droppedItems: stats.droppedItems } : {}),
       body: shrunk,
-      note: `超过单条上限 ${maxBytes} 字节，已瘦身（大数组只留头尾并记总长）${droppedNote ? `；${droppedNote}` : ''}`,
+      note: `超过上限 ${cap} 字节，已瘦身（大数组只留头尾并记总长）${droppedNote ? `；${droppedNote}` : ''}`,
     }
   }
   /**
-   * ② **按字节预算逐槽填充**（审计 B1 的核心修复）：这一档是唯一能保证"落盘 ≤ maxBytes"的，
+   * ② **按字节预算逐槽填充**（审计 B1 的核心修复）：这一档是唯一能保证"落盘 ≤ 上限"的，
    * 因为只有它会按字节砍**标量字符串**。到这一档时把预算留一点余量给"省略说明"。
    */
-  const budget = Math.max(256, maxBytes - 64)
+  const budget = Math.max(256, cap - 64)
   const filled = budgetedFill(redacted, budget)
   text2 = JSON.stringify(filled.value)
   let body = filled.value
-  let note = `超过单条上限 ${maxBytes} 字节，已按字节预算逐键填充（放不下的值写成"已省略"说明；原始 ${originalBytes} 字节）`
+  let note = `超过上限 ${cap} 字节，已按字节预算逐键填充（放不下的值写成"已省略"说明；原始 ${originalBytes} 字节）`
   // 兜底：极端情况（预算算错/编码差异）再把非 ASCII 字符串换成说明，确保**一定**不超限
-  if (byteLen(text2) > maxBytes) {
+  if (byteLen(text2) > cap) {
     body = keysOnly(redacted)
     text2 = JSON.stringify(body)
-    note = `超过单条上限 ${maxBytes} 字节，只保留顶层键名（原始 ${originalBytes} 字节）`
+    note = `超过上限 ${cap} 字节，只保留顶层键名（原始 ${originalBytes} 字节）`
   }
   return {
     kind: 'json',

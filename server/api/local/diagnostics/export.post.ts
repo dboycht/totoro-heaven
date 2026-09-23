@@ -48,10 +48,12 @@
  * - 时间线（`snapshot.json` 里那份）由**客户端**按窗口过滤（它才持有 localStorage 里的事件日志）；
  *   服务端在这里只做**核对与如实记录**（数量对不上就在 manifest 里写明），不静默改写用户的证据。
  */
-import { DIAG_EXPORT_PATH, DIAG_LOG_DAYS, DIAG_LOG_MAX_BYTES, DIAG_LOG_DIR, DIAG_MANIFEST_NAME, DIAG_SNAPSHOT_NAME, DIAG_TIMELINE_MAX, assertNoCredentials, diagManifestEntries, diagTimelineInWindow, diagWindowMatch } from '../../../../utils/mp/diagnostics'
-import type { DiagSnapshot, DiagWindow } from '../../../../utils/mp/diagnostics'
+import { DIAG_CAPTURE_DAYS, DIAG_CAPTURE_DIR, DIAG_EXPORT_PATH, DIAG_LOG_DAYS, DIAG_LOG_MAX_BYTES, DIAG_LOG_DIR, DIAG_MANIFEST_NAME, DIAG_SNAPSHOT_NAME, DIAG_TIMELINE_MAX, assertNoCredentials, captureStampToIso, diagManifestEntries, diagTimelineInWindow, diagWindowMatch } from '../../../../utils/mp/diagnostics'
+import type { CaptureAccount, CaptureFileEntry, DiagSnapshot, DiagWindow } from '../../../../utils/mp/diagnostics'
 import { assertLocalRequest } from '../../../utils/tokenScanState'
 import { diagLogsLinesInWindow, partitionLogsByRedline, recentLogFiles, summarizeDiagLineAccount } from '../../../utils/diagLogs'
+import { CAPTURE_DIR, CAPTURE_MAX_BYTES, captureDirBytes, readEvictedLedger, recentCaptures } from '../../../utils/captureStore'
+import { maskTokenLike } from '../../../../utils/mp/logFormat'
 import { stripGeometryFromRespBody } from '../../../../utils/mp/responseRecord'
 import { DIAG_INSTANCE_ID, ignoredPrevInstanceInfo, readSession, sessionElapsedSeconds } from '../../../utils/diagSession'
 import { logInfo, logWarn } from '../../../utils/logger'
@@ -66,6 +68,40 @@ function compactStamp(d: Date): string {
 /** 非数组、null、数组都算"不是对象"（客户端契约要求这里是一个 JSON 对象） */
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/**
+ * 🆕 2026-09-23：写进 **manifest** 的文件名要先过一遍掩码。
+ *
+ * 为什么：captures 的文件名形如 `20260923-101646064-0004-probe-trigger-evict-200.txt` ——
+ * 它有数字、大小写混合、长度 >36，**恰好符合"高熵裸凭证"的形态** ⇒ 写进 manifest 后会被红线判命中，
+ * 而 manifest 命中是**硬拒**（整包失败）。可是这**根本不是凭证**，是我们自己生成的路径名。
+ * 处置：manifest 里只写**掩码后**的名字（`[token len=N]`），文件名本身留在包内条目里 ——
+ * 既不放松红线（仍以"掩码侧改了没有"为唯一判据），也不会让导出因为自己的文件名而失败。
+ */
+function safeNameForManifest(name: string): string {
+  return maskTokenLike(name)
+}
+
+/**
+ * 🆕 2026-09-23：把一份 capture 的**坐标**按开关剥掉（复用 `stripGeometryFromRespBody()` 的口径）。
+ *
+ * - `.json` 的 capture：正文就是"脱敏后的完整 JSON"，直接 parse → strip → 重新序列化；
+ *   ⚠️ 故意包一层 `{ body: parsed }`：`stripGeometryFromRespBody()` 的契约就是"处理 respBody 那个对象"
+ *   （它只在 `record.body` 上递归、并按 `record.body === undefined` 判断），直接传裸 JSON 会**什么都不删**。
+ * - `.txt`：非 JSON 全文，**不做逐字符删除**（那会毁掉原文且判据不可靠）—— 保持原样，
+ *   由清单里的 `geometryStripped` 与界面文案如实说明。
+ */
+function stripGeometryFromCapturesText(text: string, name: string): string {
+  if (!name.endsWith('.json')) return text
+  try {
+    const parsed = JSON.parse(text) as unknown
+    const stripped = stripGeometryFromRespBody({ body: parsed }) as { body?: unknown }
+    return JSON.stringify(stripped?.body ?? parsed)
+  } catch {
+    // 解析不了就原样保留（坏文件的坐标问题由"要不要导出"决定，不在这里猜）
+    return text
+  }
 }
 
 export default defineEventHandler(async (event) => {
@@ -182,6 +218,55 @@ export default defineEventHandler(async (event) => {
       .join('\n')
     return { file: f, scope: { ...scope, text } }
   })
+
+  // ---------- ④b 🆕 captures（响应**完整原文**留档）----------
+  /**
+   * 用户要求："响应原文必须**完整可分析**" ⇒ captures 与日志**一起进包**（目录 `captures/`），
+   * 但两者的口径**各按各的**：
+   *   · 时间窗：与日志同一套（最近 `DIAG_CAPTURE_DAYS` 天）；
+   *   · 坐标：**逐份**按「包含跑道/任务坐标」开关剥（复用 `stripGeometryFromRespBody()`，不写第二份）；
+   *   · 红线：命中的**只剔那一份**（`partitionLogsByRedline` 同源），并在清单里记账。
+   * 注意 captures 里的正文就是**已脱敏**的原文（写盘时已脱敏），所以正常情况下红线不该命中。
+   */
+  const captureItems = recentCaptures(DIAG_CAPTURE_DAYS, now)
+  const capturePrepared = captureItems.map((c) => {
+    let text = c.text
+    let geometryStripped = false
+    if (!includeGeometry) {
+      geometryStripped = true
+      text = stripGeometryFromCapturesText(text, c.name)
+    }
+    return { name: c.name, bytes: Buffer.byteLength(text, 'utf8'), text, raw: c, geometryStripped }
+  })
+  const {
+    safe: safeCaptures,
+    excluded: excludedCaptures,
+    reasons: captureExcludedReasons,
+  } = partitionLogsByRedline(capturePrepared.map((c) => ({ name: c.name, text: c.text, bytes: c.bytes, truncated: false })))
+  for (const [name, hits] of Object.entries(captureExcludedReasons)) {
+    logWarn('ui', '诊断导出已排除一份响应原文（命中凭证样式）', { name, reasons: hits })
+  }
+  const preparedByName = new Map(capturePrepared.map((c) => [c.name, c]))
+  const safeCaptureItems = safeCaptures.map((c) => preparedByName.get(c.name)!)
+  const captureLedger = readEvictedLedger()
+  const captureEntries: CaptureFileEntry[] = safeCaptureItems.map((c) => ({
+    name: safeNameForManifest(c.name),
+    bytes: c.bytes,
+    geometryStripped: c.geometryStripped,
+  }))
+  const captureAccount: CaptureAccount = {
+    dir: CAPTURE_DIR,
+    keptFiles: captureEntries.length,
+    keptBytes: captureEntries.reduce((s, e) => s + e.bytes, 0),
+    droppedFiles: captureLedger.files,
+    droppedBytes: captureLedger.bytes,
+    droppedNames: captureLedger.names.slice(-50).map(safeNameForManifest),
+    ...(captureLedger.names.length > 50 ? { droppedMore: captureLedger.names.length - 50 } : {}),
+    budgetBytes: CAPTURE_MAX_BYTES,
+    usedBytes: captureDirBytes(),
+    oldestKeptAt: safeCaptureItems.length ? captureStampToIso(/^(\d{8}-\d{9})-/.exec(safeCaptureItems[0]!.name)?.[1] ?? '') : '',
+    entries: captureEntries,
+  }
 
   // ---------- ④ 🔴 红线自检（**降级而非整包拒绝**，2026-09-21 父代理定）----------
   /**
@@ -300,6 +385,12 @@ export default defineEventHandler(async (event) => {
       /** ⚠️ 磁盘上有一个**别的实例**的窗口（上一次运行留下的），本次**未采用** */
       ignoredPreviousInstance: prevInstance ? { id: prevInstance.id, instanceId: prevInstance.instanceId, startedAt: prevInstance.startedAt, ignoredAt: prevInstance.at } : null,
     },
+    /**
+     * 🆕 2026-09-23 **响应完整原文**（captures）的账：用户要求"原文必须完整可分析"，所以它**单独成目录**进包。
+     * 逐份列出（名字/大小/是否因坐标开关被剥）+ 总量预算 + **淘汰记账**（`droppedFiles/droppedBytes/droppedNames`）——
+     * 淘汰**绝不静默**（这是"用总量预算代替裁剪"的前提）。
+     */
+    captures: captureAccount,
     /** 服务端日志的收录口径（与界面提示、`utils/mp/diagnostics.ts` 常量一致）。**⚠️ 各计数只统计真正进包的文件** */
     diagnostics: {
       logDays: DIAG_LOG_DAYS,
@@ -416,7 +507,9 @@ export default defineEventHandler(async (event) => {
       credentialsChecked: true,
       /** 因命中凭证样式被自动排除的日志文件名（空数组=没有排除） */
       redlineExcludedLogs: excludedScoped.map((x) => x.file.name),
-      note: 'token 明文、学号/姓名原文均不在包内（客户端已脱敏；服务端日志由 logger 按字段名与样式掩码）',
+      /** 🆕 因命中凭证样式被自动排除的**响应原文**文件名（空数组=没有排除） */
+      redlineExcludedCaptures: excludedCaptures.map((c) => c.name),
+      note: 'token 明文、学号/姓名原文均不在包内（客户端已脱敏；服务端日志与响应原文由同一套判据掩码）',
     },
   }
   const manifestJson = JSON.stringify(manifest, null, 2)
@@ -436,14 +529,28 @@ export default defineEventHandler(async (event) => {
     { name: DIAG_MANIFEST_NAME, data: Buffer.from(manifestJson, 'utf8') },
     { name: DIAG_SNAPSHOT_NAME, data: Buffer.from(snapshotJson, 'utf8') },
     ...safeLogs.map((f) => ({ name: `${DIAG_LOG_DIR}/${f.name}`, data: Buffer.from(f.text, 'utf8') })),
+    /**
+     * 🆕 响应**完整原文**（`captures/`）—— 用户要的是"拿到数据做分析"，
+     * 所以它**不做单条裁剪**（体积由本机总量预算管，见 `captureStore.ts`）。
+     * 每份都附带同名 `.meta.json`（本机时间/端点/http/耗时/字节/形态/是否裁剪），便于脚本批量分析。
+     */
+    ...safeCaptureItems.map((c) => ({ name: `${DIAG_CAPTURE_DIR}/${c.name}`, data: Buffer.from(c.text, 'utf8') })),
+    ...safeCaptureItems
+      .filter((c) => c.raw.meta)
+      .map((c) => ({ name: `${DIAG_CAPTURE_DIR}/${c.name}.meta.json`, data: Buffer.from(JSON.stringify({ ...c.raw.meta, bytes: c.bytes, geometryStripped: c.geometryStripped }, null, 2), 'utf8') })),
   ])
 
   const filename = `totoro-diagnostics-${compactStamp(now)}.zip`
   logInfo('ui', '导出诊断包', {
-    files: 2 + safeLogs.length,
+    files: 2 + safeLogs.length + safeCaptureItems.length,
     logFiles: safeLogs.length,
     logFilesExcluded: excludedLogs.length,
     logFilesTruncated: account.truncatedFiles,
+    /** 🆕 响应原文：进包份数 / 字节 / 被红线剔除份数 / 因坐标开关剥过几份 */
+    captureFiles: safeCaptureItems.length,
+    captureBytes: captureAccount.keptBytes,
+    captureFilesExcluded: excludedCaptures.length,
+    captureFilesGeometryStripped: safeCaptureItems.filter((c) => c.geometryStripped).length,
     windowId: windowIdOrNone(effectiveWindowId),
     windowApplied: Boolean(win),
     windowLinesKept: account.keptLines,

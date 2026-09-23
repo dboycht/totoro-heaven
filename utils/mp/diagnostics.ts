@@ -59,6 +59,124 @@ export const DIAG_LOG_DAYS = 3
 export const DIAG_LOG_MAX_BYTES = 8 * 1024 * 1024
 
 /**
+ * 🆕 2026-09-23 **响应原文留档**（captures）—— 用户原话：
+ * 「裁剪的话要是有重要数据不就无法获得了？……主要是**我们拿到数据进行分析**，就不在客户端上进行了」
+ *
+ * 结论：**响应原文必须完整可分析** ⇒ 每个代理请求把**脱敏后的完整正文**写成一份单独文件，**不做单条裁剪**；
+ * 体积问题改由「**总量预算 + 淘汰记账 + 轮转窗**」兜（见 `DIAG_CAPTURE_MAX_BYTES`）。
+ * 日志行里的 `respBody` 仍是"小而可读"的摘要（**不动**），但会带一个 `capture` 指针指向这份原文。
+ */
+export const DIAG_CAPTURE_DIR = 'captures'
+/** 时间窗与日志一致（`DIAG_LOG_DAYS`）：窗口内的 captures 才进导出包 */
+export const DIAG_CAPTURE_DAYS = DIAG_LOG_DAYS
+/** captures 目录的**总量预算**（默认 64 MB；`TOTORO_CAPTURE_MAX_BYTES` 可覆盖） */
+export const DIAG_CAPTURE_MAX_BYTES = 64 * 1024 * 1024
+
+/** captures 文件名里的时间戳格式：`YYYYMMDD-HHmmssSSS`（**可排序**：字典序 = 时间序） */
+export function captureStamp(d: Date): string {
+  const p = (n: number, w = 2) => String(n).padStart(w, '0')
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}${p(d.getMilliseconds(), 3)}`
+}
+
+/**
+ * 端点路径 → 文件名短名（**只用白名单字符**，防目录穿越与非法文件名）。
+ * `"/wxxcx/sunrun/getSunrunPaper"` ⇒ `"wxxcx-sunrun-getSunrunPaper"`；空 ⇒ `"root"`。
+ */
+export function captureEndpointSlug(path: string): string {
+  const s = String(path ?? '')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[.-]+|[.-]+$/g, '')
+  return (s || 'root').slice(0, 80)
+}
+
+/** 一份 capture 的文件名（**可读、可排序**）：`<本地时间戳>-<序号>-<端点短名>-<http状态>.<json|txt>` */
+export function captureFileName(parts: { at: Date; seq: number; endpoint: string; http: number; json: boolean }): string {
+  const seq = String(Math.max(0, Math.floor(parts.seq))).padStart(4, '0')
+  return `${captureStamp(parts.at)}-${seq}-${captureEndpointSlug(parts.endpoint)}-${Math.floor(parts.http)}.${parts.json ? 'json' : 'txt'}`
+}
+
+/** 解析 capture 文件名（列表/清单/核对用；解析不出来返回 null，**不抛错**） */
+export function parseCaptureName(name: string): { stamp: string; seq: number; endpoint: string; http: number; json: boolean } | null {
+  const m = /^(\d{8}-\d{9})-(\d{4})-(.*)-(\d{2,3})\.(json|txt)$/.exec(String(name ?? ''))
+  if (!m) return null
+  return { stamp: m[1]!, seq: Number(m[2]), endpoint: m[3]!, http: Number(m[4]), json: m[5] === 'json' }
+}
+
+/** 时间戳串（`captureStamp` 的产物）→ epoch ms；解析不出来返回 null */
+export function captureStampToMs(stamp: string): number | null {
+  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})(\d{3})$/.exec(String(stamp ?? ''))
+  if (!m) return null
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]), Number(m[7]))
+  const t = d.getTime()
+  return Number.isFinite(t) ? t : null
+}
+
+/** 时间戳串 → ISO（显示用；解析不出来返回空串） */
+export function captureStampToIso(stamp: string): string {
+  const ms = captureStampToMs(stamp)
+  return ms === null ? '' : new Date(ms).toISOString()
+}
+
+/** 一份 capture 的元信息（与正文**分开**存成同名 `.meta.json`；正文里不放元信息，便于直接拿去做分析） */
+export interface CaptureMeta {
+  /** 本机时间（ISO） */
+  at: string
+  /** 端点（上游路径后缀，如 `/wxxcx/sunrun/getSunrunPaper`） */
+  endpoint: string
+  /** HTTP 状态码 */
+  http: number
+  /** 耗时（ms） */
+  ms: number
+  /** 上游响应原始字节数（脱敏前） */
+  originalBytes: number
+  /** 落盘正文的字节数（脱敏后；**不做裁剪**） */
+  bytes: number
+  /** 响应形态：json / text */
+  kind: 'json' | 'text'
+  /** 解包退化标记（`ok` 或 `suspect: <路径>`），与日志行同口径 */
+  unpack?: string
+  /**
+   * 🔴 **这份是否被裁剪** —— 正常**必须**是 `false`（用户要求"完整可分析"）。
+   * 本实现**不截断单份**，所以恒为 false；保留该字段是让维护者一眼看出"这份完不完整"。
+   */
+  truncated: boolean
+  /** 文件名（自指，便于清单核对） */
+  fileName: string
+}
+
+/** captures 清单里"进包的每一份"的账（manifest 用） */
+export interface CaptureFileEntry {
+  name: string
+  bytes: number
+  /** 导出时是否因「包含坐标」开关关闭而剥掉了坐标（逐份记录，别让人以为原文就是这样） */
+  geometryStripped: boolean
+}
+
+/** captures 的总账（`manifest.captures`）：**淘汰也要记账，不许静默丢** */
+export interface CaptureAccount {
+  /** 目录（**绝对路径**，让人知道去哪儿找） */
+  dir: string
+  /** 窗口内进包的份数 */
+  keptFiles: number
+  /** 窗口内进包的总字节 */
+  keptBytes: number
+  /** 写出时因预算被淘汰的份数与字节（**累计**，从 `.evicted.json` 读） */
+  droppedFiles: number
+  droppedBytes: number
+  /** 被淘汰的具体文件名（最多列 50 个，其余用 `droppedMore` 记数） */
+  droppedNames: string[]
+  droppedMore?: number
+  /** 总量预算（字节） */
+  budgetBytes: number
+  /** 当前目录占用（字节） */
+  usedBytes: number
+  /** 保留下来的**最旧**一份的时间（ISO；没有则空串） */
+  oldestKeptAt: string
+  /** 窗口内的逐份清单（名字/大小/是否剥坐标） */
+  entries: CaptureFileEntry[]
+}
+
+/**
  * 应用内事件时间线：最多带多少条。
  *
  * ⚠️ 2026-09-22 起它的**含义变了**（issue #12 二次返工）：以前是"只取**最近** 300 条"

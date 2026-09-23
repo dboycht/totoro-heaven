@@ -251,13 +251,13 @@ export function maskTokenLike(text: string): string {
 /**
  * **导出红线**用的判据：这段文本里还有没有**未被掩掉**的凭证形态。
  *
- * ⚠️ 与掩码侧**同一个函数、同一粒度**（闸门复验的教训）：两侧若各写一份，会出现
- * "掩码判定安全、红线却命中"⇒ `partitionLogsByRedline()` 把**整个日志文件**剔出包（正是 B6 要消灭的）。
- * 实现上等价于"`maskTokenLike(t) !== t`"——判据完全由掩码侧决定，**红线不持有任何自有正则**。
+ * 🔴 判据就是**掩码侧本身**：`maskTokenLike(t) !== t` ——
+ * "掩码会不会改动它"**等价于**"这里还有需要掩的东西"。这样两侧**在定义上**就不可能分叉。
+ * （2026-09-23 实测踩到的边界：红线原先自己先"判定"、掩码则是"判定 + 替换"，
+ * 两者在"已经脱敏过的指纹串"上不一致 ⇒ 红线判"未掩" ⇒ **导出被打成 500**。
+ * 改成"以改了没有为准"之后，掩过的文本必然判为安全。）
  */
 export function hasUnmaskedCredential(text: string): boolean {
   const s = String(text ?? '')
-  if (findCredentialRuns(s).length > 0) return true
-  // "载明是凭证"的那几条由掩码侧负责，这里用同一实现核对（掩不掉就等于没掩）
-  return maskDeclaredCredentials(s) !== s
+  return maskTokenLike(s) !== s
 }
