@@ -24,6 +24,7 @@
       class="credits-confetti"
       :class="{ 'credits-confetti--hidden': !confettiAlive }"
       data-testid="credits-confetti"
+      :data-confetti-loop="rafRunning ? '1' : '0'"
       aria-hidden="true"
     />
 
@@ -100,16 +101,30 @@
           >
             {{ scrolling ? '暂停滚动' : '继续滚动' }}
           </v-btn>
+          <!--
+            「再来一次」：任何时刻都应该能重播。
+            reduced-motion / 彩带被关掉时置灰禁用，并在旁边写明原因 ——
+            绝不允许"能点但什么都不发生"（2026-09-24 用户实机反馈）。
+          -->
           <v-btn
             size="small"
             variant="tonal"
             color="primary"
             prepend-icon="mdi-party-popper"
             data-testid="credits-replay"
+            :disabled="!confettiAvailable"
+            :title="confettiDisabledReason || '重新播放彩带'"
             @click="replay"
           >
             再来一次
           </v-btn>
+          <span
+            v-if="confettiDisabledReason"
+            class="text-caption text-medium-emphasis"
+            data-testid="credits-confetti-off-note"
+          >
+            {{ confettiDisabledReason }}
+          </span>
           <!-- 条目放得下时才有得切；滚动模式下整列都在动，不需要切换控件 -->
           <template v-if="fits && total > 1">
             <v-btn
@@ -448,6 +463,11 @@ interface ConfettiParticle {
 
 const canvasEl = ref<HTMLCanvasElement | null>(null)
 const confettiAlive = ref(false)
+/**
+ * rAF 循环是否在跑 —— 只用来给元素挂一个 `data-confetti-loop` 标记，
+ * 方便验证脚本（和以后排查）一眼看出"点了重播到底有没有真的重新起循环"。
+ */
+const rafRunning = ref(false)
 
 const ctxRef = shallowRef<CanvasRenderingContext2D | null>(null)
 const particles: ConfettiParticle[] = []
@@ -563,6 +583,35 @@ function detachDprQuery() {
   if (dprQuery) {
     dprQuery.removeEventListener?.('change', onDprChange)
     dprQuery = null
+  }
+}
+
+/**
+ * DPR 变化的**兜底轮询**（1s 一次，只比对两个数，不做任何重活）。
+ * 为什么媒体查询还不够：① 某些环境（含自动化里的 DPR 覆盖）改变 devicePixelRatio 时
+ * **不会重新求值 `resolution` 媒体查询**；② 把窗口拖到不同 DPI 的显示器上时，
+ * CSS 尺寸可能一个像素都不变 ⇒ `resize` 也不来。
+ * 只靠 resize + 媒体查询会漏掉这两种，于是"重播的彩带按旧 DPR 画"，高分屏上就糊。
+ * 真正变 DPR 才调 resizeCanvas()（它内部已做"尺寸没变就返回"的短路）。
+ */
+let dprPollTimer: ReturnType<typeof setInterval> | null = null
+
+function startDprPoll() {
+  stopDprPoll()
+  dprPollTimer = setInterval(() => {
+    if (document.hidden) return
+    const next = Math.min(2, window.devicePixelRatio || 1)
+    if (next !== dpr) {
+      resizeCanvas() // 画布尺寸变了 ⇒ 清空画布；下一次重播会按新 DPR 重画
+      reflow() // 布局与 DPR 无关，但顺手量一次，保持"尺寸口径只在一处"
+    }
+  }, 1000)
+}
+
+function stopDprPoll() {
+  if (dprPollTimer !== null) {
+    clearInterval(dprPollTimer)
+    dprPollTimer = null
   }
 }
 
@@ -736,6 +785,7 @@ function startLoop() {
   if (rafId !== null) return
   lastTs = 0
   confettiAlive.value = true
+  rafRunning.value = true
   rafId = requestAnimationFrame(frame)
 }
 
@@ -744,6 +794,7 @@ function stopLoop() {
     cancelAnimationFrame(rafId)
     rafId = null
   }
+  rafRunning.value = false
 }
 
 function clearTimers() {
@@ -759,14 +810,12 @@ function clearParticles() {
   confettiAlive.value = false
 }
 
-/** 真正播一场：排好波次、启动循环 */
-function playConfetti() {
-  if (!props.showConfetti) return
-  if (prefersReducedMotion.value) return // 尊重系统设置：不播动画，只静态显示内容
-  if (!canvasEl.value) return
-
-  clearTimers()
-  resizeCanvas()
+/**
+ * 排好这一场的波次并启动循环（**不做可用性判断**，纯执行）。
+ * 调用前请先 clearTimers() + clearParticles()，保证从任何状态都能干净重来。
+ */
+function scheduleBurst() {
+  resizeCanvas() // 每次都重量：resize / DPR 变化之后重播也必须铺满新视口
 
   const requested = Number(props.particleCount) > 0 ? Number(props.particleCount) : autoParticleCount()
   const totalParticles = Math.max(0, Math.min(400, Math.round(requested)))
@@ -790,11 +839,28 @@ function playConfetti() {
   })
 }
 
-/** "再来一次"：先清空当前场次再重排，不会叠着上一场 */
-function replay() {
+/** 真正播一场（挂载时用）：先判可用性，再排波次 */
+function playConfetti() {
+  if (!confettiAvailable.value) return // 不播的原因由按钮的禁用态与旁边的说明来交代
+  if (!canvasEl.value) return
+
   clearTimers()
-  clearParticles()
-  playConfetti()
+  scheduleBurst()
+}
+
+/**
+ * 「再来一次」：**幂等重播**。
+ * 无论当前处在什么状态（爆裂进行中 / 刚结束 / 停留很久 / resize 之后 / 切后台回来 /
+ * 甚至粒子与 rAF 都已归零），都走同一条完整重启路径：
+ *   清波次定时器 → 停 rAF → 清粒子并清屏 → 重量尺寸 → 重排波次 → 重新 requestAnimationFrame。
+ * 进行中点就是**从头再来一遍**（不叠加、也不被忽略）。
+ */
+function replay() {
+  if (!confettiAvailable.value) return // 禁用态下不该走到这里；万一走到也绝不静默失败
+  clearTimers()
+  stopLoop() // 显式停掉：rafId 归零后 startLoop() 才可能真的重新起循环
+  clearParticles() // 清空粒子 + 清屏（lastTs 由 startLoop() 归零，首帧不会补算一大段 dt）
+  scheduleBurst()
 }
 
 /* ------------------------------------------------------------------ *
@@ -810,6 +876,17 @@ const motionQuery =
     ? window.matchMedia('(prefers-reduced-motion: reduce)')
     : null
 const prefersReducedMotion = ref(motionQuery ? motionQuery.matches : false)
+
+/**
+ * 彩带当前能不能播；不能播时给出**人话原因**，直接显示在「再来一次」旁边。
+ * 这两条与 playConfetti() 的判断必须同源 —— 否则又会出现"按钮能点但没反应"。
+ */
+const confettiAvailable = computed(() => props.showConfetti && !prefersReducedMotion.value)
+const confettiDisabledReason = computed(() => {
+  if (!props.showConfetti) return '彩带已关闭。'
+  if (prefersReducedMotion.value) return '系统已开启「减少动态效果」，彩带已关闭。'
+  return ''
+})
 
 function onMotionChange(e: MediaQueryListEvent | MediaQueryList) {
   prefersReducedMotion.value = !!e.matches
@@ -860,8 +937,9 @@ onMounted(() => {
   }
 
   updateStageHeight()
-  // 换显示器 / 浏览器缩放只改 DPR 时，resize 不一定来 ⇒ 另开媒体查询盯着
+  // 换显示器 / 浏览器缩放只改 DPR 时，resize 不一定来 ⇒ 媒体查询 + 每秒兜底轮询双保险
   attachDprQuery()
+  startDprPoll()
   reflowSoon()
   if (props.playOnMount) playConfetti()
   scheduleRotate()
@@ -877,6 +955,7 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   resizeObserver = null
   detachDprQuery()
+  stopDprPoll()
   motionQuery?.removeEventListener('change', onMotionChange)
   document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('resize', onResize)
