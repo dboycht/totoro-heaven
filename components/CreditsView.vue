@@ -456,7 +456,14 @@ let pendingWaves = 0
 
 /** 暂停/后台时不要把物理算飞（帧间隔封顶 32ms） */
 const MAX_DT = 0.032
-const GRAVITY = 620
+/**
+ * 重力加速度（px/s²）。取值偏小是**故意的**：它决定"抛物线顶点"的可控性 ——
+ * 顶点高度 = v0² / (2g)。重力小一点，同样的顶点只需要更小的初速，
+ * 下落也更"飘"（更接近纸带/彩带的观感），而且不易被空气阻力吃掉高度。
+ */
+const GRAVITY = 500
+/** 目标顶点 = 视口高度 × 这个系数（> 1 ⇒ 顶点越过顶边，保证顶部也有粒子） */
+const RISE_OVERSHOOT = 1.18
 
 const PALETTE = [
   '#4CAF50',
@@ -472,21 +479,24 @@ const PALETTE = [
 ]
 
 /**
- * 播彩带的时间线：第 0 / 300 / 660 / 1050 毫秒各爆一次（共 4 波），
- * 每波粒子数依次递减（约 34% / 27% / 21% / 18%），
+ * 播彩带的时间线：第 0 / 320 / 700 / 1150 毫秒各爆一次（共 4 波），
+ * 每波粒子数依次递减（约 30% / 27% / 24% / 19%），
  * 所以总数 ≈ particleCount，不会因为多波而翻倍。
+ * 最后一波 1150ms 才爆、顶点在 2s 之后 ⇒ 整个 0.5~2.5s 窗口内画面都满。
  */
-const WAVE_AT_MS = [0, 300, 660, 1050]
-const WAVE_SHARE = [0.34, 0.27, 0.21, 0.18]
+const WAVE_AT_MS = [0, 320, 700, 1150]
+const WAVE_SHARE = [0.3, 0.27, 0.24, 0.19]
+/** 各波的初速系数：第一波最猛（顶点超过顶边），后面的依次低一些，形成层次 */
+const WAVE_VSCALE = [1.06, 0.92, 0.76, 0.6]
 
-/** 视口面积基准：1440x1000 时取 240 个粒子，再按面积线性缩放并夹在 200~320 */
+/** 视口面积基准：1440x1000 时取 280 个粒子，再按面积线性缩放并夹在 240~360 */
 const AREA_BASE_PX = 1440 * 1000
-const AREA_BASE_COUNT = 240
+const AREA_BASE_COUNT = 280
 
 function autoParticleCount() {
   const px = Math.max(1, window.innerWidth) * Math.max(1, window.innerHeight)
   const n = Math.round(AREA_BASE_COUNT * (px / AREA_BASE_PX))
-  return Math.max(200, Math.min(320, n))
+  return Math.max(240, Math.min(360, n))
 }
 
 /** 只在尺寸真的变了时才改画布尺寸（改 canvas 尺寸会清空画布，不能每帧做） */
@@ -511,42 +521,72 @@ function resizeCanvas() {
   if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 }
 
+/** 造一条纸带/碎片。`riseToTop` = 是否按"顶点超过顶边"反推初速 */
+function pushParticle(o: { x: number; y: number; riseToTop: boolean; vScale: number; speedJitter: number }) {
+  const ribbon = Math.random() < 0.55
+  // 抛射角：-145° ~ -35°（canvas 的 y 轴朝下，所以负角度 = 朝上）
+  const angle = (-145 + Math.random() * 110) * (Math.PI / 180)
+  // sin 分量越大越直上；留一点横向分量，爆开时才是一个扇面而不是一条线
+  const sinA = Math.max(0.34, Math.sin(-angle))
+  const k = o.speedJitter
+  const speed = o.vScale * k
+  const baseDrag = 0.36 + Math.random() * 0.22
+
+  particles.push({
+    x: o.x,
+    y: o.y,
+    // riseToTop 的粒子：让"向上的那段初速"正好把顶点送到视口高度的 RISE_OVERSHOOT 倍
+    vy: -((GRAVITY * 2 * height * RISE_OVERSHOOT) ** 0.5) * sinA * speed,
+    // 上冲为主的粒子横向不要太野，否则会飞出左右边界白白浪费
+    vx: Math.cos(angle) * height * 0.4 * (o.riseToTop ? 0.45 : 0.7) * speed,
+    w: ribbon ? 5 + Math.random() * 4 : 3 + Math.random() * 4,
+    h: ribbon ? 12 + Math.random() * 14 : 3 + Math.random() * 4,
+    color: PALETTE[(Math.random() * PALETTE.length) | 0]!,
+    rot: Math.random() * Math.PI * 2,
+    spin: (Math.random() - 0.5) * 9,
+    grav: GRAVITY * (0.85 + Math.random() * 0.3),
+    drag: baseDrag,
+    wob: 12 + Math.random() * 30,
+    wobPhase: Math.random() * Math.PI * 2,
+    flipPhase: Math.random() * Math.PI * 2,
+    flipSpeed: 4 + Math.random() * 7,
+    kind: ribbon ? 'ribbon' : 'chip',
+    shape: (Math.random() * 3) | 0,
+  })
+}
+
 /**
- * 爆一波：起点铺满**整条下缘**（x 全宽随机），初速向上且足够大。
- * 速度按视口高度缩放 ⇒ 小窗口不冲过头、大屏也能覆盖整个页面高度。
+ * 爆一波。**两种来源混着来**，才能既铺满整条下缘、又让上半屏（尤其顶部 1/4）也有东西：
+ *   · 主层：从**整条下缘**（x 全宽随机）上冲，初速按视口高度反推 ⇒ 顶点超过顶边；
+ *   · 副层（约 22%）：在**中上部**就地生成（礼花感），上冲幅度小、向下落得慢。
+ * 初速**按视口尺寸算**，不写死数值 —— 换分辨率仍然覆盖整个页面高度。
  */
-function spawnWave(count: number) {
+function spawnWave(count: number, vScale: number) {
   const ctx = ctxRef.value
   if (!ctx || count <= 0) return
 
-  const originY = height * 0.995
-  const vScale = Math.max(0.55, Math.min(1.9, height / 900))
+  const fromBottom = Math.max(1, Math.round(count * 0.78))
+  const inAir = count - fromBottom
 
-  for (let i = 0; i < count; i++) {
-    // 抛射角：-142° ~ -38°（canvas 的 y 轴朝下，所以负角度 = 朝上）
-    const angle = (-142 + Math.random() * 104) * (Math.PI / 180)
-    const speed = (330 + Math.random() * 620) * vScale
-    const ribbon = Math.random() < 0.55
-
-    particles.push({
-      // 起点铺满整条边，不再集中在中间那一段
+  for (let i = 0; i < fromBottom; i++) {
+    pushParticle({
       x: Math.random() * width,
-      y: originY + (Math.random() - 0.5) * height * 0.03,
-      vx: Math.cos(angle) * speed * (0.6 + Math.random() * 0.8),
-      vy: Math.sin(angle) * speed,
-      w: ribbon ? 5 + Math.random() * 4 : 3 + Math.random() * 4,
-      h: ribbon ? 12 + Math.random() * 14 : 3 + Math.random() * 4,
-      color: PALETTE[(Math.random() * PALETTE.length) | 0]!,
-      rot: Math.random() * Math.PI * 2,
-      spin: (Math.random() - 0.5) * 9,
-      grav: GRAVITY * (0.8 + Math.random() * 0.5) * vScale,
-      drag: 0.24 + Math.random() * 0.3,
-      wob: 12 + Math.random() * 30,
-      wobPhase: Math.random() * Math.PI * 2,
-      flipPhase: Math.random() * Math.PI * 2,
-      flipSpeed: 4 + Math.random() * 7,
-      kind: ribbon ? 'ribbon' : 'chip',
-      shape: (Math.random() * 3) | 0,
+      y: height * 0.995 + (Math.random() - 0.5) * height * 0.03,
+      riseToTop: true,
+      vScale,
+      // 初速 ±20% 抖动：不是一个模子刻出来的，覆盖层次更厚
+      speedJitter: 0.8 + Math.random() * 0.4,
+    })
+  }
+
+  for (let i = 0; i < inAir; i++) {
+    pushParticle({
+      x: Math.random() * width,
+      // 中上部就地生成，直接补足上半屏（顶部 1/4 更快有粒子）
+      y: height * (0.1 + Math.random() * 0.5),
+      riseToTop: false,
+      vScale,
+      speedJitter: 0.8 + Math.random() * 0.4,
     })
   }
 }
@@ -570,8 +610,9 @@ function step(dt: number) {
     p.y += p.vy * dt
     p.rot += p.spin * dt
 
-    // 落出下缘 / 飞出左右缘太远 ⇒ 这条结束
-    if (p.y > height + 120 || p.x < -150 || p.x > width + 150) {
+    // 落出下缘 / 飞出上方或左右缘太远 ⇒ 这条结束
+    // （上方阈值给得宽松：顶点就是要越过顶边，飞太高再回收，别一进画外就删）
+    if (p.y > height + 120 || p.y < -height * 0.8 || p.x < -150 || p.x > width + 150) {
       particles.splice(i, 1)
       continue
     }
@@ -673,10 +714,11 @@ function playConfetti() {
       : Math.round(totalParticles * (WAVE_SHARE[i] ?? 0))
     allocated += count
     pendingWaves++
+    const vs = WAVE_VSCALE[i] ?? 0.8
     waveTimers.push(
       setTimeout(() => {
         pendingWaves--
-        spawnWave(count)
+        spawnWave(count, vs)
         startLoop()
       }, delay),
     )
