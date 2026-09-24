@@ -96,3 +96,28 @@ export function taskShapeLine(task: unknown): string {
   const f = fitRequirementOf(task)
   return `route=${r.kind}(${r.lineCount}) fit=${f.required ? `required(${f.threshold})` : 'none'}`
 }
+
+/**
+ * 🆕 2026-09-23（pre3 实测事故，**唯一一处任务号兜底链**）：**任务号到底取哪个字段**。
+ *
+ * ## 为什么必须有它（用户现场）
+ * 研究生院「研途健行」那份任务响应里**顶层没有 `taskId` 字段** ✗（实测顶层键是
+ * `id` / `paperId` / `paperName` / `mileage` / `runPointList` …）—— 而"自由路线任务"提交时
+ * `paperId` 正是**唯一的成绩归属标识**（线路为空、报文里 `lineId` 必须是空串）。
+ * 老代码只写 `task.taskId` ⇒ 取到空串 ⇒ 提交前的上下文校验判"没有可提交的线路/任务号" ⇒
+ * **`getRunBegin` 一个都没发出去**（日志实证：三个写请求各 0 条）。用户以为"走到最后一步却提交不了"。
+ *
+ * ## 判据（可执行）
+ * 按顺序取 **`taskId` → `paperId` → `id`**，**空串一律当作"没给"继续往后兜**（`??` 不跳空串，所以用"取到非空"的写法）；
+ * 三个都拿不到 ⇒ 返回空串（调用方据此拦"没有任务号就没法归属成绩"，并**指路**让用户回工作台重新读取）。
+ * ⚠️ 顺序是有意的：`taskId` 是本项目内部口径（如果厂商给了就用它），`paperId`/`id` 才是他这份响应里的实际字段。
+ */
+export function taskPaperIdOf(task: unknown): string {
+  const raw = (task ?? {}) as Record<string, unknown>
+  for (const key of ['taskId', 'paperId', 'id'] as const) {
+    const v = raw[key]
+    const s = typeof v === 'string' || typeof v === 'number' ? String(v).trim() : ''
+    if (s) return s
+  }
+  return ''
+}

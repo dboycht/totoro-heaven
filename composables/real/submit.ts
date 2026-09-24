@@ -20,9 +20,12 @@ import type { MpRunLine } from '~/src/mp/types'
 import { buildRunBeginRequest, buildScoreDetailRequest, buildScoreRequest, toSubmitPoints } from '~/utils/mp/submitPayload'
 import { evaluateRunGate } from '~/utils/mp/schoolGate'
 // 🆕 2026-09-22（issue #12）：门禁要按"任务到底要不要求线路"来判（纯函数，与只读侧 `gateStatus` 同源）
-import { routeRequirementOf } from '~/utils/mp/taskShape'
+// 🔴 2026-09-23（pre3）：任务号也走兜底链（厂商响应可能只有 paperId/id，没有 taskId）
+import { routeRequirementOf, taskPaperIdOf } from '~/utils/mp/taskShape'
 // 🆕 2026-09-23（pre3）：门禁还要判"本机有没有可用几何"（同一判据 `freeRouteGeometryChoice`）
 import { freeRouteGeometryChoice } from '~/utils/mp/trackLibrary'
+// 🔴 2026-09-23（pre3 实测事故）：提交前的**上下文校验**收口到纯函数（任务号兜底链 / 自由路线任务必须放行）
+import { evaluateSubmitContext } from '~/utils/mp/submitContext'
 import { TOKEN_EXPIRED_HINT } from '~/utils/mp/tokenScan'
 import { looksLikeTokenExpired } from '~/src/mp/envelope'
 import { logError, logEvent, logInfo, logWarn } from '../useEventLog'
@@ -129,46 +132,54 @@ export function useMpRealSubmit() {
      * · `kind: 'free'` ⇒ 服务端未下发线路（自由路线任务）：没有线路是必然的，不该因此拦。
      */
     const lineRequired = routeRequirementOf(task.value).kind === 'line'
-    /** 任务号兜底：只有"没有线路"时才会被报文构造器采用（见 submitPayload 的注释） */
-    const paperId = String(input.paperId ?? task.value?.taskId ?? '')
     /**
-     * 上下文检查（⚠️ 逐条写清，别把三件事混成一句；也**不抽成布尔变量** ——
-     * 抽出去会让 TS 丢掉 `profile.value` 的非空收窄，下面 `profile.value.schoolCode` 会报可能为 null）：
-     *   ① 会话/档案（两种跑法都要）；
-     *   ② 阳光跑还要**任务**（约束与任务号都从它来）；
-     *   ③ 阳光跑还要**"线路标识或任务号"至少有一个** —— 任务下发了线路（`kind: 'line'`）时必须选到线路；
-     *      任务**未下发线路**（`kind: 'free'`）时线路本来就是空的，此时必须有任务号兜底，
-     *      否则报文里既没有 lineId 也没有 paperId，成绩无从归属。
+     * 🔴 2026-09-23（pre3 实测事故）：**前置上下文校验**收口到纯函数 `evaluateSubmitContext()`。
+     *
+     * 老代码在这里内联了五条判据，其中 `!freeRun && !lineRequired && !input.line && !paperId` 里
+     * `paperId` 只取 `task.taskId` —— 而用户那份任务响应**顶层没有 `taskId`**（只有 `id`/`paperId`）
+     * ⇒ 取到空串 ⇒ 明明"会话/任务/门禁"都齐了，却在**最后一步**被拦，`getRunBegin` 一个都没发出去。
+     * 现在：任务号走**兜底链** `taskId → paperId → id`（`taskPaperIdOf()`），且"自由路线任务 + 有任务"
+     * **必须放行**；真正必须拦的只剩「会话/档案缺」「任务缺」「任务号三者皆空」「指定了线路却没选」。
+     * 提示一律**指路**（"回工作台读取真实账号与任务"），不再笼统说"缺少…"。
      */
-    if (
-      !token ||
-      !profile.value ||
-      (!freeRun && !task.value) ||
-      (!freeRun && lineRequired && !input.line) ||
-      (!freeRun && !lineRequired && !input.line && !paperId)
-    ) {
+    const ctx = evaluateSubmitContext({
+      token,
+      hasProfile: Boolean(profile.value),
+      runType,
+      task: task.value,
+      lineRequired,
+      line: input.line,
+      paperId: input.paperId,
+    })
+    if (!ctx.ok) {
       phase.value = 'error'
-      phaseMessage.value = freeRun
-        ? '缺少真实会话/档案，请先在工作台读取真实数据'
-        : '缺少真实会话/档案/任务（或没有可提交的线路/任务号），请先在工作台读取真实数据'
+      phaseMessage.value = ctx.message
       /** 🆕 2026-09-23（用户要求 2️⃣）：这也是"提交从未发出"的一种，显式记一条（原因 + 判定输入摘要） */
-      reportBlocked('missing-context', '缺少真实会话/档案/任务（或没有可提交的线路/任务号）', {
+      reportBlocked('missing-context', ctx.message, {
+        reasonCode: ctx.reasonCode,
         hasToken: Boolean(token),
         hasProfile: Boolean(profile.value),
         hasTask: Boolean(task.value),
         lineRequired,
         hasLine: Boolean(input.line),
         freeRun,
-        hasPaperId: Boolean(paperId),
+        hasPaperId: Boolean(ctx.paperId),
       })
       return null
     }
+    /** 最终采用的任务号（兜底链结果；自由路线任务提交时靠它归属成绩） */
+    const paperId = ctx.paperId
 
     // ⓪ 三合一否决门禁（必须在任何写操作之前）—— 含"夜间停用 22:30~06:00"（同一纯函数，实时取时钟）
     // （过程清单已在入口清空，见上面的 `submitProgress.value = []`）
     pushProgress('step', SUBMIT_PROGRESS.gate())
     const gate = evaluateRunGate({
-      schoolCode: profile.value.schoolCode,
+      /**
+       * ⚠️ 用可选链：上下文校验已收口到纯函数 `evaluateSubmitContext()` ⇒ TS 在这里**不再**能收窄
+       * `profile.value`（历史注释说过"别把判据抽成布尔变量"正是为此）。`RunGateInput.schoolCode`
+       * 本来就允许 null/undefined，所以 `?.` 与原来语义一致（门禁不看 schoolCode 的取值）。
+       */
+      schoolCode: profile.value?.schoolCode,
       switches: switches.value,
       line: input.line,
       cameraFlag: cameraFlag.value,
@@ -176,7 +187,8 @@ export function useMpRealSubmit() {
       // 🆕 2026-09-22（issue #12）：与只读侧 `gateStatus` **同一判据** —— 服务端未下发线路的任务不因"未选线路"拦
       lineRequired,
       // 🆕 2026-09-23（pre3）：本机有没有可用几何（只对"未下发线路"的任务有意义；同一判据 `freeRouteGeometryChoice`）
-      localGeometryReady: Boolean(freeRouteGeometryChoice(lib.entries.value, task.value, lib.freeRouteChoiceFor(task.value?.taskId ?? '')).entry),
+      // ⚠️ 任务的"身份"也要走兜底链（他这份响应没有 `taskId` ⇒ 只用 taskId 会让"记住的本机路径"对不上）
+      localGeometryReady: Boolean(freeRouteGeometryChoice(lib.entries.value, task.value, lib.freeRouteChoiceFor(taskPaperIdOf(task.value))).entry),
       runType,
       now: new Date(),
     })

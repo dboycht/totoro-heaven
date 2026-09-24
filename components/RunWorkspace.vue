@@ -27,6 +27,21 @@
       </div>
     </v-alert>
 
+    <!--
+      🆕 2026-09-24（pre3 连带修复）："重新读取该线路的开关"入口放在最上面（常驻）——
+      原先它在"已阻止真实提交"那张卡里，而 pre3 放宽后 `allow` 恒为 true ⇒ 那张卡不再出现，
+      用户就没有任何入口重查摄像头杆了（他现场正是"开关读不到又没法重试"）；
+      而且那张卡在结果卡里（结算过才渲染）⇒ 还没跑过时也看不到它。
+      现在：只要这次判定命中了 `camera_unknown`（未读 / 换线路后没重查），这个入口就在最显眼处。
+    -->
+    <div v-if="cameraFlagNeedsRetry" class="mb-3 d-flex align-center flex-wrap ga-2">
+      <v-btn size="small" variant="tonal" prepend-icon="mdi-refresh" @click="retryCameraFlag()">
+        重新读取该线路的开关
+      </v-btn>
+      <span class="text-caption text-warning">当前线路的「摄像头杆」开关还没读到 —— 点左边重查（只读，不写数据）</span>
+      <span v-if="cameraFlagError" class="text-caption text-warning">{{ cameraFlagError }}</span>
+    </div>
+
     <v-card class="mb-4" variant="tonal">
       <v-card-text class="d-flex align-center flex-wrap ga-3 py-2">
         <v-chip :color="realReady ? 'success' : demoMode ? 'accent' : 'warning'" size="small" variant="tonal">
@@ -467,18 +482,13 @@
         <div class="font-weight-bold">已阻止真实提交（不会创建场次）</div>
         <div class="text-body-2">{{ gateStatus.reason }}</div>
         <div v-if="cameraFlagError" class="text-caption mt-1">读取异常：{{ cameraFlagError }}</div>
-        <!-- 线路开关读取失败/切换线路后未重查 → 给一个显式重试入口（不必刷新页面） -->
-        <v-btn
-          v-if="gateStatus.blockedBy === 'camera_unknown'"
-          size="small"
-          variant="tonal"
-          class="mt-2"
-          prepend-icon="mdi-refresh"
-          @click="retryCameraFlag()"
-        >
-          重新读取该线路的开关
-        </v-btn>
       </v-alert>
+
+      <!--
+        🆕 2026-09-24（pre3 连带修复）："重新读取该线路的开关"入口已搬到页面最上面常驻（见文件开头）——
+        原先放在这里时有两个坑：① pre3 放宽后 `allow` 恒 true ⇒ 上面那张"已阻止真实提交"的卡不出现 ⇒ 入口消失；
+        ② 它在**结果卡**里（结算过才渲染）⇒ 还没跑过时也点不到。改常驻后这两条都不再成立。
+      -->
 
       <v-alert v-if="phase === 'waiting'" type="info" variant="tonal" class="mt-2">
         <div class="d-flex align-center ga-3">
@@ -711,7 +721,7 @@ import { logError, logInfo, logWarn } from '~/composables/useEventLog'
 import { reportBlocked } from '~/composables/useDiagEventReporter'
 import { groupRoutesByCampus, toSelectItems, trackEditorLink, warnForSelection } from '~/utils/mp/routeGroups'
 // 🆕 2026-09-22（issue #12）：判"任务到底有没有下发线路"（纯函数，与门禁/自检/诊断同源）
-import { fitRequirementOf, routeRequirementOf } from '~/utils/mp/taskShape'
+import { fitRequirementOf, routeRequirementOf, taskPaperIdOf } from '~/utils/mp/taskShape'
 import { laneLoop, laneRatioFor, ringLengthM } from '~/utils/mp/trackEditor'
 // 🆕 2026-09-22（审计 B2）：非官方路径的"一圈" = 画的圈（与跑步页 lapLengthM 同一基准）
 import { freePathLapLengthM } from '~/utils/mp/freePathGeometry'
@@ -839,7 +849,7 @@ const libEntriesNotForTask = computed(() => libTotal.value > 0 && configuredForT
  * 本机**记住的**"这个任务选过哪条"（按 taskId 持久化；**可能是已被删除的旧 id**）。
  * ⚠️ 判据要收它（而不是"实际生效的那条"）——否则"上次选的那条已不可用"这条提示永远不会出现。
  */
-const freeRouteSavedId = computed(() => freeRouteChoiceFor(activeTask.value?.taskId))
+const freeRouteSavedId = computed(() => freeRouteChoiceFor(taskPaperIdOf(activeTask.value)))
 const freeRouteChoice = computed(() =>
   routeIsFree.value
     ? freeRouteGeometryChoice(libEntries.value, activeTask.value, freeRouteSavedId.value)
@@ -876,12 +886,12 @@ const freeRoutePick = computed({
   set: (v: string) => {
     const id = String(v ?? '').trim()
     if (id === FREE_ROUTE_DRAW_VALUE) {
-      logInfo('run', '一键去画一条本机路径（下拉占位项）', { taskId: activeTask.value?.taskId ?? '' })
+      logInfo('run', '一键去画一条本机路径（下拉占位项）', { taskId: taskPaperIdOf(activeTask.value) })
       void navigateTo(freePathDrawHref)
       return
     }
-    logInfo('run', '用户改了「本机路径」', { taskId: activeTask.value?.taskId ?? '', localLineId: id })
-    setFreeRouteChoice(activeTask.value?.taskId, id)
+    logInfo('run', '用户改了「本机路径」', { taskId: taskPaperIdOf(activeTask.value), localLineId: id })
+    setFreeRouteChoice(taskPaperIdOf(activeTask.value), id)
   },
 })
 /** 那条几何的名字（改过名就用用户起的名字） */
@@ -899,6 +909,14 @@ const freeRouteEntryText = computed(() => (freeRouteEntry.value ? localEntryGeom
 const relaxGateForCapture = RELAX_GATE_FOR_CAPTURE
 /** 本该拦住、现在只警告的理由（门禁放宽时才可能非空；逐条展示 + 提交时一并显示） */
 const gateWarnings = computed(() => gateStatus.value.warnings ?? [])
+/**
+ * 🆕 2026-09-24：**要不要给"重新读取该线路的开关"入口** —— 只要这次判定里命中了 `camera_unknown`
+ * （未读 / 换线路后没重查）就给（**与 `allow` 无关**：pre3 放宽后 allow 恒 true，
+ * 若还挂在"被拦住"那张卡上，用户就再也找不到重查入口了 —— 他现场正是这样）。
+ */
+const cameraFlagNeedsRetry = computed(
+  () => (gateStatus.value.warningCodes ?? []).includes('camera_unknown') || gateStatus.value.blockedBy === 'camera_unknown',
+)
 /** 本次是自由跑（提交口径：不选线路、不带任务号、不查打卡开关 —— 与小程序一致） */
 const isFreeRun = computed(() => run.value.runType !== 0)
 
@@ -1276,11 +1294,14 @@ const doRealSubmit = async () => {
    * · 自由跑（`isFreeRun`）⇒ 没有线路（厂商口径：paperId/lineId 都为空串）；
    * · **服务端未下发线路的任务**（`routeIsFree`）⇒ 也传 `null`：本机跑道只是**本地几何**，
    *   它的 `pointId` 是我们自己库里的键名（多半来自别的任务/线路），**不是服务端线路标识**，
-   *   绝不能进报文（`lineId` 必须空串）；任务号改由 `paperId` 兜底（`task.taskId`）。
+   *   绝不能进报文（`lineId` 必须空串）；任务号改由 `paperId` 兜底。
+   *   🔴 2026-09-23（pre3 实测事故）：兜底**必须走 `taskPaperIdOf()`**（`taskId → paperId → id`）——
+   *   用户那份任务响应顶层**没有 `taskId`**（只有 `id`/`paperId`），老代码只取 `task.taskId` ⇒ 空串
+   *   ⇒ 提交被前置校验拦下、`getRunBegin` 一个都没发出去。**别改回只取 taskId**。
    * · 其余（服务端下发了线路）⇒ 与原来逐字一致。
    */
   const line = isFreeRun.value || routeIsFree.value ? null : (activeLines.value.find((l) => l.pointId === run.value.lineId) ?? null)
-  const paperId = routeIsFree.value ? String(activeTask.value?.taskId ?? '') : ''
+  const paperId = routeIsFree.value ? taskPaperIdOf(activeTask.value) : ''
   if (!r) {
     showSnackbar('缺少结算数据', 'error')
     return

@@ -11,7 +11,8 @@
 import { MpApiWrapper, MP_DEFAULT_BASE_URL } from '~/src/wrappers/MpApiWrapper'
 import type { MpRunLine, MpSunrunTask } from '~/src/mp/types'
 import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
-import { routeRequirementOf } from '~/utils/mp/taskShape'
+// 🔴 2026-09-23（pre3）：任务号走兜底链（厂商响应可能只有 paperId/id，没有 taskId）
+import { routeRequirementOf, taskPaperIdOf } from '~/utils/mp/taskShape'
 // 🆕 2026-09-23（pre3）：门禁要判"本机有没有可用几何" ⇒ 与跑步页/引擎**同一处判据**
 import { freeRouteGeometryChoice } from '~/utils/mp/trackLibrary'
 import { looksLikeEnvelope, maskToken, normalizeCachePayload, restorePatchOf, serializeCachePayload, shouldAutoRestoreFromCache, type RealCachePayload } from '~/utils/mp/realCache'
@@ -32,6 +33,50 @@ import {
 } from '~/utils/mp/schoolGate'
 import { logError, logInfo, logWarn } from '../useEventLog'
 import { TASK_CACHE_KEY, useRealState } from './state'
+
+/**
+ * 🔴🔴 2026-09-24（用户实测：`getCameraConfig` 在 **0.21 秒内被打了 21 次**，同一 lineId、全部 200）
+ * —— 摄像头杆开关查询的**跨实例**收口状态。
+ *
+ * ## 为什么必须放在**模块级**（而不是 `useMpRealData()` 里）
+ * `useMpRealData()` 会被多个组件/组合式各调用一次（跑步页 / 工作台卡 / 诊断卡 / 非官方路径页…），
+ * 每次调用都会**新建一份闭包状态**并**各注册一个 watch**。第一版修复把去抖/在途表放在函数里
+ * ⇒ 每个实例一套 ⇒ 一次成批触发仍然发 N 次（实测挂载一次就 3 次，正好等于实例数）✗。
+ * 这些 ref（`cameraFlag` / `cameraFlagLineId` / …）本身都是 `useState` **单例** ⇒ 调度状态也必须是单例。
+ *
+ * ## 三重收口（只收口"怎么读"，**判据一个字不改**）
+ *   ① **在途复用**：同一 `lineId` 正在请求中 ⇒ 后来者复用同一个 Promise；
+ *   ② **突发合并（短去抖）**：`CAMERA_FLAG_DEBOUNCE_MS` 窗口内的多次触发只发"最后一次要查的线路"；
+ *   ③ **短 TTL 缓存**（仅 `force=false` 命中）：同一线路的 flag 一次会话里极少变；点「重试」（`force=true`）永远绕过它。
+ * ⚠️ 失败**不记账、不进缓存**（保持"未知 ⇒ 门禁继续拦"，E29 的恢复路径不变）；`force` 只绕过 ③，不绕过 ①。
+ */
+const CAMERA_FLAG_TTL_MS = 30_000
+const CAMERA_FLAG_DEBOUNCE_MS = 80
+/** 成功结果的短缓存（只缓存"拿到布尔 flag"的成功；key = lineId） */
+const cameraFlagCache = new Map<string, { flag: boolean | null; error: string; atMs: number }>()
+/** 在途请求（key = lineId）⇒ 并发调用复用同一个 Promise */
+const cameraFlagInFlight = new Map<string, Promise<void>>()
+/** 去抖定时器（跨实例共享） */
+let cameraFlagTimer: ReturnType<typeof setTimeout> | null = null
+/** 去抖窗口内"最后一次要查的线路"（+ 这批里是否有人要求 force） */
+let cameraFlagQueued: { id: string; force: boolean } | null = null
+/**
+ * 最近注册的"真正去查一次"的实现（由 `useMpRealData()` 在 setup 时赋值）。
+ * 各实例读写的都是同一批 `useState` 单例 ⇒ 谁执行都一样。
+ */
+let cameraFlagRunner: ((id: string, force: boolean) => Promise<void>) | null = null
+
+/** ② 突发合并：把这一批触发压成"最后一次要查的线路"，窗口结束只执行一次（跨实例共享同一个定时器） */
+function queueCameraFlag(id: string, force: boolean): void {
+  cameraFlagQueued = { id, force: Boolean(cameraFlagQueued?.force) || force }
+  if (cameraFlagTimer !== null) return
+  cameraFlagTimer = setTimeout(() => {
+    cameraFlagTimer = null
+    const q = cameraFlagQueued
+    cameraFlagQueued = null
+    if (q && cameraFlagRunner) void cameraFlagRunner(q.id, q.force)
+  }, CAMERA_FLAG_DEBOUNCE_MS)
+}
 
 export function useMpRealData() {
   // `setToken` 用于「恢复上次会话」时把缓存里的 token 写回会话（重建会话并落盘）
@@ -677,52 +722,109 @@ export function useMpRealData() {
   })
 
   /**
+   * 🔴 2026-09-24（用户实测：`getCameraConfig` 在 **0.21 秒内被打了 21 次**，全是同一条线路、全部 200）：
+   * 摄像头杆开关的查询做**三重收口**（只收口"怎么读"，**判据一个字不改**）：
+   *
+   *   ① **在途复用**：同一 `lineId` 正在请求中 ⇒ 后来者复用**同一个 Promise**（不再重复发请求）；
+   *   ② **突发合并（短去抖）**：`CAMERA_FLAG_DEBOUNCE_MS` 窗口内的多次触发只发**最后一次要的那条线路**
+   *      —— 触发源本来就会成批（`watch([status, run.lineId, session.token])` 的 immediate + `loadRealData`
+   *      里 `force=true` 的重查 ⇒ 原先"在途期间再来的全部通过检查、全部发请求"）；
+   *   ③ **短 TTL 缓存**（`CAMERA_FLAG_TTL_MS`，仅 `force=false` 命中）：一次会话里同一线路的 flag 极少变，
+   *      切换页面/缓存回填不再重复问；用户点「重试」（`force=true`）**永远绕过缓存**重查 ✓。
+   *
+   * ⚠️ **失败仍然不记账**（保持"未知 ⇒ 门禁继续拦"的老语义，E29 的恢复路径不变），也**不进缓存**
+   *    （失败必须可重试）；`force` 只绕过 ③ 的缓存，**不绕过** ①：同一 tick 内的多个 force 也合并成 1 次。
+   *
+   * ⚠️⚠️ 调度状态（缓存/在途表/定时器/队列）**定义在模块级**（见文件上方 `cameraFlagCache` 那段注释）：
+   *     放在函数里会"每个 `useMpRealData()` 实例一套" ⇒ 成批触发仍然重复发请求（实测挂载一次 3 次 = 实例数）。
+   */
+
+  /** 真正发请求那一段（在途复用/去抖都在 `refreshCameraFlag()` 里做完，这里只管"发一次"） */
+  async function fetchCameraFlagOnce(id: string, force: boolean): Promise<void> {
+    // 让模块级的去抖回调能调到"本实例的实现"（各实例的 refs 都是同一批 useState 单例 ⇒ 等价）
+    cameraFlagRunner = fetchCameraFlagOnce
+    const token = session.value?.token
+    if (!id || !token) return
+    // ③ 短 TTL 缓存（force 绕过）
+    const hit = cameraFlagCache.get(id)
+    if (!force && hit && Date.now() - hit.atMs < CAMERA_FLAG_TTL_MS) {
+      cameraFlag.value = hit.flag
+      cameraFlagLineId.value = id
+      cameraFlagError.value = hit.error
+      return
+    }
+    // ① 在途复用
+    const inFlight = cameraFlagInFlight.get(id)
+    if (inFlight) return inFlight
+    const task = (async () => {
+      const cam = await MpApiWrapper.call<Record<string, unknown>>(
+        'cameraConfig',
+        { lineId: id, token },
+        { token, baseUrl: session.value?.baseUrl },
+      )
+      if (!cam.ok) {
+        // 失败：保持"未知"（门禁继续拦），但**不记 lineId、不进缓存**，以便下次重试
+        cameraFlag.value = null
+        cameraFlagLineId.value = ''
+        cameraFlagError.value = `读取该线路的摄像头杆开关失败：${cam.message}`
+        logWarn('gate', '摄像头杆开关读取失败', { lineId: id, message: cam.message })
+        return
+      }
+      /**
+       * ⚠️ 2026-09-20 审计修复（**响应回验**）：快速切线路时 A 的响应可能晚于 B 到达，
+       * 原先会无条件把 `cameraFlag`/`cameraFlagLineId` 写成 A 的 ⇒ 而当前选中的是 B
+       * ⇒ 门禁判 `flagLineId !== lineId`、一直显示"当前线路的摄像头杆开关尚未读取"，
+       * 而且 watcher 的依赖不含 `cameraFlagLineId`，不会自动纠正（用户只能手动「重新读取」）。
+       * 判据：**异步响应回来时必须确认"它还是当前这条线路的"**，不是就丢弃。
+       */
+      const currentId = String(run.value.lineId || selectedLine.value?.pointId || '')
+      if (currentId && currentId !== id) {
+        logWarn('gate', '摄像头杆开关的响应已过期（线路已切换），丢弃该结果', { requested: id, current: currentId })
+        return
+      }
+      const flag = (cam.data as Record<string, unknown> | undefined)?.flag
+      cameraFlag.value = typeof flag === 'boolean' ? flag : null
+      cameraFlagLineId.value = id
+      cameraFlagError.value =
+        typeof flag === 'boolean' ? '' : `该线路的 getCameraConfig 未返回布尔 flag（实际 ${JSON.stringify(flag)}），按"未知"处理`
+      // 只缓存成功结果（失败不进缓存 ⇒ 下次仍会重试）
+      cameraFlagCache.set(id, { flag: cameraFlag.value, error: cameraFlagError.value, atMs: Date.now() })
+      logInfo('gate', `摄像头杆开关：${cameraFlag.value === true ? '启用（会拦）' : cameraFlag.value === false ? '未启用（放行）' : '未知'}`, {
+        lineId: id,
+        flag: cameraFlag.value,
+      })
+    })().finally(() => cameraFlagInFlight.delete(id))
+    cameraFlagInFlight.set(id, task)
+    return task
+  }
+
+  /**
    * 查询某条线路的摄像头杆开关（只读；换线路时由 watch 自动跟随）。
    *
    * ⚠️ 2026-09-15 修 bug：**只有请求成功才记 `cameraFlagLineId`**。
    *    原实现在请求失败时也把该线路标记为"已查询"，而本函数开头又用
    *    `id === cameraFlagLineId.value` 做去重 → **一次失败就永久不再重试**，
    *    门禁会一直显示"摄像头杆尚未读取"，必须刷新页面才能恢复。
-   * @param force 忽略去重、强制重查（界面"重新读取"按钮用）
+   * 🔴 2026-09-24：本函数现在只做"**要不要发、合并成几次**"的调度（①在途复用 ②突发合并 ③短缓存），
+   *    真正发请求在 `fetchCameraFlagOnce()`。
+   * @param force 忽略幂等去重与短缓存、强制重查（界面"重新读取"按钮用）
    */
-  async function refreshCameraFlag(lineId?: string, force = false): Promise<void> {
+  function refreshCameraFlag(lineId?: string, force = false): Promise<void> {
     const id = lineId || (task.value?.runPointList?.[0]?.pointId ?? '')
-    if (!id || !session.value?.token) return
-    if (!force && id === cameraFlagLineId.value) return
-    const cam = await MpApiWrapper.call<Record<string, unknown>>(
-      'cameraConfig',
-      { lineId: id, token: session.value.token },
-      { token: session.value.token, baseUrl: session.value.baseUrl },
-    )
-    if (!cam.ok) {
-      // 失败：保持"未知"（门禁继续拦），但**不记 lineId**，以便下次重试
-      cameraFlag.value = null
-      cameraFlagLineId.value = ''
-      cameraFlagError.value = `读取该线路的摄像头杆开关失败：${cam.message}`
-      logWarn('gate', '摄像头杆开关读取失败', { lineId: id, message: cam.message })
-      return
-    }
+    if (!id || !session.value?.token) return Promise.resolve()
+    // 幂等（老行为）：已经读过这条线路 ⇒ 不再发
+    if (!force && id === cameraFlagLineId.value) return Promise.resolve()
+    // ① 已经有这条线路的请求在途 ⇒ 直接复用（force 也复用：一批触发只发一次）
+    const inFlight = cameraFlagInFlight.get(id)
+    if (inFlight) return inFlight
     /**
-     * ⚠️ 2026-09-20 审计修复（**响应回验**）：快速切线路时 A 的响应可能晚于 B 到达，
-     * 原先会无条件把 `cameraFlag`/`cameraFlagLineId` 写成 A 的 ⇒ 而当前选中的是 B
-     * ⇒ 门禁判 `flagLineId !== lineId`、一直显示"当前线路的摄像头杆开关尚未读取"，
-     * 而且 watcher 的依赖不含 `cameraFlagLineId`，不会自动纠正（用户只能手动「重新读取」）。
-     * 判据：**异步响应回来时必须确认"它还是当前这条线路的"**，不是就丢弃。
+     * ② 突发合并（**模块级**去抖：跨所有 `useMpRealData()` 实例共用同一个窗口与同一条"最后要查的线路"）。
+     * 注册本实例的实现，供窗口结束时执行（各实例的 refs 是同一批 `useState` 单例 ⇒ 等价）。
      */
-    const currentId = String(run.value.lineId || selectedLine.value?.pointId || '')
-    if (currentId && currentId !== id) {
-      logWarn('gate', '摄像头杆开关的响应已过期（线路已切换），丢弃该结果', { requested: id, current: currentId })
-      return
-    }
-    const flag = (cam.data as Record<string, unknown> | undefined)?.flag
-    cameraFlag.value = typeof flag === 'boolean' ? flag : null
-    cameraFlagLineId.value = id
-    cameraFlagError.value =
-      typeof flag === 'boolean' ? '' : `该线路的 getCameraConfig 未返回布尔 flag（实际 ${JSON.stringify(flag)}），按"未知"处理`
-    logInfo('gate', `摄像头杆开关：${cameraFlag.value === true ? '启用（会拦）' : cameraFlag.value === false ? '未启用（放行）' : '未知'}`, {
-      lineId: id,
-      flag: cameraFlag.value,
-    })
+    cameraFlagRunner = fetchCameraFlagOnce
+    queueCameraFlag(id, force)
+    // 触发方一律 fire-and-forget（现有调用点全是 `void`）；要等待结果的调用方走的是上面的在途复用分支
+    return Promise.resolve()
   }
 
   /** 界面按钮用：强制重查「当前选中线路」的摄像头杆开关（失败不再永久卡住） */
@@ -798,7 +900,8 @@ export function useMpRealData() {
        * 与门禁的 `no_local_geometry` 警告不会分叉。严格模式下这一条会拦（放宽模式下只提示）。
        */
       localGeometryReady: Boolean(
-        freeRouteGeometryChoice(lib.entries.value, task.value, lib.freeRouteChoiceFor(task.value?.taskId ?? '')).entry,
+        // ⚠️ 任务"身份"走兜底链（他这份响应没有 `taskId`，只有 `id`/`paperId`）
+        freeRouteGeometryChoice(lib.entries.value, task.value, lib.freeRouteChoiceFor(taskPaperIdOf(task.value))).entry,
       ),
 
       /**

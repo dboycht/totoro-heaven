@@ -18,7 +18,7 @@ import { buildRunStats, buildTimeFields } from '~/utils/mp/runData'
 import { buildScoreDetailRequest, buildScoreRequest } from '~/utils/mp/submitPayload'
 import { evaluateRunAgainstTask, type TaskCheckResult } from '~/utils/mp/taskRules'
 // 🆕 2026-09-22（issue #12）：判"任务到底有没有下发线路"（纯函数，与门禁/自检/诊断同源）
-import { routeRequirementOf } from '~/utils/mp/taskShape'
+import { routeRequirementOf, taskPaperIdOf } from '~/utils/mp/taskShape'
 // 🆕 2026-09-22「非官方路径绘制」：本机条目带 freeShape 时，几何用它展开（纯模块，与跑道编辑页预览同源）
 import { resolveFreePathGeometry } from '~/utils/mp/freePathGeometry'
 import { freeRouteGeometryChoice, resolveEntryName, type TrackRouteEntry } from '~/utils/mp/trackLibrary'
@@ -197,8 +197,10 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
      * 🔴 用户在跑步页「本机路径」下拉里选的那条要**真的生效**（否则又变成"界面说用 A、实际用 B"）：
      * 选择按 taskId 记在 `useTrackLibrary()` 里（键 `mp_free_route_choice_v1`），判据仍是唯一那一处
      * `freeRouteGeometryChoice()`。⚠️ 它只影响**本机几何**：提交报文一个字都不变（`lineId` 空串等）。
+     * ⚠️ 任务"身份"走 `taskPaperIdOf()`（兜底链 `taskId → paperId → id`）：他这份响应没有 `taskId`，
+     *    只用 taskId 会让"记住的本机路径"对不上（与跑步页写进去的键不一致）。
      */
-    const preferredLocalId = lib.freeRouteChoiceFor(task.value?.taskId ?? '')
+    const preferredLocalId = lib.freeRouteChoiceFor(taskPaperIdOf(task.value))
     const fallbackEntry = freeRouteGeometryChoice(lib.entries.value, task.value, preferredLocalId).entry
     const localFallback = fallbackEntry
       ? localTrackLines([fallbackEntry], task.value?.taskId ?? '')[0]
@@ -357,22 +359,33 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
     // ⚠️ 成绩报文与真实提交**同一构造器**（2026-09-17 B 轮统一）：演示预览不再手抄 18 字段，
     //    否则真包口径一变，预览不会跟着变 —— 那正是 E33「预览与实发不一致」的同类风险。
     //    构造器内部已按真包口径写死 `steps: ''`、`fitDegree` 两位小数、`flag: '1'`。
+    /**
+     * 🆕 2026-09-23（pre3 事故的收尾）：**"服务端未下发线路"的任务，预览也必须与实发同形** ——
+     * 实发走的是 `line: null` + `paperId = taskPaperIdOf(task)`（`composables/real/submit.ts`），
+     * 而预览原先给了一条**合成的 line**（`taskId: task.value?.taskId ?? ''`）⇒ 他这份响应没有 `taskId`
+     * ⇒ 预览里 `taskId` 是空串、实发却有任务号 ⇒ **预览与实发不一致**（E33 那一类）。
+     * 现在两边同形：自由路线任务 ⇒ `line: null` + `paperId` 兜底链。
+     */
+    const previewFreeRoute = routeRequirementOf(task.value).kind === 'free'
+    const previewTaskId = taskPaperIdOf(task.value)
     const scoreRequest: MpScoreRequest = buildScoreRequest(
       {
         snCode: stuNumber,
         schoolCode,
         task: task.value,
-        // 自由跑没有线路 ⇒ 传 null（构造器会把 taskId 置空、路径点列为 []，与厂商口径一致）
-        line: isFreeRun
+        // 自由跑没有线路 ⇒ 传 null；**服务端未下发线路的任务同样传 null**（任务号由 paperId 兜底）
+        line: isFreeRun || previewFreeRoute
           ? null
           : {
               pointId: run.value.lineId || 'demo-line',
               // ⚠️ `DEMO_LINES` 里没有 taskId；真包里 `taskId` 取线路的 taskId（实测两者同值），
-              //    这里显式补上，保持预览与真实提交一致。
-              taskId: task.value?.taskId ?? '',
+              //    这里显式补上，保持预览与真实提交一致（任务号走兜底链：他这份响应没有 `taskId`）。
+              taskId: previewTaskId,
               pointName: '',
               pointList: run.value.officialRoute ?? [],
             },
+        // 🆕 2026-09-23：任务号兜底（无线路时构造器**只认 paperId**，与实发同源）
+        paperId: previewTaskId,
         km: distanceKm,
         durationSeconds,
         fitDegree,
@@ -391,9 +404,10 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
       snCode: stuNumber,
       schoolCode,
       task: task.value,
-      line: isFreeRun
+      line: isFreeRun || previewFreeRoute
         ? null
-        : { pointId: run.value.lineId || 'demo-line', taskId: task.value?.taskId ?? '', pointName: '', pointList: [] },
+        : { pointId: run.value.lineId || 'demo-line', taskId: previewTaskId, pointName: '', pointList: [] },
+      paperId: previewTaskId,
       km: distanceKm,
       durationSeconds,
       fitDegree,
