@@ -438,6 +438,12 @@ interface ConfettiParticle {
   kind: ConfettiKind
   /** 形状：0 圆 / 1 方 / 2 小三角，只在 chip 上用 */
   shape: number
+  /**
+   * 「近大远小」分层系数 ∈ [0.5, 1.2]（业界 canvas-confetti 的 scalar 做法）：
+   * 作用在纸带尺寸上，大的看起来更"近"；同时让大的下落略快、飘移略小，
+   * 形成一点点透视感（幅度刻意压得小，只做观感，不做夸张遮挡）。
+   */
+  scalar: number
 }
 
 const canvasEl = ref<HTMLCanvasElement | null>(null)
@@ -488,6 +494,8 @@ const WAVE_AT_MS = [0, 320, 700, 1150]
 const WAVE_SHARE = [0.3, 0.27, 0.24, 0.19]
 /** 各波的初速系数：第一波最猛（顶点超过顶边），后面的依次低一些，形成层次 */
 const WAVE_VSCALE = [1.06, 0.92, 0.76, 0.6]
+/** 各波的"近大远小"中心值：先爆的偏大（更近），后爆的偏小（更远） */
+const WAVE_SCALAR_CENTER = [1.02, 0.9, 0.78, 0.66]
 
 /** 视口面积基准：1440x1000 时取 280 个粒子，再按面积线性缩放并夹在 240~360 */
 const AREA_BASE_PX = 1440 * 1000
@@ -503,26 +511,71 @@ function autoParticleCount() {
 function resizeCanvas() {
   const el = canvasEl.value
   if (!el) return
-  // 铺满整个视口。尺寸取 window.innerWidth/innerHeight（clientWidth 会被滚动条减掉，
-  // 那会让画布比可视区窄一条），并在元素上同步 CSS 尺寸，保证两者一致。
+  // CSS 像素口径：铺满整个视口。尺寸取 window.innerWidth/innerHeight
+  // （clientWidth 会被滚动条减掉，那会让画布比可视区窄一条），并同步到元素样式。
   const root = document.documentElement
   const w = Math.max(1, Math.round(window.innerWidth || root.clientWidth || 1))
   const h = Math.max(1, Math.round(window.innerHeight || root.clientHeight || 1))
-  const nextDpr = Math.min(2, window.devicePixelRatio || 1) // 上限 2：够清晰，又不浪费填充率
+  const nextDpr = Math.min(2, window.devicePixelRatio || 1) // 上限 2：再高只是白烧填充率
   if (w === width && h === height && nextDpr === dpr) return
   width = w
   height = h
   dpr = nextDpr
-  el.width = Math.round(w * dpr)
-  el.height = Math.round(h * dpr)
+  // HiDPI：backing store 按 dpr 放大，再用 setTransform 把坐标系缩放回 CSS 像素
+  // ⇒ 画面变清晰，而后面所有物理与坐标**仍然全是 CSS 像素**（速度/重力不乘 dpr）。
+  el.width = Math.round(w * nextDpr)
+  el.height = Math.round(h * nextDpr)
   el.style.width = `${w}px`
   el.style.height = `${h}px`
   const ctx = ctxRef.value
-  if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  if (ctx) ctx.setTransform(nextDpr, 0, 0, nextDpr, 0, 0)
+}
+
+/**
+ * 监视 DPR 变化（换显示器、浏览器缩放、系统缩放改档都可能只改 DPR 而不触发 resize
+ * 或触发得很晚）。做法：开一个 `resolution` 媒体查询盯当前 DPR，一变就重量并重新注册。
+ */
+let dprQuery: MediaQueryList | null = null
+let dprQueryTimer: ReturnType<typeof setTimeout> | null = null
+
+function onDprChange() {
+  resizeCanvas()
+  detachDprQuery()
+  dprQueryTimer = setTimeout(() => {
+    dprQueryTimer = null
+    attachDprQuery()
+  }, 400)
+}
+
+function attachDprQuery() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+  detachDprQuery()
+  const ratio = Math.min(2, window.devicePixelRatio || 1)
+  dprQuery = window.matchMedia(`(resolution: ${ratio}dppx)`)
+  dprQuery.addEventListener?.('change', onDprChange)
+}
+
+function detachDprQuery() {
+  if (dprQueryTimer !== null) {
+    clearTimeout(dprQueryTimer)
+    dprQueryTimer = null
+  }
+  if (dprQuery) {
+    dprQuery.removeEventListener?.('change', onDprChange)
+    dprQuery = null
+  }
 }
 
 /** 造一条纸带/碎片。`riseToTop` = 是否按"顶点超过顶边"反推初速 */
-function pushParticle(o: { x: number; y: number; riseToTop: boolean; vScale: number; speedJitter: number }) {
+function pushParticle(o: {
+  x: number
+  y: number
+  riseToTop: boolean
+  vScale: number
+  speedJitter: number
+  /** 该波 scalar 的中心值；每个粒子在它两侧 ±0.35 内取，形成大小分层 */
+  scalarCenter: number
+}) {
   const ribbon = Math.random() < 0.55
   // 抛射角：-145° ~ -35°（canvas 的 y 轴朝下，所以负角度 = 朝上）
   const angle = (-145 + Math.random() * 110) * (Math.PI / 180)
@@ -531,6 +584,10 @@ function pushParticle(o: { x: number; y: number; riseToTop: boolean; vScale: num
   const k = o.speedJitter
   const speed = o.vScale * k
   const baseDrag = 0.36 + Math.random() * 0.22
+  // 近大远小：scalar ∈ [0.5, 1.2]
+  const scalar = Math.max(0.5, Math.min(1.2, o.scalarCenter + (Math.random() - 0.5) * 0.7))
+  // 大的更"近"⇒ 下落略快一点；幅度压得很小（±12%），只做透视暗示
+  const sizeGrav = 1 + (scalar - 0.85) * 0.34
 
   particles.push({
     x: o.x,
@@ -539,19 +596,22 @@ function pushParticle(o: { x: number; y: number; riseToTop: boolean; vScale: num
     vy: -((GRAVITY * 2 * height * RISE_OVERSHOOT) ** 0.5) * sinA * speed,
     // 上冲为主的粒子横向不要太野，否则会飞出左右边界白白浪费
     vx: Math.cos(angle) * height * 0.4 * (o.riseToTop ? 0.45 : 0.7) * speed,
-    w: ribbon ? 5 + Math.random() * 4 : 3 + Math.random() * 4,
-    h: ribbon ? 12 + Math.random() * 14 : 3 + Math.random() * 4,
+    // 尺寸乘 scalar —— 这是"近大远小"最主要的那一层
+    w: (ribbon ? 5 + Math.random() * 4 : 3 + Math.random() * 4) * scalar,
+    h: (ribbon ? 12 + Math.random() * 14 : 3 + Math.random() * 4) * scalar,
     color: PALETTE[(Math.random() * PALETTE.length) | 0]!,
     rot: Math.random() * Math.PI * 2,
     spin: (Math.random() - 0.5) * 9,
-    grav: GRAVITY * (0.85 + Math.random() * 0.3),
+    grav: GRAVITY * (0.85 + Math.random() * 0.3) * sizeGrav,
     drag: baseDrag,
-    wob: 12 + Math.random() * 30,
+    // 大的"近"⇒ 飘移幅度略小（小碎片更容易被气流带偏）
+    wob: (12 + Math.random() * 30) / scalar,
     wobPhase: Math.random() * Math.PI * 2,
     flipPhase: Math.random() * Math.PI * 2,
     flipSpeed: 4 + Math.random() * 7,
     kind: ribbon ? 'ribbon' : 'chip',
     shape: (Math.random() * 3) | 0,
+    scalar,
   })
 }
 
@@ -560,8 +620,9 @@ function pushParticle(o: { x: number; y: number; riseToTop: boolean; vScale: num
  *   · 主层：从**整条下缘**（x 全宽随机）上冲，初速按视口高度反推 ⇒ 顶点超过顶边；
  *   · 副层（约 22%）：在**中上部**就地生成（礼花感），上冲幅度小、向下落得慢。
  * 初速**按视口尺寸算**，不写死数值 —— 换分辨率仍然覆盖整个页面高度。
+ * `scalarCenter` 是该波的"近大远小"中心值：先爆的那波偏大（近），后爆的偏小（远）。
  */
-function spawnWave(count: number, vScale: number) {
+function spawnWave(count: number, vScale: number, scalarCenter: number) {
   const ctx = ctxRef.value
   if (!ctx || count <= 0) return
 
@@ -576,6 +637,7 @@ function spawnWave(count: number, vScale: number) {
       vScale,
       // 初速 ±20% 抖动：不是一个模子刻出来的，覆盖层次更厚
       speedJitter: 0.8 + Math.random() * 0.4,
+      scalarCenter,
     })
   }
 
@@ -587,6 +649,8 @@ function spawnWave(count: number, vScale: number) {
       riseToTop: false,
       vScale,
       speedJitter: 0.8 + Math.random() * 0.4,
+      // 空中那层多数当成"更远"的小碎片，让远近层次更明显
+      scalarCenter: scalarCenter - 0.15,
     })
   }
 }
@@ -715,10 +779,11 @@ function playConfetti() {
     allocated += count
     pendingWaves++
     const vs = WAVE_VSCALE[i] ?? 0.8
+    const sc = WAVE_SCALAR_CENTER[i] ?? 0.85
     waveTimers.push(
       setTimeout(() => {
         pendingWaves--
-        spawnWave(count, vs)
+        spawnWave(count, vs, sc)
         startLoop()
       }, delay),
     )
@@ -795,6 +860,8 @@ onMounted(() => {
   }
 
   updateStageHeight()
+  // 换显示器 / 浏览器缩放只改 DPR 时，resize 不一定来 ⇒ 另开媒体查询盯着
+  attachDprQuery()
   reflowSoon()
   if (props.playOnMount) playConfetti()
   scheduleRotate()
@@ -809,6 +876,7 @@ onBeforeUnmount(() => {
   clearRotateTimer()
   resizeObserver?.disconnect()
   resizeObserver = null
+  detachDprQuery()
   motionQuery?.removeEventListener('change', onMotionChange)
   document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('resize', onResize)
