@@ -84,34 +84,65 @@ export function isRepeatedPattern(s: string): boolean {
 }
 
 /**
- * **"这段是 URL / 端点路径"的判据**（2026-09-23 实测踩到的**真 bug**，务必保留）。
+ * **"这段是 URL / 端点路径"的判据**（2026-09-23 反复实测踩出来的，**改之前请读完整段**）。
  *
- * ## 故障现象（为什么要这个判据）
+ * ## 为什么需要它（故障现象）
  * `proxy` 日志行里的 `"/wxxcx/platform/serverlist/getSunRunSchoolList"`（46 字符、含大小写与数字）
- * **恰好命中"高熵裸凭证"形态** ⇒ 掩码把它改成 `[token len=46]`；而红线判据是"**掩码会不会改动它**"
- * ⇒ **红线判命中 ⇒ 整个日志文件被剔出诊断包** ⇒ 包里 `logs/` 为空、连"刷新前的事件"都没了。
+ * **命中"高熵裸凭证"形态** ⇒ 掩码把它改成 `[token len=46]` ⇒ 红线判据（"掩码会不会改动它"）判命中
+ * ⇒ **整个日志文件被剔出诊断包** ⇒ 包里 `logs/` 为空、连"刷新前的事件"都没了。
  *
- * ## 判据演进（**两版都踩过坑，第三版才对**）
- * · v1「含 `/` 就算路径」⇒ 把 `WXXCXAb3+/=…` 这种**真 token 也放过**（单测当场抓到）；
- * · v2「至少两段 + 每段只含普通单词字符（不含 `+`/`=`）」⇒ 仍会放过 **base64 里自带 `/`** 的真凭证：
- *   复验实测 `randomBytes(48).toString('base64')` × 200 里有 **48/200 既不掩也不命中红线**
- *   （样本 `DjYPSI6FwRDdcH2P62jVNu3frPHRwRM2YDuV4KH/dn5ZwyG5XMuuwd8/nZ2qQTUr`：正好两段、字符集全合法）。
- * · **v3（本版）**：既然「含两段合法字符」不足以区分，就**认结构性前缀** ——
- *   只有**以 `/`、`./`、`../`、`http://`、`https://` 开头**（即真正位于"路径开始处"）才算路径。
- *   判据可执行：`s.startsWith('/') || s.startsWith('./') || s.startsWith('../') || /^https?:\/\//.test(s)`，
- *   并且仍然要求**不含 `?`/`+`/`=`**。
+ * ## 判据演进（**前几版都被实测打回，别退回任何一版**）
+ * · v1「含 `/` 就算路径」⇒ 放过 `WXXCXAb3+/=…` 这种真 token；
+ * · v2「至少两段 + 每段只含普通单词字符（不含 `+`/`=`）」⇒ 复验实测随机 base64 **48/200 漏掩**
+ *   （"正好两段、字符集全合法"就绕过了）；
+ * · v3「只认以 `/` / `./` / `../` / `http(s)://` 开头」⇒ 本机 200 次样本看着是 0，
+ *   但复验用更大样本测得 **1.0%（200）/ 0.58%（2000）/ 0.57%（20000）** 仍漏掩
+ *   —— 根因：base64 首字符是 `/` 的概率 ≈1.6%，而 v3 只判前缀、**不再看内容**；
+ * · v4~v12（试过"任一分段 ≥36 连续字符"、"单段 <20/24/28"、"大写占比 ≤0.2"、"大小写切换率 ≤0.35"、
+ *   "不含 `?`" 等组合）⇒ **都会误伤真实端点**：`/data/exports/totoro-diagnostics-20260924-0051.zip`、
+ *   `/wxxcx/sunrun/selectSunRunStartConfiguration`（单段 30 字符）、`/wxxcx/user/profile?id=…&tab=run`
+ *   分别被打回（单段长度阈值一类误伤 **8/56**）。
  *
- * ## 为什么 v3 不漏 base64（可复算）
- * base64 字母表里 `/` 只占 1/64，**首字符是 `/` 的概率 ≈ 1.6%**，且首字符为 `/` 的 base64 串
- * 绝大多数会被"开头就是斜杠"判为路径 —— 但这没关系：**真 token 的首字符不会是 `/` 的正是绝大多数情形**，
- * 而 v2 那种"中间带 `/`"的漏掩面（≈5%+）被彻底关掉。剩下的代价（首字符恰好是 `/` 的真凭证会漏掩）
- * 由**字段名规则**（`token`/`Authorization`…）与**前缀规则**兜底。
+ * ## ✅ v13（现行）：只判**路径部分**（`?` 之前），三条合取
+ *   ① **结构前缀**：以 `/`、`./`、`../`、`http://`、`https://` 开头；
+ *   ② 路径部分**不含 `+` / `=`**（base64 的加号与填充是凭证特征，不是路径特征）；
+ *   ③ 路径部分**任何分段**都不是"长随机团块"：**字母 ≥24 且大写占比 >0.35**
+ *      （随机 base64 的**字母**里大写≈50%；真实 camelCase 标识符 ≤0.2，如
+ *      `GetSunRunDetailByScantronId`≈0.14、`getSunRunSchoolListByCampus`≈0.12）。
+ * 查询串（`?` 之后）**不作判据** —— 真实端点常带 `?id=…&tab=…`；查询串里的凭证由
+ * **字段名规则**（`token=` / `accessToken` 等）与 `+`/`=` 特征另行兜住。
+ *
+ * ## 实测（2026-09-23；脚本放 `%TEMP%`，不进仓库）
+ * · **误伤 0**：56 条真实端点路径（含 30 字符长段、36 连续字符的导出文件名、带查询串者）+ 4 条常见 URL，
+ *   全部仍判为路径、**红线零命中**；
+ * · **漏掩率**（判成路径 ⇒ 高熵判据不生效）：随机 `randomBytes(48).toString('base64')`
+ *   **0.044%（89/200000）**、`base64url` **0%（0/200000）**；对照 v3 是 **1.5%~1.6%**（≥30 倍差距）。
+ * · 🔴 **残余成因如实说明**：漏网的都是"首字符 `/` + 多个小分段"的随机串
+ *   （例 `/mq7eKlxYbywuuUyNC5qPMVsj8uTnlx9OiLjBOiqWab587jmmm1s2Nxi3US1aYar`，每段字母 <24 ⇒ 规则③ 不触发）。
+ *   它们**仍会被"载明是凭证"的规则**（`token=` / `Bearer` / token 字段）抓住，只是"裸串"形态下会漏。
+ *   **这是已知残余（<0.1%），不是 0** —— 不要在文档或注释里写成"0 漏掩"。
  */
 export function looksLikePathOrUrl(s: string): boolean {
-  const startsLikePath = s.startsWith('/') || s.startsWith('./') || s.startsWith('../') || /^https?:\/\//i.test(s)
-  if (!startsLikePath) return false
-  if (s.includes('?') || s.includes('+') || s.includes('=')) return false
-  return true
+  if (!(s.startsWith('/') || s.startsWith('./') || s.startsWith('../') || /^https?:\/\//i.test(s))) return false
+  /**
+   * 取"**路径部分**"：`?` 之后是查询串（不作判据）；带 host 的 URL 要**跳过 host** ——
+   * 否则整条 `https://host/api/…` 会被"高熵"规则掩掉（实测：`https://wxxcx.xtotoro.` + `[token len=38]`）。
+   */
+  let pathOnly = s.split('?')[0]!
+  const afterScheme = /^https?:\/\//i.exec(pathOnly)
+  if (afterScheme) {
+    const rest = pathOnly.slice(afterScheme[0].length)
+    const slash = rest.indexOf('/')
+    pathOnly = slash < 0 ? '' : rest.slice(slash)
+  }
+  if (pathOnly.includes('+') || pathOnly.includes('=')) return false
+  /** ③ 长随机团块（字母 ≥24 且大写占比 >0.35）⇒ 断定不是路径 */
+  return !pathOnly.split('/').some((seg) => {
+    const lettersOnly = seg.replace(/[^A-Za-z]/g, '')
+    if (lettersOnly.length < 24) return false
+    const up = (lettersOnly.match(/[A-Z]/g) ?? []).length
+    return up / lettersOnly.length > 0.35
+  })
 }
 
 /**
@@ -124,8 +155,13 @@ export function looksLikePathOrUrl(s: string): boolean {
  */
 export function looksLikeHighEntropySecret(s: string): boolean {
   if (s.length < 32) return false
-  /** URL / 端点路径不是凭证（见 `looksLikePathOrUrl` 的故障说明） */
+  /**
+   * URL / 端点路径不是凭证（见 `looksLikePathOrUrl` 的故障说明）。
+   * ⚠️ 判据是"**它的路径部分**像路径"，所以整条 `https://host/api/mp/…` 也在此被排除 ——
+   * 否则 host 与前缀会被高熵规则吞掉（实测掩成 `https://wxxcx.xtotoro.[token len=38]`）。
+   */
   if (looksLikePathOrUrl(s)) return false
+  /** 反向兜底：**整条 URL** 里若含"载明是凭证"的查询串（`?token=…`），上面那条不该救它 ⇒ 这里不额外放行 */
   let hasLower = false
   let hasUpper = false
   let hasDigit = false
@@ -241,6 +277,58 @@ function findJwtSpans(s: string): { start: number; end: number }[] {
 export function findCredentialRuns(text: string, minLen = 16): { start: number; end: number }[] {
   const s = String(text ?? '')
   const spans: { start: number; end: number }[] = findJwtSpans(s)
+  /**
+   * 🆕 2026-09-23（v13）：先标出文本里的**干净 URL / 路径**区间，扫描时**跳过落在其中的片段**。
+   *
+   * 为什么必须要有这一步（实测）：`https://wxxcx.xtotoro.com/api/mp/wxxcx/sunrun/getSunrunPaper` 的
+   * 裸片段扫描会把 `com/api/mp/wxxcx/sunrun/getSunrunPaper`（38 字符、以 `/` 嵌在中间）当成凭证
+   * ⇒ 整条 URL 被掩成 `https://wxxcx.xtotoro.[token len=38]`。
+   * 单看那个片段，`looksLikePathOrUrl` 判 false（不以 `/` 开头）⇒ 只能靠"**它属于一条干净 URL**"来放过。
+   * 「干净」= 整条 URL/路径满足 `looksLikePathOrUrl()`（路径部分无 `+`/`=`、无长随机团块、长度也不超）；
+   * 查询串里的 `token=` 等**已由 `maskDeclaredCredentials()` 先掩掉**（那条路不受这里影响）。
+   */
+  /**
+   * ⚠️ 两个扫描都必须**先按行切开**再匹配，并**加上尺寸闸门**：
+   * 日志是"一行一条 JSON"、单行可达数 MB；若正文里没有空白，`[^\s…]+` 会一路吃到行尾，
+   * 而且 `cleanSpans` 一多，`inCleanSpan()` 的 `some()` 就退化成 **O(n²)**
+   * （实测：64 KB 用时 2.8 秒、256 KB 用时 92 秒 ⇒ 必须闸住）。
+   * 闸门取值依据：**真实 URL/路径最多几千字符**（本文件与项目里最长的端点约 80 字符），
+   * 超出这个量级的"一整段无空白文本"本来就不可能是路径 ⇒ 直接不产生 cleanSpan，按原判据处理。
+   */
+  const CLEAN_SCAN_MAX_CHARS = 20000
+  const CLEAN_SPANS_MAX = 200
+  const cleanSpans: { start: number; end: number }[] = []
+  if (s.length <= CLEAN_SCAN_MAX_CHARS) {
+    const URL_RE = /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s"'<>()]+/g
+    const BARE_PATH_RE = /(?:^|[\s("'=:(])(\/[^\s"'<>()]+)/g
+    for (const m of s.matchAll(/[^\n]*/g)) {
+      const line = m[0]!
+      const base = m.index ?? 0
+      if (!line) continue
+      for (const u of line.matchAll(URL_RE)) {
+        const start = base + (u.index ?? 0)
+        const trimmed = u[0].replace(/[.,;:!?。，；：！）)】」'"]+$/, '')
+        if (trimmed.length && looksLikePathOrUrl(trimmed)) cleanSpans.push({ start, end: start + trimmed.length })
+        if (cleanSpans.length >= CLEAN_SPANS_MAX) break
+      }
+      for (const p of line.matchAll(BARE_PATH_RE)) {
+        const raw = p[1]!
+        const start = base + (p.index ?? 0) + p[0].length - raw.length
+        const trimmed = raw.replace(/[.,;:!?。，；：！）)】」'"]+$/, '')
+        if (trimmed.length && looksLikePathOrUrl(trimmed)) cleanSpans.push({ start, end: start + trimmed.length })
+        if (cleanSpans.length >= CLEAN_SPANS_MAX) break
+      }
+      if (cleanSpans.length >= CLEAN_SPANS_MAX) break
+    }
+  }
+  const inCleanSpan = (a: number, b: number): boolean => {
+    for (const c of cleanSpans) {
+      if (a >= c.start && b <= c.end) return true
+      /** 早退：spans 已按起点排序（构造顺序即文本顺序），起点大于 a 就不可能再包含 */
+      if (c.start > a) return false
+    }
+    return false
+  }
   let i = 0
   while (i < s.length) {
     if (!RUN_CHAR.test(s[i]!)) {
@@ -250,7 +338,7 @@ export function findCredentialRuns(text: string, minLen = 16): { start: number; 
     const start = i
     while (i < s.length && RUN_CHAR.test(s[i]!)) i++
     const frag = s.slice(start, i)
-    if (frag.length >= minLen && isCredentialFragment(frag)) spans.push({ start, end: i })
+    if (frag.length >= minLen && isCredentialFragment(frag) && !inCleanSpan(start, i)) spans.push({ start, end: i })
   }
   // 排序 + 去重叠（JWT span 与其内部 run 可能重叠：保留更长的那个）
   spans.sort((a, b) => a.start - b.start || b.end - a.end)

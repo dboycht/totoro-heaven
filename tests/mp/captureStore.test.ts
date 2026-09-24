@@ -218,38 +218,62 @@ test('🔴 回归：日志行里的**端点路径**不许被判成凭证（否�
    * ⇒ 掩码把它改成 `[token len=46]` ⇒ 红线判据（"掩码会不会改动它"）判命中 ⇒ **整个日志文件被剔出包**
    * ⇒ 包里 `logs/` 为空、连"刷新前的事件"都没了。
    *
-   * ⚠️ **路径判据已收紧到 v3**（复验 B1）：只有**以 `/` 或 `http(s)://` 开头**才算路径 ⇒
-   * 下面钉的是**以 `/` 开头**的端点串；整条 `https://…` URL 现在会被高熵规则掩掉（**安全侧**，不影响日志收录）。
+   * ⚠️ **路径判据现为 v13**（复验 B1 两轮打回后定稿）：只判**路径部分**（`?` 之前）——
+   * ① 结构前缀（`/`、`./`、`../`、`http(s)://`）；② 路径部分不含 `+`/`=`；③ **无"长随机团块"分段**
+   * （字母 ≥24 且大写占比 >0.35）。下面钉的就是这三条：
+   *   · 真实端点（含 30 字符长段、36 连续字符的导出文件名、带查询串者）**必须仍判为路径**；
+   *   · 以 `/` 开头的**随机 base64**必须被判成凭证（v3 会漏，v13 不会）。
    */
   const { maskTokenLike, hasUnmaskedCredential } = await import('../../utils/mp/logFormat.ts')
   const { assertNoCredentials } = await import('../../utils/mp/diagnostics.ts')
-  const paths = ['/wxxcx/platform/serverlist/getSunRunSchoolList', '/wxxcx/sunrun/selectSunRunStartConfiguration', '/api/mp/wxxcx/sunrun/getRunBegin']
+  /** 真实端点语料（**零误伤回归**）：含此前把 v4~v12 各版判据打回的那几条 */
+  const paths = [
+    '/wxxcx/platform/serverlist/getSunRunSchoolList',
+    '/wxxcx/sunrun/selectSunRunStartConfiguration', // 单段 30 字符 —— "单段长度阈值"一类判据就是在这条上误伤的
+    '/api/mp/wxxcx/sunrun/getRunBegin',
+    '/data/exports/totoro-diagnostics-20260924-0051.zip', // 连续 36 字符 —— "≥36 连续字符"一类判据在这条上误伤
+    '/wxxcx/sunrun/GetSunRunDetailByScantronId', // 大写占比 0.18 —— 靠"大写占比"判随机团块时必须不触发
+    '/wxxcx/platform/serverlist/getSunRunSchoolListByCampus',
+    '/wxxcx/user/profile?id=2021101234&tab=run', // 带查询串 —— v7* 的"不含 ?"在这条上误伤
+    '/api/v1/search?q=hello&page=2',
+    '/uploads/2026/09/24/report_final_v2.pdf',
+    '/docs/getting-started/installation',
+    '/health',
+    '/static/js/main.abcdef12.js',
+  ]
   for (const p of paths) {
     assert.equal(maskTokenLike(p), p, `端点路径不该被掩：${p}`)
     assert.equal(hasUnmaskedCredential(p), false, `端点路径不该被判成凭证：${p}`)
+    assert.equal(assertNoCredentials([p]).ok, true, `端点路径必须过红线：${p}`)
+  }
+  /** 常见 URL（带 host / 查询串）也必须原样 */
+  for (const u of ['https://wxxcx.xtotoro.com/api/mp/wxxcx/sunrun/getSunrunPaper', 'http://127.0.0.1:3000/api/local/diagnostics/record', 'https://cdn.example.com/assets/app.4f3a1b2c.js']) {
+    assert.equal(maskTokenLike(u), u, `URL 不该被掩：${u}`)
   }
   /**
    * 🆕 **B1 复验要求的反例**：随机 base64（**含 `/`**）必须仍被掩且命中红线。
-   * v2 判据（"至少两段、每段字符集合法"）实测放过 **48/200**；v3 起 **0/200**。
-   * 下面这个串是复验方给出的确切样本。
+   * · v2 判据（"至少两段、每段字符集合法"）实测放过 **48/200**；· v3（只判前缀）放过 **≈1.5%**；
+   * · **v13 实测 0.044%（89/200000）**，其中"以 `/` 开头 + 单段 ≥24 字母"这一类为 **0**。
+   * 下面两个是**确定性**样本（不靠随机）：都以 `/` 开头、且含"长随机团块"分段。
    */
   const exact = 'DjYPSI6FwRDdcH2P62jVNu3frPHRwRM2YDuV4KH/dn5ZwyG5XMuuwd8/nZ2qQTUr'
   assert.notEqual(maskTokenLike(exact), exact, '含 / 的 base64 样本必须被掩')
   assert.equal(assertNoCredentials([exact]).ok, false, '含 / 的 base64 样本必须命中红线')
-  /**
-   * **确定性**地钉住"含 `/` 但不是路径开头"这一类（不靠随机）：
-   * 下面这串**不以 `/` 开头**、含 4 个 `/`、字符集全是 base64 合法字符 —— v2 会整串判成路径放过它。
-   */
+  for (const s of [
+    /** 以 `/` 开头、单段 60 字母且大小写随机 ⇒ v13 的规则③ 命中（v3 会漏） */
+    '/XkQmVbZtRpLwYhNcJdGfSaLuIoPeRtYuWqAzXcVbNmKlJhGfDsApOiUyTrEwQz',
+    '/aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7bC9dE1fG3hI5jK7lM9nO1pQ3rS',
+  ]) {
+    assert.notEqual(maskTokenLike(s), s, `以 / 开头的随机 base64 必须被掩：${s.slice(0, 40)}…`)
+    assert.equal(assertNoCredentials([s]).ok, false, `以 / 开头的随机 base64 必须命中红线：${s.slice(0, 40)}…`)
+  }
+  /** 不含 `/` 的裸凭证（v2 那种"中间带 /"也一并钉住） */
   for (const s of [
     'Zk9Qc2lMcU5hQmNkRWZHaElqS2xNbg/OpQrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWxYz/0123456789abcdefghij',
     'AbCdEfGhIjKlMnOpQrS/TuVwXyZ0123456789/AbCdEfGhIjKlMnOpQrStUvWxYz0123',
   ]) {
     assert.notEqual(maskTokenLike(s), s, `含 / 的裸凭证必须被掩：${s.slice(0, 40)}…`)
     assert.equal(assertNoCredentials([s]).ok, false, `含 / 的裸凭证必须命中红线：${s.slice(0, 40)}…`)
-  }
-  /** 🆕 反向：**确实以 `/` 开头**的端点路径必须**原样不动**（两版判据都必须成立的行为） */
-  for (const p of ['/wxxcx/platform/serverlist/getSunRunSchoolList', '/api/mp/wxxcx/sunrun/getRunBegin']) {
-    assert.equal(maskTokenLike(p), p, `以 / 开头的端点路径不该被掩：${p}`)
   }
   /** 一整行 `proxy` 日志（含路径、`upstream`、`respShape`）必须过红线 */
   const line = JSON.stringify({
@@ -271,6 +295,50 @@ test('🔴 回归：日志行里的**端点路径**不许被判成凭证（否�
   const real = `WXXCX${'Ab3+/='.repeat(18)}`
   assert.notEqual(maskTokenLike(real), real, '含 +/= 的 base64 token 必须仍被掩')
   assert.equal(assertNoCredentials([real]).ok, false, '未掩的真 token 必须被红线拦住')
+})
+
+test('🔴 复验 B2：**有记录窗口时 captures 也按窗口过滤**（不许把窗口之前的历史原文一起发出去）', () => {
+  store.clearCaptures()
+  const now = Date.now()
+  const mk = (atMs: number, tag: string): string => {
+    const s = store.writeCapture({
+      endpoint: `/probe/${tag}`,
+      http: 200,
+      ms: 1,
+      originalBytes: 3,
+      payload: { kind: 'text', text: `body-${tag}` },
+      at: new Date(atMs),
+    })
+    assert.ok(s, `留档应成功：${tag}`)
+    return s!
+  }
+  /** 窗口之前 2 份（复验现场：12:49 开始记录，12:47 的原文不该进包） */
+  const before1 = mk(now - 5 * 60_000, 'before-1')
+  const before2 = mk(now - 4 * 60_000, 'before-2')
+  /** 窗口之内 2 份 */
+  const inRange = mk(now - 30_000, 'in-window')
+  const range = { startedAtMs: now - 60_000, endedAtMs: now }
+
+  /** ① 窗口口径：只收窗口内的 */
+  const scoped = store.recentCaptures(3, new Date(now), range)
+  assert.deepEqual(scoped.map((x) => x.name), [inRange], `窗口口径只应收窗口内那 1 份，实际 ${JSON.stringify(scoped.map((x) => x.name))}`)
+  assert.ok(!scoped.some((x) => x.name === before1 || x.name === before2), '窗口之前的原文不得进包')
+
+  /** ② 不传 range（无窗口）⇒ 退回"最近 N 天"口径，三份都在 */
+  const recent = store.recentCaptures(3, new Date(now))
+  assert.equal(recent.length, 3, `无窗口时应退回最近 N 天（3 份），实际 ${recent.length}`)
+
+  /** ③ `endedAtMs=0`（仍在记录）⇒ 右边界用"此刻"，窗口内的照样收 */
+  const openEnded = store.recentCaptures(3, new Date(now), { startedAtMs: now - 60_000, endedAtMs: 0 })
+  assert.deepEqual(openEnded.map((x) => x.name), [inRange], '窗口未结束时用"此刻"当右边界')
+
+  /** ④ 窗口起点晚于所有文件 ⇒ 一份都不给（**不许**退化成"全给"） */
+  const empty = store.recentCaptures(3, new Date(now), { startedAtMs: now + 60_000, endedAtMs: 0 })
+  assert.deepEqual(empty, [], '窗口还没开始的区间不该收到任何历史原文')
+  /**
+   * ⚠️ **故意不清空**：下一个用例（"窗口过滤（最近 N 天）"）要求目录里有今天那份；
+   * 这里清了会让它读到 0 份（实测踩到）。本文件最后的 `clearCaptures` 用例会收尾清理。
+   */
 })
 
 test('captures：窗口过滤（最近 N 天）+ 窗口内逐份可读', () => {

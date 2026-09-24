@@ -266,6 +266,13 @@ const captureBudgetBytes = ref(0)
 const captureDroppedFiles = ref(0)
 const captureDroppedBytes = ref(0)
 /**
+ * 🆕 2026-09-23（复验 B2）：响应原文的**收录口径**（服务端给的 `captures.scope`）。
+ * 有记录窗口 ⇒ `window`（只收本次窗口内的原文）；没有 ⇒ `recent-days`（最近 N 天，**不限于**某一次复现）。
+ * 界面预览必须**如实**写出是哪一种，别让用户以为"包里只有这一次复现"。
+ */
+const captureScope = ref<'window' | 'recent-days'>('recent-days')
+const captureScopeDays = ref(3)
+/**
  * 坐标开关：**以服务端窗口里的为准**（刷新后从服务端读回）。
  * 用一个局部 ref 承接 `v-switch` 的 v-model，再 watch 它 PATCH 到服务端（见下面的两个 watch）。
  */
@@ -406,13 +413,16 @@ async function refreshRecordState(): Promise<void> {
     const inst = (data?.serverInstance ?? null) as { instanceId?: unknown } | null
     if (typeof inst?.instanceId === 'string') serverInstanceId.value = inst.instanceId
     /** 🆕 响应原文留档的占用（给「这个包里会包含什么」那一行用；读不到就保持上一次的值） */
-    const cap = (data?.captures ?? null) as { files?: unknown; usedBytes?: unknown; budgetBytes?: unknown; droppedFiles?: unknown; droppedBytes?: unknown } | null
+    const cap = (data?.captures ?? null) as { files?: unknown; usedBytes?: unknown; budgetBytes?: unknown; droppedFiles?: unknown; droppedBytes?: unknown; scope?: unknown; days?: unknown } | null
     if (cap && typeof cap.files === 'number') {
       captureFiles.value = cap.files
       captureUsedBytes.value = typeof cap.usedBytes === 'number' ? cap.usedBytes : 0
       captureBudgetBytes.value = typeof cap.budgetBytes === 'number' ? cap.budgetBytes : 0
       captureDroppedFiles.value = typeof cap.droppedFiles === 'number' ? cap.droppedFiles : 0
       captureDroppedBytes.value = typeof cap.droppedBytes === 'number' ? cap.droppedBytes : 0
+      /** 🆕 复验 B2：服务端当前按哪种口径收录（窗口内 / 最近 N 天）—— 界面文案据此如实说明 */
+      if (cap.scope === 'window' || cap.scope === 'recent-days') captureScope.value = cap.scope
+      if (typeof cap.days === 'number') captureScopeDays.value = cap.days
     }
     /**
      * 🆕（审计 B4）轮询到的窗口与界面手里那个"变了"时**如实提示**，让用户在导出**之前**就知道，
@@ -690,6 +700,13 @@ const manifestPreview = computed(() => {
       note:
         `包含每个请求的完整响应原文（已脱敏；不做单条裁剪，便于直接拿去做分析），放在包内 captures/ 目录下，` +
         `每份都带一个同名 .meta.json（本机时间、端点、状态码、耗时、字节数、是否裁剪）。` +
+        /**
+         * 🔴 复验 B2：**口径必须如实**（用户要的是"这一次复现"的证据）——
+         * 有记录窗口 ⇒ 包内只收窗口内的原文；没有窗口 ⇒ 退回最近 N 天（那**不限于**某一次复现）。
+         */
+        `${captureScope.value === 'window'
+          ? `这次有记录窗口 ⇒ 包里只收【本次记录窗口内】的响应原文（窗口之前的历史原文不会进包）。`
+          : `这次没有生效的记录窗口 ⇒ 包里按【最近 ${captureScopeDays.value} 天】收录响应原文，不限于某一次复现。`}` +
         `本机累计 ${captureFiles.value} 份、约占 ${formatBytes(captureUsedBytes.value)}` +
         `${captureBudgetBytes.value ? `（总量预算 ${formatBytes(captureBudgetBytes.value)}，超出时按最旧先淘汰并记账）` : ''}；` +
         `${includeGeometry.value ? '坐标（经纬度）会随原文一起收录（上面的开关是打开的）' : '坐标已在导出时按上面的开关从这些原文里逐份剔除（文本响应的坐标无法逐字段剥离，会原样保留）'}。` +

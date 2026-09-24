@@ -192,6 +192,14 @@ export interface CaptureFileEntry {
 export interface CaptureAccount {
   /** 目录（**绝对路径**，让人知道去哪儿找） */
   dir: string
+  /**
+   * 🆕 2026-09-23（复验 B2）**收录口径**：
+   * `window` = 只收**本次记录窗口**内的响应原文（有活动窗口时的正确行为）；
+   * `recent-days` = 本次没有生效窗口 ⇒ 退回"最近 N 天"（**不限于某一次复现**，必须让用户看见）。
+   */
+  scope?: 'window' | 'recent-days'
+  /** 上面那个口径的**人话说明**（界面预览与 manifest 共用，避免两处口径漂移） */
+  scopeNote?: string
   /** 窗口内进包的份数 */
   keptFiles: number
   /** 窗口内进包的总字节 */

@@ -31,6 +31,7 @@ import { basename, join } from 'node:path'
 import {
   DIAG_CAPTURE_DAYS,
   DIAG_CAPTURE_MAX_BYTES,
+  DIAG_WINDOW_TOLERANCE_MS,
   captureFileName,
   parseCaptureName,
   type CaptureMeta,
@@ -276,14 +277,29 @@ export interface CapturePackItem {
  *   ① 优先读同名 `.meta.json` 的 `at`（权威）；
  *   ② 没有 meta（旧文件被删过 meta / 坏 meta）就退回**文件的 mtime**。
  * 解析不出文件名的（不是我们生成的）**跳过**，不参与打包。
+ *
+ * 🆕 2026-09-23（复验 B2）：**有记录窗口时改成按窗口过滤**（见 `recentCaptures()` 的 `range` 形参）——
+ * 用户要的是"**这一次复现**"的证据，把窗口之前的历史响应原文一起发出去既噪声大、也不该发。
  */
-export function recentCaptures(days = 3, now: Date = new Date()): CapturePackItem[] {
+export function recentCaptures(
+  days = 3,
+  now: Date = new Date(),
+  /**
+   * 记录窗口区间（`startedAtMs` / `endedAtMs`；`endedAtMs=0` = 仍在记录 ⇒ 右边界用"此刻"）。
+   * 传了就**只收落在窗口内**的 captures；不传 = 旧口径（最近 `days` 天）。
+   */
+  range?: { startedAtMs: number; endedAtMs: number } | null,
+): CapturePackItem[] {
   const out: CapturePackItem[] = []
   try {
     if (!existsSync(CAPTURE_DIR)) return out
     const span = Math.max(0, Math.floor(days))
-    if (!span) return out
-    const oldest = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (span - 1)).getTime()
+    const useWindow = Boolean(range && Number.isFinite(range.startedAtMs) && range.startedAtMs > 0)
+    if (!span && !useWindow) return out
+    /** 左边界：窗口口径用窗口起点（留 1 秒容差，与日志同一口径）；否则"最近 span 天的零点" */
+    const oldest = useWindow ? range!.startedAtMs - DIAG_WINDOW_TOLERANCE_MS : new Date(now.getFullYear(), now.getMonth(), now.getDate() - (span - 1)).getTime()
+    /** 右边界：窗口未结束（仍在记录）时用"此刻"；窗口口径下**严格** */
+    const newest = useWindow ? (range!.endedAtMs > 0 ? range!.endedAtMs : now.getTime()) : Number.POSITIVE_INFINITY
     for (const f of listPayloadFiles()) {
       if (!parseCaptureName(f.name)) continue
       let text = ''
@@ -302,7 +318,7 @@ export function recentCaptures(days = 3, now: Date = new Date()): CapturePackIte
       /** 时间判定：meta.at 优先，其次 mtime（旧格式的文件名时间戳已不再依赖） */
       const atMs = meta?.at ? Date.parse(meta.at) : NaN
       const t = Number.isFinite(atMs) ? atMs : f.mtimeMs
-      if (!Number.isFinite(t) || t < oldest) continue
+      if (!Number.isFinite(t) || t < oldest || t > newest) continue
       out.push({ name: f.name, bytes: Buffer.byteLength(text, 'utf8'), text, meta })
     }
     /** 按时间升序（meta.at / mtime 决定；文件名序号不再承载时间） */

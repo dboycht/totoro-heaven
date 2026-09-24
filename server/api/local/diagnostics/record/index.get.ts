@@ -33,6 +33,12 @@ export default defineEventHandler((event) => {
     serverInstance: { instanceId: DIAG_INSTANCE_ID, startedAtMs: DIAG_INSTANCE_STARTED_MS, pid: process.pid },
     /** 🆕 响应原文留档的占用（界面提示 + 「这个包里会包含什么」那一行用） */
     captures: {
+      /**
+       * 🆕 复验 B2：**现在按哪种口径收录**（界面要如实显示 —— 用户要的是"这一次复现"的证据）：
+       * `window` = 本次有活动窗口 ⇒ 只收窗口内的；`recent-days` = 没有窗口 ⇒ 退回最近 N 天。
+       */
+      scope: win ? ('window' as const) : ('recent-days' as const),
+      days: DIAG_CAPTURE_DAYS,
       files: recentCaptures(DIAG_CAPTURE_DAYS).length,
       usedBytes: captureDirBytes(),
       budgetBytes: CAPTURE_MAX_BYTES,

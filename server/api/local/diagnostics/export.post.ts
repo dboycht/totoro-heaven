@@ -232,8 +232,15 @@ export default defineEventHandler(async (event) => {
    *   · 坐标：**逐份**按「包含跑道/任务坐标」开关剥（复用 `stripGeometryFromRespBody()`，不写第二份）；
    *   · 红线：命中的**只剔那一份**（`partitionLogsByRedline` 同源），并在清单里记账。
    * 注意 captures 里的正文就是**已脱敏**的原文（写盘时已脱敏），所以正常情况下红线不该命中。
+   *
+   * 🆕 2026-09-23（复验 B2）：**有记录窗口时按窗口过滤**（与日志/事件同一口径）。
+   * 用户要的是"这一次复现"的证据；把窗口之前的历史响应原文一起发出去既噪声大、也不该发。
+   * 没有窗口（或窗口已随进程重启失效）时退回原口径（最近 `DIAG_CAPTURE_DAYS` 天），
+   * 并在 `manifest` 与界面预览里**如实写明用的是哪种口径**。
    */
-  const captureItems = recentCaptures(DIAG_CAPTURE_DAYS, now)
+  const captureRange = win ? { startedAtMs: win.startedAtMs, endedAtMs: win.recording ? 0 : win.endedAtMs } : null
+  const captureScope = captureRange ? ('window' as const) : ('recent-days' as const)
+  const captureItems = recentCaptures(DIAG_CAPTURE_DAYS, now, captureRange)
   const capturePrepared = captureItems.map((c) => {
     if (includeGeometry) return { name: c.name, bytes: c.bytes, text: c.text, raw: c, geometryStripped: false as const, strippedCount: 0 }
     const r = stripGeometryFromCapturesText(c.text, c.name)
@@ -269,6 +276,15 @@ export default defineEventHandler(async (event) => {
   }))
   const captureAccount: CaptureAccount = {
     dir: CAPTURE_DIR,
+    /**
+     * 🆕 **口径如实写明**（复验 B2）：`window` = 只收本次记录窗口内的原文；
+     * `recent-days` = 没有窗口 ⇒ 退回"最近 N 天"。
+     */
+    scope: captureScope,
+    scopeNote:
+      captureScope === 'window'
+        ? `只收本次记录窗口（${win?.id ?? ''}，${new Date(win?.startedAtMs ?? 0).toISOString()} 起）内的响应原文`
+        : `本次没有生效的记录窗口 ⇒ 响应原文按"最近 ${DIAG_CAPTURE_DAYS} 天"收录（不限于某一次复现）`,
     keptFiles: captureEntries.length,
     keptBytes: captureEntries.reduce((s, e) => s + e.bytes, 0),
     droppedFiles: captureLedger.files,
@@ -502,7 +518,7 @@ export default defineEventHandler(async (event) => {
       windowId: win?.id ?? '',
       instanceId: win?.instanceId ?? DIAG_INSTANCE_ID,
       requests: { total: account.keptLines ? [...endpointCounts.values()].reduce((s, n) => s + n, 0) : 0, byEndpointTop5: topEndpoints },
-      captures: { files: captureAccount.keptFiles, bytes: captureAccount.keptBytes, dropped: captureAccount.droppedFiles },
+      captures: { files: captureAccount.keptFiles, bytes: captureAccount.keptBytes, dropped: captureAccount.droppedFiles, scope: captureScope, scopeNote: captureAccount.scopeNote },
       uiEvents: { client: merged.stats.client, localStorage: merged.stats.localStorage, server: merged.stats.server, merged: merged.stats.merged, duplicates: merged.stats.duplicates, linesInLogs: uiEventLines },
       /** 🆕 心跳快照：进包几条（"最后一刻的状态"有没有留下）+ 被限流拒了几条 */
       heartbeats: { linesInLogs: heartbeatLines, inTimeline: heartbeatsInTimeline, rejectedByServer: serverEvents.heartbeatsRejected },
