@@ -4,7 +4,8 @@
 
 > ## 📌 版本说明（先看这个）
 >
-> - **建议使用 `1.2.*` 的发行版**（当前正式版：**`1.2.1`**）；
+> - **建议使用 `1.2.*` 的发行版**（当前正式版：**`1.2.4`**，2026-09-22 发布；最新版本一律以
+>   [**Releases**](https://github.com/dboycht/totoro-heaven/releases/latest) 页为准 —— 本行可能滞后于实际最新版）；
 > - 此前 **`1.1.*` 均为预览测试版**；
 >
 > （软件内「**版本信息**」板块会列出各版本的**贺图 + 更新日志**；版本号规则见 `rules/01`。）
@@ -93,7 +94,7 @@
 npm install
 npm run dev            # http://localhost:3000
 npm run verify         # ★一键验证：单测 + 4 类类型检查 + 接线契约（改完代码先跑这个；CI 也会跑）
-npm run test:mp        # 163 个单测（Node 内置 test runner，零依赖）
+npm run test:mp        # 545 个单测（Node 内置 test runner，零依赖）
 npm run typecheck:mp   # 纯逻辑模块类型检查
 npm run typecheck:ui   # composables / src / utils / server 的 .ts 类型检查
 npm run typecheck:vue  # .vue 模板类型检查（nuxi typecheck）
