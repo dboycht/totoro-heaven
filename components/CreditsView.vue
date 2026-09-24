@@ -1,16 +1,21 @@
 <template>
   <!--
-    鸣谢界面（2026-09-23 新增，用户要求"先生成界面，后面再接进软件"）
+    鸣谢界面（2026-09-23 新增；同日按用户要求改版为"电影片尾"式）
 
     自成一体的组件：只靠 props 驱动，不读全局 store、不碰路由，放在任何子页里都能用。
-    目录里刻意没有任何导航入口 —— 接进软件时按报告里写的三处改动即可。
+    目录里刻意没有任何导航入口 —— 接进软件时按报告里写的那几处改动即可。
 
-    零依赖：彩带用 <canvas> + requestAnimationFrame 自己算；不引 npm 包、不引 CDN、
-    不加载外部图片或字体（打包成单文件 EXE 离线运行时，任何外部资源都会失效）。
+    零依赖：彩带与滚动都用 <canvas> / requestAnimationFrame 自己算。
+    不引 npm 包、不引 CDN、不加载外部图片或字体（打包成单文件 EXE 离线运行时外部资源都会失效）。
+
+    两种布局（`fits` 决定，见脚本 reflow()）：
+      · 放得下 ⇒ 全部条目一次性居中列在视口里，不滚动；
+      · 放不下 ⇒ 电影片尾式缓慢向上滚动，到末尾停顿约 2 秒后从头循环。
   -->
-  <div class="credits-view">
+  <div class="credits-view" :style="{ '--credits-stage-h': `${stageHeight}px` }">
     <!--
-      彩带层：pointer-events:none 是硬要求 —— 它铺满视口，但绝不劫持鼠标；
+      彩带层：铺满整个视口（position:fixed; inset:0）。
+      pointer-events:none 是硬要求 —— 它铺满视口，但绝不劫持鼠标；
       aria-hidden 让它对读屏软件完全不存在。z-index 取 1000：
       高于页面内容，低于 Vuetify 的弹窗/提示层（>=2000），所以不会盖住对话框。
     -->
@@ -22,59 +27,91 @@
       aria-hidden="true"
     />
 
-    <!-- 用普通 div 而不是 v-container：外层 layout 已经包了一个 v-container，
-         再嵌一个会双重内边距，这里只要"居中 + 一个最小高度"就够 -->
     <div class="credits-stage">
-      <div class="credits-stack">
-        <div class="credits-headline text-center">
-          <v-icon color="primary" size="34" class="mb-1">mdi-heart-multiple-outline</v-icon>
-          <div class="text-h6 font-weight-bold">鸣谢</div>
-          <div class="text-body-2 text-medium-emphasis">
-            感谢每一位参与测试、提出问题与帮忙查错的同学
+      <!-- 顶部标题：不参与滚动，任何模式下都固定可见 -->
+      <header class="credits-headline text-center">
+        <v-icon color="primary" size="34" class="mb-1">mdi-heart-multiple-outline</v-icon>
+        <div class="text-h6 font-weight-bold">鸣谢</div>
+        <div class="text-body-2 text-medium-emphasis">
+          感谢每一位参与测试、提出问题与帮忙查错的同学
+        </div>
+      </header>
+
+      <!--
+        条目区（片尾窗口）：overflow:hidden 的裁剪框。
+        滚动模式靠 translateY 移动内部内容 —— 刻意不用原生滚动条，
+        这样用户的滚轮/键盘仍然作用于整个页面，不会被"抢走"。
+        （reduced-motion 下退化成原生可滚动容器，保证内容仍能看全。）
+      -->
+      <div
+        ref="clipEl"
+        class="credits-window"
+        :class="{ 'credits-window--scrollable': manualScroll }"
+        data-testid="credits-window"
+      >
+        <div
+          ref="contentEl"
+          class="credits-content"
+          :class="{ 'credits-content--fit': fits, 'credits-content--roll': !fits }"
+          :style="{ transform: `translateY(${-shift.toFixed(2)}px)` }"
+          data-testid="credits-content"
+        >
+          <div
+            v-for="(c, i) in listSafe"
+            :key="`credit-${i}-${c.name}`"
+            class="credits-entry"
+            :class="{
+              'credits-entry--focus': fits && total > 1 && i === activeIndex,
+              'credits-entry--dim': fits && total > 1 && i !== activeIndex,
+            }"
+            :data-credit-index="i"
+          >
+            <div
+              class="credits-name font-weight-bold"
+              :class="nameSizeClass"
+              :data-testid="i === 0 ? 'credits-name' : `credits-name-${i}`"
+            >
+              {{ c.name }}
+            </div>
+            <div
+              class="credits-intro text-medium-emphasis"
+              :class="introSizeClass"
+              :data-testid="i === 0 ? 'credits-intro' : `credits-intro-${i}`"
+            >
+              {{ c.intro }}
+            </div>
+            <div v-if="c.note" class="credits-note text-medium-emphasis">
+              {{ c.note }}
+            </div>
           </div>
         </div>
+      </div>
 
-        <v-card
-          class="credits-card mx-auto"
-          max-width="640"
-          rounded="xl"
-          elevation="8"
-        >
-          <div class="credits-card__glow" aria-hidden="true" />
-
-          <v-card-text class="credits-card__body">
-            <!--
-              正中间：名称（大字号）。key 绑到当前序号的文字上，
-              切换时让它重新挂载以触发一次轻度过渡（尊重 reduced-motion，见样式段）。
-            -->
-            <div
-              :key="`name-${activeIndex}`"
-              class="credits-name credits-swap text-h3 font-weight-bold text-center"
-              data-testid="credits-name"
-            >
-              {{ active.name }}
-            </div>
-
-            <!-- 名称下方：介绍（一行） -->
-            <div
-              :key="`intro-${activeIndex}`"
-              class="credits-intro credits-swap text-body-1 text-medium-emphasis text-center mt-3"
-              data-testid="credits-intro"
-            >
-              {{ active.intro }}
-            </div>
-
-            <div
-              v-if="active.note"
-              :key="`note-${activeIndex}`"
-              class="credits-swap text-caption text-medium-emphasis text-center mt-2"
-            >
-              {{ active.note }}
-            </div>
-          </v-card-text>
-
-          <!-- 多条时的切换控件：圆点 + 上一条/下一条，可鼠标点、可键盘 Tab 到 -->
-          <v-card-actions v-if="total > 1" class="credits-card__actions">
+      <!-- 底部控件：固定不滚动。刻意做小、不挡内容 -->
+      <footer class="credits-footer">
+        <div class="credits-toolbar d-flex flex-wrap align-center justify-center ga-2">
+          <v-btn
+            v-if="!fits"
+            size="small"
+            variant="tonal"
+            :prepend-icon="scrolling ? 'mdi-pause' : 'mdi-play'"
+            data-testid="credits-scroll-toggle"
+            @click="toggleScroll"
+          >
+            {{ scrolling ? '暂停滚动' : '继续滚动' }}
+          </v-btn>
+          <v-btn
+            size="small"
+            variant="tonal"
+            color="primary"
+            prepend-icon="mdi-party-popper"
+            data-testid="credits-replay"
+            @click="replay"
+          >
+            再来一次
+          </v-btn>
+          <!-- 条目放得下时才有得切；滚动模式下整列都在动，不需要切换控件 -->
+          <template v-if="fits && total > 1">
             <v-btn
               icon="mdi-chevron-left"
               variant="text"
@@ -103,43 +140,19 @@
               data-testid="credits-next"
               @click="goto(activeIndex + 1)"
             />
-          </v-card-actions>
-        </v-card>
-
-        <!-- 常驻的小控件：重播彩带 + 自动轮播开关。刻意做小、不挡内容、可关闭 -->
-        <div class="credits-toolbar d-flex flex-wrap align-center justify-center ga-2">
-          <v-btn
-            size="small"
-            variant="tonal"
-            color="primary"
-            prepend-icon="mdi-party-popper"
-            data-testid="credits-replay"
-            @click="replay"
-          >
-            再来一次
-          </v-btn>
-          <v-btn
-            v-if="total > 1"
-            size="small"
-            variant="text"
-            :prepend-icon="autoPlay ? 'mdi-pause' : 'mdi-play'"
-            data-testid="credits-autoplay"
-            @click="toggleAutoPlay"
-          >
-            {{ autoPlay ? '暂停轮播' : '自动轮播' }}
-          </v-btn>
+          </template>
         </div>
-
         <div class="text-caption text-medium-emphasis text-center credits-foot">
-          本页是界面预览。真正接进软件时才会出现在导航里。
+          <template v-if="!fits">片尾缓慢滚动中，可随时暂停；你的滚轮与键盘仍然归你自己用。</template>
+          <template v-else>本页是界面预览。真正接进软件时才会出现在导航里。</template>
         </div>
-      </div>
+      </footer>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 
 /** 一条鸣谢（名称 + 一行介绍；`note` 可选，用于补充说明） */
 export interface CreditItem {
@@ -153,34 +166,40 @@ export interface CreditItem {
 
 const props = withDefaults(
   defineProps<{
-    /** 鸣谢条目；给多条时会显示切换控件，也能自动轮播 */
+    /** 鸣谢条目；条目多到放不下时自动变成片尾滚动 */
     items?: CreditItem[]
     /** 进入时是否播放彩带（false = 只静态显示内容） */
     playOnMount?: boolean
-    /** 多条时是否自动轮播 */
+    /** 条目放得下且不止一条时，是否按固定间隔轮播（滚动模式与此无关） */
     autoPlay?: boolean
-    /** 自动轮播间隔（毫秒） */
+    /** 轮播间隔（毫秒） */
     intervalMs?: number
-    /** 单场彩带的粒子数（建议 120~200） */
+    /** 彩带粒子数；不传（或 0）则按视口面积自动算（200~320，上限 400） */
     particleCount?: number
     /** 是否显示彩带层（false 时彻底不初始化 canvas） */
     showConfetti?: boolean
+    /** 片尾滚动速度（像素/秒）—— 电影片尾那种"慢慢走" */
+    scrollSpeed?: number
+    /** 滚到末尾后停顿多久再从头开始（毫秒） */
+    endHoldMs?: number
   }>(),
   {
     items: () => [{ name: '@Dusk', intro: '参与相关内部测试' }],
     playOnMount: true,
     autoPlay: true,
     intervalMs: 4200,
-    particleCount: 160,
+    particleCount: 0,
     showConfetti: true,
+    scrollSpeed: 30,
+    endHoldMs: 2000,
   },
 )
 
 /* ------------------------------------------------------------------ *
- * 一、内容与轮播
+ * 一、内容
  * ------------------------------------------------------------------ */
 
-/** 过滤掉没名字的空条目，避免渲染出空白卡片 */
+/** 过滤掉没名字的空条目，避免渲染出空白块 */
 const list = computed<CreditItem[]>(() =>
   (Array.isArray(props.items) ? props.items : []).filter((c) => c && String(c.name || '').trim()),
 )
@@ -192,7 +211,6 @@ const listSafe = computed<CreditItem[]>(() =>
 
 const total = computed(() => listSafe.value.length)
 const activeIndex = ref(0)
-const active = computed<CreditItem>(() => listSafe.value[activeIndex.value] || listSafe.value[0]!)
 
 /** 绕圈切换（负数与越界都能正确回绕） */
 function goto(i: number) {
@@ -201,13 +219,172 @@ function goto(i: number) {
   activeIndex.value = ((i % n) + n) % n
 }
 
+/* ------------------------------------------------------------------ *
+ * 二、片尾式布局：放得下就全显示，放不下就缓慢向上滚
+ * ------------------------------------------------------------------ */
+
+const clipEl = ref<HTMLElement | null>(null)
+const contentEl = ref<HTMLElement | null>(null)
+
 /**
- * 自动轮播用**定时器**（不是过渡钩子），并且**只在多条时才存在**：
- * 单条时一个定时器都不建 —— 免得留下空转的东西。每次切换后重建定时器，
- * 这样用户手动点"下一条"之后，倒计时重新开始，不会刚切完又被自动切走。
+ * 整个"片尾舞台"的高度：钉在一屏内，把剩下的空间留给条目窗口。
+ * 预留量 = 顶栏 64 + 外层内边距 + 标题块 + 底部控件；再兜一个 360px 的最小值，
+ * 免得小窗口里被压成一条缝。
  */
+const STAGE_RESERVED = 130
+const stageHeight = ref(
+  typeof window === 'undefined' ? 700 : Math.max(360, Math.round(window.innerHeight - STAGE_RESERVED)),
+)
+
+function updateStageHeight() {
+  stageHeight.value = Math.max(360, Math.round(window.innerHeight - STAGE_RESERVED))
+}
+
+/** 放得下 ⇒ 静态全显示；放不下 ⇒ 片尾滚动 */
+const fits = ref(true)
+/** 滚动模式下是否让容器变成原生可滚动（只在 reduced-motion 下为真） */
+const manualScroll = ref(false)
+/** 已滚动的像素（内容上移量） */
+const shift = ref(0)
+/** 滚动总距离 */
+const maxShift = ref(0)
+const scrolling = ref(false)
+
+const START_HOLD_MS = 1600
+const MEASURE_TOLERANCE = 2
+
+let scrollRaf: number | null = null
+let holdTimer: ReturnType<typeof setTimeout> | null = null
+let lastScrollTs = 0
+let resizeObserver: ResizeObserver | null = null
+
+function clearHoldTimer() {
+  if (holdTimer !== null) {
+    clearTimeout(holdTimer)
+    holdTimer = null
+  }
+}
+
+function stopScrollLoop() {
+  if (scrollRaf !== null) {
+    cancelAnimationFrame(scrollRaf)
+    scrollRaf = null
+  }
+}
+
+function stopScrolling() {
+  scrolling.value = false
+  clearHoldTimer()
+  stopScrollLoop()
+}
+
+/**
+ * 匀速推进 + 到末尾/开头各自停顿（电影片尾的节奏）。
+ * 位移按时间算（帧率无关），所以真实速度就是 scrollSpeed 像素/秒。
+ */
+function scrollFrame(ts: number) {
+  const dt = lastScrollTs ? Math.min(0.032, (ts - lastScrollTs) / 1000) : 0
+  lastScrollTs = ts
+
+  if (!scrolling.value) {
+    scrollRaf = null
+    return
+  }
+
+  const speed = Math.max(1, Number(props.scrollSpeed) || 30)
+  shift.value = Math.min(maxShift.value, shift.value + speed * dt)
+
+  if (shift.value >= maxShift.value) {
+    // 末尾停一会儿，再从开头继续（缓慢循环）
+    scrolling.value = false
+    clearHoldTimer()
+    const hold = Math.max(0, Number(props.endHoldMs) || 2000)
+    holdTimer = setTimeout(() => {
+      holdTimer = null
+      shift.value = 0
+      nextTick(() => {
+        lastScrollTs = 0
+        scrolling.value = true
+        scrollRaf = requestAnimationFrame(scrollFrame)
+      })
+    }, hold)
+    scrollRaf = null
+    return
+  }
+
+  scrollRaf = requestAnimationFrame(scrollFrame)
+}
+
+function startScrolling() {
+  if (fits.value) return
+  if (prefersReducedMotion.value) return // 减弱动效 ⇒ 不自动滚，交给用户自己滚
+  if (scrolling.value) return
+  clearHoldTimer()
+  lastScrollTs = 0
+  scrolling.value = true
+  scrollRaf = requestAnimationFrame(scrollFrame)
+}
+
+function toggleScroll() {
+  if (scrolling.value) stopScrolling()
+  else startScrolling()
+}
+
+/** 条目多时把字号收一点（滚动模式下再收一档） */
+const nameSizeClass = computed(() => {
+  if (!fits.value) return 'credits-name--roll'
+  if (total.value > 6) return 'credits-name--many'
+  if (total.value > 2) return 'credits-name--mid'
+  return 'credits-name--big'
+})
+
+const introSizeClass = computed(() => (fits.value && total.value <= 2 ? 'text-body-1' : 'text-body-2'))
+
+/**
+ * 量一次尺寸，决定用哪种布局。
+ * 判据：可用高度（裁剪框）能不能容下内容整高（多给 2px 容差，避免亚像素抖动来回切）。
+ */
+function reflow() {
+  const clip = clipEl.value
+  const content = contentEl.value
+  if (!clip || !content) return
+
+  const available = clip.clientHeight
+  const needed = content.scrollHeight
+  if (available <= 0) return
+
+  const nowFits = needed <= available + MEASURE_TOLERANCE
+  fits.value = nowFits
+  manualScroll.value = prefersReducedMotion.value && !nowFits
+  maxShift.value = Math.max(0, needed - available)
+
+  if (nowFits) {
+    stopScrolling()
+    shift.value = 0
+    return
+  }
+  if (shift.value > maxShift.value) shift.value = maxShift.value
+
+  // 放不下：先从头展示一会儿，再开始缓慢滚动
+  if (scrolling.value || holdTimer !== null) return
+  clearHoldTimer()
+  holdTimer = setTimeout(() => {
+    holdTimer = null
+    startScrolling()
+  }, START_HOLD_MS)
+}
+
+/** 内容变了（条目数、字号、换行）都要重量一次 */
+function reflowSoon() {
+  nextTick(() => requestAnimationFrame(() => reflow()))
+}
+
+/* ------------------------------------------------------------------ *
+ * 三、条目放得下时的轮播（与片尾滚动互斥：滚动模式不做轮播）
+ * ------------------------------------------------------------------ */
+
 const autoPlayOn = ref(props.autoPlay)
-const autoPlay = computed(() => autoPlayOn.value && total.value > 1)
+const autoPlay = computed(() => autoPlayOn.value && fits.value && total.value > 1)
 let rotateTimer: ReturnType<typeof setTimeout> | null = null
 
 function clearRotateTimer() {
@@ -228,21 +405,15 @@ function scheduleRotate() {
   }, ms)
 }
 
-function toggleAutoPlay() {
-  autoPlayOn.value = !autoPlayOn.value
-  scheduleRotate()
-}
-
-// 手动切换、条目变化、开关变化 —— 都让倒计时重新开始
-watch([activeIndex, total, autoPlayOn], () => scheduleRotate())
-
-// 条目数组被换成新内容时，把序号夹回合法范围
+watch([activeIndex, total, autoPlayOn, fits], () => scheduleRotate())
 watch(total, (n) => {
   if (n > 0 && activeIndex.value >= n) activeIndex.value = 0
 })
+// 条目内容变化 ⇒ 重新量尺寸
+watch(listSafe, () => reflowSoon(), { deep: true })
 
 /* ------------------------------------------------------------------ *
- * 二、彩带（canvas + requestAnimationFrame，零依赖）
+ * 四、彩带（canvas + requestAnimationFrame，零依赖）
  * ------------------------------------------------------------------ */
 
 type ConfettiKind = 'ribbon' | 'chip'
@@ -303,20 +474,30 @@ const PALETTE = [
 /**
  * 播彩带的时间线：第 0 / 300 / 660 / 1050 毫秒各爆一次（共 4 波），
  * 每波粒子数依次递减（约 34% / 27% / 21% / 18%），
- * 所以总数 ≈ particleCount，**不会因为多波而翻倍**。
- *
- * 起点在屏幕下缘偏中间的区域，初速度**向上**且带随机横向扩散 ⇒
- * 视觉上就是"从底部中间向四周爆开、先上冲再飘落"。
+ * 所以总数 ≈ particleCount，不会因为多波而翻倍。
  */
 const WAVE_AT_MS = [0, 300, 660, 1050]
 const WAVE_SHARE = [0.34, 0.27, 0.21, 0.18]
 
-/** 只在窗口尺寸真的变了时才改画布尺寸（改 canvas 尺寸会清空画布，不能每帧做） */
+/** 视口面积基准：1440x1000 时取 240 个粒子，再按面积线性缩放并夹在 200~320 */
+const AREA_BASE_PX = 1440 * 1000
+const AREA_BASE_COUNT = 240
+
+function autoParticleCount() {
+  const px = Math.max(1, window.innerWidth) * Math.max(1, window.innerHeight)
+  const n = Math.round(AREA_BASE_COUNT * (px / AREA_BASE_PX))
+  return Math.max(200, Math.min(320, n))
+}
+
+/** 只在尺寸真的变了时才改画布尺寸（改 canvas 尺寸会清空画布，不能每帧做） */
 function resizeCanvas() {
   const el = canvasEl.value
   if (!el) return
-  const w = Math.max(1, el.clientWidth || window.innerWidth)
-  const h = Math.max(1, el.clientHeight || window.innerHeight)
+  // 铺满整个视口。尺寸取 window.innerWidth/innerHeight（clientWidth 会被滚动条减掉，
+  // 那会让画布比可视区窄一条），并在元素上同步 CSS 尺寸，保证两者一致。
+  const root = document.documentElement
+  const w = Math.max(1, Math.round(window.innerWidth || root.clientWidth || 1))
+  const h = Math.max(1, Math.round(window.innerHeight || root.clientHeight || 1))
   const nextDpr = Math.min(2, window.devicePixelRatio || 1) // 上限 2：够清晰，又不浪费填充率
   if (w === width && h === height && nextDpr === dpr) return
   width = w
@@ -324,42 +505,43 @@ function resizeCanvas() {
   dpr = nextDpr
   el.width = Math.round(w * dpr)
   el.height = Math.round(h * dpr)
+  el.style.width = `${w}px`
+  el.style.height = `${h}px`
   const ctx = ctxRef.value
   if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 }
 
+/**
+ * 爆一波：起点铺满**整条下缘**（x 全宽随机），初速向上且足够大。
+ * 速度按视口高度缩放 ⇒ 小窗口不冲过头、大屏也能覆盖整个页面高度。
+ */
 function spawnWave(count: number) {
   const ctx = ctxRef.value
   if (!ctx || count <= 0) return
 
-  // 起点：贴近下缘（再往上 8%），横向集中在中间 40% 宽度内
-  const originX = width * (0.3 + Math.random() * 0.4)
-  const originY = height * 0.92
-  const spread = Math.min(width * 0.42, 420)
+  const originY = height * 0.995
+  const vScale = Math.max(0.55, Math.min(1.9, height / 900))
 
   for (let i = 0; i < count; i++) {
-    // 抛射角：-150° ~ -30°（canvas 的 y 轴朝下，所以负角度 = 朝上）
-    const angle = (-150 + Math.random() * 120) * (Math.PI / 180)
-    // 速度：380~840 px/s。实测最高飘到约 500px 高（下缘出发大致够到卡片下沿），
-    // 刻意**够不到卡片正中的文字** —— 免得纸带糊在名称上挡住阅读。
-    const speed = 380 + Math.random() * 460
-    // 离中心的横向偏移：越靠边，横向初速越大 ⇒ 向四周散开
-    const offX = (Math.random() - 0.5) * spread * 0.5
+    // 抛射角：-142° ~ -38°（canvas 的 y 轴朝下，所以负角度 = 朝上）
+    const angle = (-142 + Math.random() * 104) * (Math.PI / 180)
+    const speed = (330 + Math.random() * 620) * vScale
     const ribbon = Math.random() < 0.55
 
     particles.push({
-      x: originX + offX,
-      y: originY + (Math.random() - 0.5) * height * 0.06,
-      vx: Math.cos(angle) * speed * (0.55 + Math.abs(offX) / spread),
+      // 起点铺满整条边，不再集中在中间那一段
+      x: Math.random() * width,
+      y: originY + (Math.random() - 0.5) * height * 0.03,
+      vx: Math.cos(angle) * speed * (0.6 + Math.random() * 0.8),
       vy: Math.sin(angle) * speed,
       w: ribbon ? 5 + Math.random() * 4 : 3 + Math.random() * 4,
       h: ribbon ? 12 + Math.random() * 14 : 3 + Math.random() * 4,
       color: PALETTE[(Math.random() * PALETTE.length) | 0]!,
       rot: Math.random() * Math.PI * 2,
       spin: (Math.random() - 0.5) * 9,
-      grav: GRAVITY * (0.8 + Math.random() * 0.5),
-      drag: 0.28 + Math.random() * 0.34,
-      wob: 10 + Math.random() * 26,
+      grav: GRAVITY * (0.8 + Math.random() * 0.5) * vScale,
+      drag: 0.24 + Math.random() * 0.3,
+      wob: 12 + Math.random() * 30,
       wobPhase: Math.random() * Math.PI * 2,
       flipPhase: Math.random() * Math.PI * 2,
       flipSpeed: 4 + Math.random() * 7,
@@ -374,7 +556,6 @@ function step(dt: number) {
   if (!ctx) return
   ctx.clearRect(0, 0, width, height)
 
-  const killY = height + 90
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i]!
     p.wobPhase += dt * 3.2
@@ -390,7 +571,7 @@ function step(dt: number) {
     p.rot += p.spin * dt
 
     // 落出下缘 / 飞出左右缘太远 ⇒ 这条结束
-    if (p.y > killY || p.x < -140 || p.x > width + 140) {
+    if (p.y > height + 120 || p.x < -150 || p.x > width + 150) {
       particles.splice(i, 1)
       continue
     }
@@ -427,7 +608,7 @@ function step(dt: number) {
 }
 
 /**
- * 唯一的 rAF 循环。跑空就自动停：
+ * 彩带的 rAF 循环。跑空就自动停：
  * 粒子清空、且没有待爆的波次 ⇒ 取消 rAF 并清屏，不留常驻空转。
  */
 function frame(ts: number) {
@@ -482,7 +663,8 @@ function playConfetti() {
   clearTimers()
   resizeCanvas()
 
-  const totalParticles = Math.max(0, Math.min(400, Math.round(Number(props.particleCount) || 160)))
+  const requested = Number(props.particleCount) > 0 ? Number(props.particleCount) : autoParticleCount()
+  const totalParticles = Math.max(0, Math.min(400, Math.round(requested)))
   let allocated = 0
   WAVE_AT_MS.forEach((delay, i) => {
     const isLast = i === WAVE_AT_MS.length - 1
@@ -509,11 +691,11 @@ function replay() {
 }
 
 /* ------------------------------------------------------------------ *
- * 三、无障碍：prefers-reduced-motion / 页面隐藏 / 尺寸变化
+ * 五、无障碍：prefers-reduced-motion / 页面隐藏 / 尺寸变化
  * ------------------------------------------------------------------ */
 
 /**
- * 零依赖读 `prefers-reduced-motion`：优先用 matchMedia，
+ * 零依赖读 prefers-reduced-motion：优先用 matchMedia，
  * 老环境没有 matchMedia 就当作"不减弱"，绝不能因为读不到而崩。
  */
 const motionQuery =
@@ -524,11 +706,14 @@ const prefersReducedMotion = ref(motionQuery ? motionQuery.matches : false)
 
 function onMotionChange(e: MediaQueryListEvent | MediaQueryList) {
   prefersReducedMotion.value = !!e.matches
+  reflowSoon()
   if (prefersReducedMotion.value) {
     // 用户中途改成"减弱动效" ⇒ 立刻刹车并清干净
     clearTimers()
     clearParticles()
     stopLoop()
+    stopScrolling()
+    shift.value = 0
   }
 }
 
@@ -537,11 +722,17 @@ function onVisibilityChange() {
   if (document.hidden) {
     clearTimers()
     stopLoop()
+    stopScrolling()
   }
 }
 
 function onResize() {
   resizeCanvas()
+  const before = stageHeight.value
+  updateStageHeight()
+  // 舞台高度变了 ⇒ 窗口可用高度也变了，必须重量一次（否则会卡在错误的模式里）
+  if (before !== stageHeight.value) reflowSoon()
+  else reflow()
 }
 
 onMounted(() => {
@@ -555,18 +746,27 @@ onMounted(() => {
   document.addEventListener('visibilitychange', onVisibilityChange)
   window.addEventListener('resize', onResize)
 
-  // 只在"该播"的时候排波次；prefersReducedMotion 为真时 playConfetti 自己会退回
-  if (props.playOnMount) playConfetti()
+  // 只监听裁剪框：它的高度就是"可用高度"，容器变化时重新判"放不放得下"
+  if (typeof ResizeObserver !== 'undefined' && clipEl.value) {
+    resizeObserver = new ResizeObserver(() => reflow())
+    resizeObserver.observe(clipEl.value)
+  }
 
+  updateStageHeight()
+  reflowSoon()
+  if (props.playOnMount) playConfetti()
   scheduleRotate()
 })
 
 onBeforeUnmount(() => {
-  // 卸载必须清干净：rAF、所有定时器、所有监听
+  // 卸载必须清干净：两个 rAF、所有定时器、所有监听
   stopLoop()
+  stopScrolling()
   clearTimers()
   clearParticles()
   clearRotateTimer()
+  resizeObserver?.disconnect()
+  resizeObserver = null
   motionQuery?.removeEventListener('change', onMotionChange)
   document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('resize', onResize)
@@ -591,12 +791,12 @@ watch(
   position: relative;
 }
 
-/* 彩带层：铺满视口、不吃鼠标事件、不参与读屏 */
+/* 彩带层：铺满整个视口、不吃鼠标事件、不参与读屏 */
 .credits-confetti {
   position: fixed;
   inset: 0;
-  width: 100%;
-  height: 100%;
+  width: 100vw;
+  height: 100vh;
   pointer-events: none;
   z-index: 1000;
   opacity: 1;
@@ -607,67 +807,145 @@ watch(
   opacity: 0;
 }
 
+/* 竖向三段：固定标题 / 可伸缩的条目窗口 / 固定底部控件 */
 .credits-stage {
   position: relative;
   z-index: 1;
-  min-height: min(72vh, 620px);
   display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.credits-stack {
-  width: 100%;
-  max-width: 720px;
+  flex-direction: column;
+  /*
+    高度钉死在一屏内（而不是 min-height）—— 这是"放不下就滚动"能成立的前提：
+    如果这里只给 min-height，条目窗口会被内容撑高，永远"放得下"，
+    于是永远不会进入片尾滚动（实测就是这个坑：40 条时窗口高 = 内容高 = 3940px）。
+    预留量给的是：顶栏 64 + 外层内边距 + 标题块 + 底部控件。
+  */
+  height: var(--credits-stage-h, calc(100vh - 130px));
+  max-width: 760px;
+  margin: 0 auto;
 }
 
 .credits-headline {
-  margin-bottom: 18px;
+  flex: 0 0 auto;
+  margin-bottom: 14px;
 }
 
-.credits-card {
+/*
+  条目窗口：撑满标题与底部控件之间的剩余空间。
+  overflow:hidden ⇒ 滚动模式靠 translateY 移动内容，不产生原生滚动条，
+  用户的滚轮/键盘因此仍然作用于页面本身（不劫持）。
+  mask 让上/下边缘各有一段渐隐（电影片尾那种"淡出画外"），
+  免得文字被硬生生切掉半行。渐隐区不影响可读区，中间整段仍是全不透明。
+*/
+.credits-window {
   position: relative;
+  flex: 1 1 auto;
+  min-height: 140px;
   overflow: hidden;
-  /* 主题色只影响这一层柔和底色，深浅色下都能看 */
-  background-image: linear-gradient(
-    145deg,
-    rgba(var(--v-theme-primary), 0.16),
-    rgba(var(--v-theme-surface), 0) 58%
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 26px,
+    #000 calc(100% - 26px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 26px,
+    #000 calc(100% - 26px),
+    transparent 100%
   );
 }
 
-/* 卡片右上角一团很淡的主题色，避免整页太平 */
-.credits-card__glow {
-  position: absolute;
-  top: -70px;
-  right: -50px;
-  width: 220px;
-  height: 220px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(var(--v-theme-primary), 0.22), transparent 70%);
+/* reduced-motion 下退化成原生可滚动：不让自动滚，但用户必须还能自己滚着看全 */
+.credits-window--scrollable {
+  overflow-y: auto;
+}
+
+.credits-content {
+  padding: 6px 4px 24px;
+  will-change: transform;
+}
+
+.credits-content--fit {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  gap: 26px;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.credits-content--roll {
+  display: block;
+}
+
+/* 放得下：居中留白 */
+.credits-content--fit .credits-entry {
+  text-align: center;
+  max-width: 640px;
+  transition: opacity 0.3s ease;
+}
+
+/* 两条时高亮当前那条、另一条压暗一点：既有名单感，又能看出在轮播 */
+.credits-content--fit .credits-entry--dim {
+  opacity: 0.42;
+}
+
+/* 放不下：按片尾那样一条条排开 */
+.credits-content--roll .credits-entry {
+  text-align: center;
+  max-width: 640px;
+  margin: 0 auto 34px;
+}
+
+.credits-content--roll .credits-entry:last-child {
+  margin-bottom: 8px;
+}
+
+.credits-entry {
+  /* 条目本身不吃事件，避免盖住底下的可交互元素 */
   pointer-events: none;
 }
 
-.credits-card__body {
-  position: relative;
-  padding-top: 34px;
-  padding-bottom: 26px;
-}
-
 .credits-name {
-  line-height: 1.2;
+  line-height: 1.24;
   word-break: break-word;
 }
 
+/* 字号按"条目多少"收放：1~2 条要大气，几十条不能糊满屏 */
+.credits-name--big {
+  font-size: 48px;
+}
+
+.credits-name--mid {
+  font-size: 38px;
+}
+
+.credits-name--many {
+  font-size: 34px;
+}
+
+.credits-name--roll {
+  font-size: 27px;
+}
+
 .credits-intro {
+  margin-top: 8px;
   line-height: 1.6;
 }
 
-.credits-card__actions {
-  position: relative;
-  justify-content: center;
-  gap: 6px;
-  padding-bottom: 14px;
+.credits-note {
+  margin-top: 4px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.credits-footer {
+  flex: 0 0 auto;
+  padding-top: 14px;
 }
 
 .credits-dots {
@@ -697,28 +975,8 @@ watch(
   transform: scale(1.25);
 }
 
-.credits-toolbar {
-  margin-top: 18px;
-}
-
 .credits-foot {
   margin-top: 10px;
-}
-
-/* 切换条目时的轻度过渡 */
-.credits-swap {
-  animation: credits-fade-in 0.32s ease both;
-}
-
-@keyframes credits-fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
 }
 
 /* 键盘焦点要看得见（不劫持键盘，但 Tab 过来得有提示） */
@@ -737,8 +995,8 @@ watch(
     display: none;
   }
 
-  .credits-swap {
-    animation: none;
+  .credits-content--fit .credits-entry {
+    transition: none;
   }
 
   .credits-dot {
