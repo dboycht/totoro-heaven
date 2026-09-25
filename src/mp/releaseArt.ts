@@ -52,6 +52,19 @@ export const VERSION_ADVICE = {
 /** 版本列表（最新在前） */
 export const VERSION_ENTRIES: VersionEntry[] = [
   {
+    version: '1.2.6',
+    /** ⚠️ 日期口径（规则 12）：定版那天先跑 Get-Date 读本机日期，发布后再用 published_at 复核（有脚本核对）。 */
+    date: '2026-09-25',
+    channel: 'stable',
+    title: '开发中（尚无已确认的新需求）',
+    planned: true,
+    highlights: [
+      '本版仍在开发中，还没有可以对外说明的新内容；',
+      '定版后会在此处补上完整的更新日志。',
+    ],
+    note: '开发中的条目，不在版本页展示；对外推荐正式版为 1.2.5。',
+  },
+  {
     version: '1.2.5',
     /**
      * ⚠️ 日期口径（规则 12）：以 Release 的 `published_at` 转本地日期为准；跨零点要同步改（有脚本核对）。
