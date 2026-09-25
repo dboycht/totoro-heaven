@@ -207,6 +207,19 @@ if (-not (Test-Path -LiteralPath (Join-Path $srcArt "$ver.png"))) {
     Write-Host "[0.6] version-art OK: shipping [$($packedArt -join ', ')] (stale/future artwork excluded)."
 }
 
+# ---- [0.7] strip server source maps from the packaged output ----
+# Why: the packaged EXE never enables Node source-map support (see pack/sea/launcher.mjs - there is no
+# setSourceMapsEnabled / --enable-source-maps), so every .map under .output is dead weight (~200 KB, and
+# it also carries our source file names). Measured 2026-09-25: 31 map files / 203.4 KB shipped for nothing.
+# This step only shapes the PACKAGED output; `npm run dev` keeps its own maps.
+$mapFiles = @(Get-ChildItem $outputDir -Recurse -File -Filter '*.map' -ErrorAction SilentlyContinue)
+foreach ($m in $mapFiles) { Remove-Item -LiteralPath $m.FullName -Force -ErrorAction SilentlyContinue }
+$mapLeft = @(Get-ChildItem $outputDir -Recurse -File -Filter '*.map' -ErrorAction SilentlyContinue)
+if ($mapLeft.Count -ne 0) {
+    throw "[0.7] source-map strip failed: $($mapLeft.Count) .map file(s) still under .output"
+}
+Write-Host "[0.7] source maps stripped: removed $($mapFiles.Count) .map file(s) from .output (the EXE never reads them)."
+
 Write-Host '[1/7] bundle launcher (esbuild)...'
 $esbuild = Join-Path $root 'node_modules\.bin\esbuild.cmd'
 if (-not (Test-Path $esbuild)) { throw "esbuild not found at $esbuild" }
@@ -238,6 +251,18 @@ if ($LASTEXITCODE -ne 0) { throw 'sea-config failed' }
 
 Write-Host '[4/7] copy node.exe base...'
 $nodeExe = (Get-Command node).Source
+# Fail early with a clear message when the target EXE is locked. Measured 2026-09-25: a packaged instance
+# left running holds dist\totoro-heaven.exe open, and the raw Copy-Item below dies with a bare
+# "The process cannot access the file ... because it is being used by another process" that looks like a
+# build bug. The real fix is always the same: close the running EXE, then pack again.
+if (Test-Path -LiteralPath $exeOut) {
+    try {
+        $fh = [System.IO.File]::Open($exeOut, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $fh.Close()
+    } catch {
+        throw "[4/7] cannot write $exeOut - the file is locked by a running process (usually a totoro-heaven.exe instance you started earlier). Close it and run 'npm run sea' again. Original error: $($_.Exception.Message)"
+    }
+}
 Copy-Item $nodeExe $exeOut -Force
 
 Write-Host '[5/7] set EXE icon from logo.ico (rcedit, BEFORE postject)...'
