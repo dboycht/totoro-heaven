@@ -199,7 +199,7 @@ const props = withDefaults(
     endHoldMs?: number
   }>(),
   {
-    items: () => [{ name: '@Dusk', intro: '参与相关内部测试' }],
+    items: () => [{ name: '@Dusktides', intro: '参与相关内部测试' }],
     playOnMount: true,
     autoPlay: true,
     intervalMs: 4200,
@@ -221,7 +221,7 @@ const list = computed<CreditItem[]>(() =>
 
 /** 兜底：进来一个空数组时也要有东西可显示，不能白屏 */
 const listSafe = computed<CreditItem[]>(() =>
-  list.value.length ? list.value : [{ name: '@Dusk', intro: '参与相关内部测试' }],
+  list.value.length ? list.value : [{ name: '@Dusktides', intro: '参与相关内部测试' }],
 )
 
 const total = computed(() => listSafe.value.length)

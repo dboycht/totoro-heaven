@@ -10,8 +10,8 @@
       · http://127.0.0.1:3000/credits?demo=none  0 条（验证兜底不白屏）
 
     默认给两条，页面刚打开显示的就是它们：
-      · 序号 0 = `@Dusk` / 参与相关内部测试（用户点名保留）；
-      · 序号 1 = `@TecntOvO` / 协助「研途健行」任务实测（2026-09-25 加，背景见 HANDOVER 附录 I）。
+      · 序号 0 = `@Dusktides` / 参与相关内部测试（用户点名保留）；
+      · 序号 1 = `@TecntOvO` / 协助适配「研途健行」（2026-09-25 加，背景见 HANDOVER 附录 I）。
     要再加人：照 `CreditItem`（名称 + 一行介绍）往数组里加即可 ——
     文案只写"称呼 + 做了什么"，不放学号、姓名、token 之类任何真实隐私数据。
     `?demo=long` 那 40 条是占位示例（统一叫"同学 NN"），只为演示片尾滚动。
@@ -27,8 +27,8 @@ import type { CreditItem } from '~/components/CreditsView.vue'
  * 只写"名称 + 一行介绍"，不放学号、姓名、token 之类任何真实隐私数据。
  */
 const CREDITS: CreditItem[] = [
-  { name: '@Dusk', intro: '参与相关内部测试' },
-  { name: '@TecntOvO', intro: '协助「研途健行」任务实测' },
+  { name: '@Dusktides', intro: '参与相关内部测试' },
+  { name: '@TecntOvO', intro: '协助适配「研途健行」' },
 ]
 
 /** 40 条占位示例：只为演示"条目多到放不下时的片尾滚动"，不是真实的人 */
