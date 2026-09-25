@@ -31,6 +31,17 @@ export function useTrackLibrary() {
   const { appVersion } = useUpdateCheck()
   const entries = useState<TrackRouteEntry[]>('mpTrackLibrary', () => [])
   /**
+   * 🆕 2026-09-25（诊断包实测修复）：**本机路线库装载过没有**。
+   *
+   * 起因：`entries` 的初值是 `[]`，而**只有**跑步页 / 跑道编辑页 / 非官方路径页会调 `load()`
+   * ⇒ 在工作台读数据那一刻，`entries` 代表的是"**还没读**"，而不是"**确实没有**"。
+   * 门禁的 `localGeometryReady` 必须能区分这两者，否则严格模式下会误报
+   * "这台电脑还没有可用的本机路径几何"（用户明明画过；实测证据见 `DEVELOPMENT.md` §39.3 第 2 条）。
+   *
+   * 与 `entries` 同生命周期（`useState` 内存态，刷新即归零）。
+   */
+  const loaded = useState<boolean>('mpTrackLibraryLoaded', () => false)
+  /**
    * 🆕 2026-09-22（用户批准）：**「本机路径」下拉的选择**，按任务各记各的（`{[taskId]: lineId}`）。
    *
    * ⚠️ 刻意**不写进 `mp_real_task_v1`**（那份缓存的契约是 `{at, task, lineId, token}` 四项，见 `realCache.ts`），
@@ -102,6 +113,8 @@ export function useTrackLibrary() {
       }
     }
     entries.value = merged
+    /** 🆕 2026-09-25：标记"读过本机库了" ⇒ 门禁从此可以把"没有几何"当作**确定结论**（`undefined` 才是未知） */
+    loaded.value = true
     if (migrated) persist()
     // 🆕 2026-09-22：顺带把「本机路径」的选择也读回来（同一个"本机数据"入口，省得各处再记一次）
     loadFreeRouteChoices()
@@ -252,6 +265,8 @@ export function useTrackLibrary() {
 
   return {
     entries,
+    // 🆕 2026-09-25：装载标记（门禁据此把"没有几何"与"还没装载"分开）
+    loaded,
     load,
     persist,
     upsert,

@@ -36,9 +36,10 @@ const base = (overrides: Partial<RunGateInput> = {}): RunGateInput => ({
   // ⚠️ 必须给**白天时刻**：门禁新增了"22:30~06:00 夜间停用"，否则测试在晚上跑会因时段被拦
   now: new Date(2026, 8, 16, 15, 0, 0),
   /**
-   * ⚠️ **显式跑"严格模式"**：pre3 采数据期 `RELAX_GATE_FOR_CAPTURE = true`（有命中项也只警告不拦），
-   *    而本文件下面的既有断言全是"该拦就拦"的**严格语义** ⇒ 这里显式 `relaxGate: false`。
-   *    放宽那一边由本文件末尾的新用例覆盖（两边都测，防以后改回严格时坏掉）。
+   * ⚠️ **显式跑"严格模式"**：本文件下面的既有断言全是"该拦就拦"的**严格语义** ⇒ 这里显式 `relaxGate: false`。
+   *    **故意不依赖常量**（`RELAX_GATE_FOR_CAPTURE` 在 2026-09-23~24 采数据期为 `true`、**2026-09-25 起为 `false`**）：
+   *    显式传值 ⇒ 以后临时再开回去采数据时，这一批断言不会假红。
+   *    放宽那一边由本文件末尾的用例显式 `relaxGate: true` 覆盖（两边都测）。
    */
   relaxGate: false,
   ...overrides,
@@ -214,16 +215,17 @@ test('门禁：lineRequired=false **只**放宽"线路"这一条 —— 夜间/�
   assert.equal(evaluateRunGate(base({ line: null, cameraFlagLineId: '', lineRequired: true })).blockedBy, 'camera_unknown')
 })
 
-// ---------- 🔴 pre3「采集数据专用」放宽（2026-09-23，用户明确要求） ----------
+// ---------- 🔴 「放宽」开关（2026-09-23 采数据期开、**2026-09-25 已关闸**） ----------
 /**
- * 用户原话：「用户相关提交的判定松一点，之前那种都是**你自己终止了**导致用户提交不了，
+ * 用户原话（开闸那次）：「用户相关提交的判定松一点，之前那种都是**你自己终止了**导致用户提交不了，
  * 导致我们根本无法采集数据！这个 pre3 相当于就是专门来收集数据的」。
  *
- * 判据（两个方向都钉住，防"改回严格"时坏掉）：
- *   · `RELAX_GATE_FOR_CAPTURE = true`（默认）⇒ **命中项只警告不拦**：`allow:true` + `warnings` 完整 + `relaxed:true`；
- *   · 显式 `relaxGate:false`（= 严格/正式版）⇒ 逐字恢复"第一条命中就拦"：`allow:false` + `reason = warnings[0]`。
+ * 判据（两个方向都钉住，防"开/关闸"时坏掉）：
+ *   · 开关 `true` ⇒ **命中项只警告不拦**：`allow:true` + `warnings` 完整 + `relaxed:true`；
+ *   · 开关 `false`（**= 2026-09-25 起的当前值**）⇒ 逐字恢复"第一条命中就拦"：`allow:false` + `reason = warnings[0]`。
+ * 关闸依据（可复算）：诊断包里 **0 条 `warn-relaxed`** ⇒ 提交那一刻命中项 = 0 ⇒ 见 `DEVELOPMENT.md` §39.5。
  */
-test('🔴 pre3 放宽：默认（不传 relaxGate）跟随开关常量 —— pre3=true 时只警告不拦、warnings 完整', () => {
+test('🔴 放宽开关：默认（不传 relaxGate）跟随开关常量 —— 开=true 只警告不拦 / 关=false 第一条命中就拦', () => {
   // 最坏输入：夜间 + 开关没读 + 没选线路 + 摄像头杆没读 ⇒ 严格模式会拦三条
   const worst = evaluateRunGate({
     schoolCode: '98765',
@@ -234,10 +236,10 @@ test('🔴 pre3 放宽：默认（不传 relaxGate）跟随开关常量 —— p
     now: new Date(2026, 8, 16, 23, 10, 0),
   })
   /**
-   * ⚠️ 这里**按常量分叉**（而不是写死"必须 allow=true"）：这样把 `RELAX_GATE_FOR_CAPTURE` 临改 `false`
-   * 跑一遍单测时**整个文件仍然全绿** —— 那就是"临时改 false"的验收方式（见 DEVELOPMENT.md §37 续5）。
+   * ⚠️ 这里**按常量分叉**（而不是写死"必须 allow=true"）：这样把 `RELAX_GATE_FOR_CAPTURE` 临时改值
+   * 跑一遍单测时**整个文件仍然全绿** —— 那就是"临时改值"的验收方式（见 DEVELOPMENT.md §37 续5）。
    */
-  assert.equal(worst.allow, RELAX_GATE_FOR_CAPTURE ? true : false, 'allow 必须跟随开关（pre3 期 = 放行）')
+  assert.equal(worst.allow, RELAX_GATE_FOR_CAPTURE ? true : false, 'allow 必须跟随开关（当前 = false ⇒ 拦）')
   assert.equal(worst.relaxed, RELAX_GATE_FOR_CAPTURE, 'relaxed 标记必须与开关一致（提交时据此上报诊断）')
   assert.equal(worst.blockedBy, 'night', 'blockedBy 仍给"第一条命中项"（界面夜间提示等要用）')
   assert.equal(worst.reason, worst.warnings[0], 'reason = 第一条命中项的文案')
@@ -290,4 +292,31 @@ test('pre3 放宽：本地几何齐备/自由跑/一切正常时**不该**多出
   const freeRun = evaluateRunGate(base({ runType: 1, switches: null, line: null, cameraFlagLineId: '' }))
   assert.deepEqual(freeRun.warnings, [])
   assert.equal(freeRun.allow, true)
+})
+
+/**
+ * 🔴🔴 2026-09-25 修复（诊断包实测事故）：**"本机库还没装载" ≠ "本机没有几何"**。
+ *
+ * 现场：他库里明明有 1 条 `local:free`，但工作台"读真实数据"那一刻 `useTrackLibrary().load()` **还没被调用**
+ * （只有跑步页 / 跑道编辑页 / 非官方路径页会调）⇒ `entries` 还是初值 `[]` ⇒ 老写法 `Boolean(...)` 得出 `false`
+ * ⇒ 记一条 `no_local_geometry`（`RELAX_GATE_FOR_CAPTURE=true` 时只是误提示，**关闸后就是误拦**）。
+ * 修法：**三态** —— 调用方在"还没装载"时传 `undefined`（未知 ⇒ 不记也不拦），只有**确认没有**才传 `false`。
+ * 判据来源 = `useTrackLibrary()` 新暴露的 `loaded`；证据链见 `DEVELOPMENT.md` §39.3 第 2 条。
+ */
+test('🔴 未装载 ≠ 没有：localGeometryReady 省略/undefined ⇒ 不记 no_local_geometry（严格模式也放行）', () => {
+  const unknown = evaluateRunGate(
+    base({ line: null, cameraFlagLineId: '', lineRequired: false, localGeometryReady: undefined, relaxGate: false }),
+  )
+  assert.deepEqual(unknown.warningCodes, [], '未知 ⇒ 一条也不许记（老写法会记 no_local_geometry）')
+  assert.equal(unknown.allow, true, '未知 ⇒ 严格模式下也必须放行（否则就是拿"没装载"当"没有"误拦）')
+  assert.equal(unknown.blockedBy, undefined, '没有命中项 ⇒ blockedBy 不填')
+  assert.equal(unknown.reason, LINE_NOT_REQUIRED_REASON, '仍要说明"本任务未下发线路、无需选择线路"')
+
+  // 对照：**确认没有**（已装载且为空）⇒ 严格模式下照旧拦（这条判据不能因为修 bug 而被削弱）
+  const empty = evaluateRunGate(
+    base({ line: null, cameraFlagLineId: '', lineRequired: false, localGeometryReady: false, relaxGate: false }),
+  )
+  assert.equal(empty.allow, false, '确认没有几何 ⇒ 严格模式必须拦')
+  assert.equal(empty.blockedBy, 'no_local_geometry')
+  assert.ok(empty.warnings[0]?.includes('非官方路径'), '提示要指路（去哪儿画一条）')
 })

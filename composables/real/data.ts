@@ -897,12 +897,19 @@ export function useMpRealData() {
       /**
        * 🆕 2026-09-23（pre3）：**本机有没有可用的本机路径几何**（只有"服务端未下发线路"的任务才有意义）。
        * 判据与跑步页/引擎**同一处**：`freeRouteGeometryChoice()`（算法层）⇒ 界面那条"一键去画一条"的提示
-       * 与门禁的 `no_local_geometry` 警告不会分叉。严格模式下这一条会拦（放宽模式下只提示）。
+       * 与门禁的 `no_local_geometry` 警告不会分叉。
+       *
+       * 🔴 2026-09-25 修复（诊断包实测，见 `DEVELOPMENT.md` §39.3 第 2 条）：**改成三态** ——
+       * `lib.loaded` 为假（本机库**还没装载**）时传 `undefined`（**未知 ⇒ 不记也不拦**）。
+       * 老写法用 `Boolean(...)` 把"没装载"也压成 `false` ⇒ 在工作台读数据那一刻**必然**记一条
+       * `no_local_geometry`（而他库里明明有 1 条 `local:free`）⇒ 严格模式下就是**误拦**。
        */
-      localGeometryReady: Boolean(
-        // ⚠️ 任务"身份"走兜底链（他这份响应没有 `taskId`，只有 `id`/`paperId`）
-        freeRouteGeometryChoice(lib.entries.value, task.value, lib.freeRouteChoiceFor(taskPaperIdOf(task.value))).entry,
-      ),
+      localGeometryReady: lib.loaded.value
+        ? Boolean(
+            // ⚠️ 任务"身份"走兜底链（他这份响应没有 `taskId`，只有 `id`/`paperId`）
+            freeRouteGeometryChoice(lib.entries.value, task.value, lib.freeRouteChoiceFor(taskPaperIdOf(task.value))).entry,
+          )
+        : undefined,
 
       /**
        * ⚠️ 必须带上**本次跑步类型**（2026-09-18 自由跑落地）：

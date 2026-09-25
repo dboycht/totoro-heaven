@@ -188,7 +188,11 @@ export function useMpRealSubmit() {
       lineRequired,
       // 🆕 2026-09-23（pre3）：本机有没有可用几何（只对"未下发线路"的任务有意义；同一判据 `freeRouteGeometryChoice`）
       // ⚠️ 任务的"身份"也要走兜底链（他这份响应没有 `taskId` ⇒ 只用 taskId 会让"记住的本机路径"对不上）
-      localGeometryReady: Boolean(freeRouteGeometryChoice(lib.entries.value, task.value, lib.freeRouteChoiceFor(taskPaperIdOf(task.value))).entry),
+      // 🔴 2026-09-25 修复：**三态** —— 本机库还没装载时传 `undefined`（未知 ⇒ 不记也不拦），
+      //    与只读侧 `composables/real/data.ts` 的 `gateStatus` 完全同源（见 `DEVELOPMENT.md` §39.3 第 2 条）
+      localGeometryReady: lib.loaded.value
+        ? Boolean(freeRouteGeometryChoice(lib.entries.value, task.value, lib.freeRouteChoiceFor(taskPaperIdOf(task.value))).entry)
+        : undefined,
       runType,
       now: new Date(),
     })

@@ -145,8 +145,13 @@ export interface RunGateInput {
   /**
    * 🆕 2026-09-23（pre3）：**本机有没有可用的本机路径几何**（服务端未下发线路时才有意义）。
    * 调用方传 `freeRouteGeometryChoice(entries, task).entry !== undefined`（判据唯一来源）。
-   * · 省略 / `true` = 不报这一条（老调用方与老测试不受影响）；
-   * · `false` ⇒ 记一条 `no_local_geometry`（严格模式会拦；放宽模式只提示）。
+   *
+   * 🔴 **三态**（2026-09-25 实测事故后明确，别再退回两态）：
+   * · `undefined`（**省略**）= **未知 ⇒ 不记也不拦** —— 用于"本机路线库**还没装载**"（`useTrackLibrary().load()` 尚未调用）。
+   *   **"没装载"不等于"没有"**：实测在工作台读数据那一刻库里明明有 1 条（`local:free`），两态写法却记了 `no_local_geometry`
+   *   （严格模式下会被误拦）。判据来源 = `useTrackLibrary()` 暴露的 `loaded`。
+   * · `true` = 已装载且有可用几何 ⇒ 不记；
+   * · `false` = **已装载且确认一条都没有** ⇒ 记一条 `no_local_geometry`（严格模式拦；`RELAX_GATE_FOR_CAPTURE=true` 时只提示）。
    */
   localGeometryReady?: boolean
   /**
@@ -175,19 +180,23 @@ export type RunGateBlockCode =
   | 'no_local_geometry'
 
 /**
- * 🔴🔴 **pre3「采集数据专用」放宽开关**（2026-09-23，用户明确要求）——**这不是永久放松**：
+ * 🔴 **门禁"放宽"总开关**（历史：pre3「采集数据专用」；**2026-09-25 已关闸 ⇒ `false`**）
  *
- * 用户原话：「用户相关提交的判定松一点，之前那种都是**你自己终止了**导致用户提交不了，
- * 导致我们根本无法采集数据！这个 pre3 相当于就是专门来收集数据的，**你相关东西要做的不是没读取到就直接终止**」。
+ * 由来：2026-09-23 采数据期，用户要求「用户相关提交的判定松一点，之前那种都是**你自己终止了**导致用户提交不了，
+ * 导致我们根本无法采集数据！……**你相关东西要做的不是没读取到就直接终止**」⇒ 那时置 `true`。
  *
  * `true` ⇒ `evaluateRunGate()` **只收集 `warnings`、不阻断**（`allow` 恒为 true，界面**必须**把每条理由如实展示，
- *   并在提交时上报一条诊断事件）；`false` ⇒ **恢复原本的"第一条命中就拦"语义**（代码路径完整保留，见函数体）。
+ *   并在提交时上报一条诊断事件）；`false` ⇒ **原本的"第一条命中就拦"语义**（= 当前值）。
  *
- * **怎么恢复严格模式**：把这一行改成 `false` 即可（**不要删任何判据代码**；单测两边都覆盖，
- * `tests/mp/schoolGate.test.ts` 用 `relaxGate: false` 显式跑严格那一遍）。
- * ⚠️ 它**只放宽"拦不拦"**：报文口径、门禁的判据集合、上报内容一个字都不变。
+ * 📌 **2026-09-25 关闸的依据**（不是拍脑袋，是可复算的证据）：拿测试用户在"开着开关"时采到的诊断包做**关门预演** ——
+ * 整包 **0 条 `cat:'warn-relaxed'`**（`composables/real/submit.ts` 是"**每个命中项各报一条**"）
+ * ⇒ **他按下提交那一刻命中项 = 0** ⇒ 严格模式走同一条路、照样放行。逐条判据见 `DEVELOPMENT.md` §39.5 与
+ * `HANDOVER.md` 附录 I.6（含"夜间/人脸/抽查/摄像头杆/未选线路/无本机几何"七条逐项对照）。
+ *
+ * ⚠️ 它**只放宽"拦不拦"**：报文口径、门禁的判据集合、上报内容一个字都不变；**判据代码一行没删**。
+ * 要临时再开回去采数据：把这一行改 `true` 即可（单测两边都覆盖 —— `tests/mp/schoolGate.test.ts` 用 `relaxGate: false` 跑严格那一遍）。
  */
-export const RELAX_GATE_FOR_CAPTURE = true
+export const RELAX_GATE_FOR_CAPTURE = false
 
 /** 门禁结论 */
 export interface RunGateResult {
@@ -260,7 +269,7 @@ export function nightBlockReason(now: Date = new Date()): string {
  *   —— 详见 `RunGateInput.lineRequired` 与下面的分支注释。
  */
 export function evaluateRunGate(input: RunGateInput): RunGateResult {
-  /** ⓪ 放宽开关（pre3 采数据期 = true）：命中项**只收集不拦**；严格模式逐字恢复原语义 */
+  /** ⓪ 放宽开关（**2026-09-25 起缺省 `false` = 严格**）：`true` 时命中项**只收集不拦**；`false` 时逐字恢复"第一条命中就拦" */
   const relax = input.relaxGate ?? RELAX_GATE_FOR_CAPTURE
   const hits: { code: RunGateBlockCode; reason: string }[] = []
   const hit = (code: RunGateBlockCode, reason: string) => hits.push({ code, reason })
@@ -300,10 +309,11 @@ export function evaluateRunGate(input: RunGateInput): RunGateResult {
     const lineId = String(input.line?.pointId ?? '')
     if (!lineId) {
       /**
-       * - 默认（`lineRequired` 省略/true）⇒ 没选线路就记一条（严格模式拦，放宽模式只提示）；
+       * - 默认（`lineRequired` 省略/true）⇒ 没选线路就记一条（严格模式拦，`relax=true` 时只提示）；
        * - `lineRequired === false`（服务端未下发线路 = 自由路线任务）⇒ **不因"未选线路"记**，
-       *   只说明依据（`LINE_NOT_REQUIRED_REASON`）；但**本机一条可用几何都没有**时记 `no_local_geometry`
+       *   只说明依据（`LINE_NOT_REQUIRED_REASON`）；但**确认本机一条可用几何都没有**时记 `no_local_geometry`
        *   （严格模式会拦：没有几何就没法生成轨迹）。
+       * 🔴 **只有显式 `false` 才记**：`undefined` = "本机库还没装载" = **未知** ⇒ 不记（2026-09-25 修复，见 `RunGateInput.localGeometryReady`）。
        */
       if (input.lineRequired === false) {
         info = LINE_NOT_REQUIRED_REASON

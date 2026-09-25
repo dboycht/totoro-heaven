@@ -397,7 +397,7 @@
         </ol>
         <div class="text-caption mt-1">
           这些理由已经连同"仍允许提交"一起上报到诊断（导出包里能看到这笔提交是在放宽状态下发生的）。
-          正式版会把 `RELAX_GATE_FOR_CAPTURE` 改回 `false` 恢复严格拦截。
+          ⚠️ 当前是「测试期放宽模式」（源码常量 RELAX_GATE_FOR_CAPTURE = true）：日常与发版应为 false，即恢复严格拦截。
         </div>
       </v-alert>
             <v-alert type="info" variant="tonal" density="compact" class="mt-3">
@@ -904,7 +904,8 @@ const freeRouteEntryText = computed(() => (freeRouteEntry.value ? localEntryGeom
 /**
  * 🆕 2026-09-23（pre3，用户明确要求）：**门禁放宽开关**（采数据专用）——
  * `true` 时"本该拦住"的理由只警告不阻断，界面必须把它们**如实列出来**（见 `gateWarnings`）。
- * 恢复严格模式：把 `utils/mp/schoolGate.ts` 的 `RELAX_GATE_FOR_CAPTURE` 改成 `false`（界面文案会跟着变）。
+ * 📌 **2026-09-25 已关闸（`false`）**：本块因此不再渲染；要临时再开回去采数据，改
+ * `utils/mp/schoolGate.ts` 的 `RELAX_GATE_FOR_CAPTURE` 即可（界面文案会跟着变）。
  */
 const relaxGateForCapture = RELAX_GATE_FOR_CAPTURE
 /** 本该拦住、现在只警告的理由（门禁放宽时才可能非空；逐条展示 + 提交时一并显示） */

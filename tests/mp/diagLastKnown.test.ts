@@ -23,7 +23,7 @@ import {
   saveLastKnown,
 } from '../../utils/mp/diagLastKnown.ts'
 import { assertNoCredentials } from '../../utils/mp/diagnostics.ts'
-import { evaluateRunGate } from '../../utils/mp/schoolGate.ts'
+import { evaluateRunGate, RELAX_GATE_FOR_CAPTURE } from '../../utils/mp/schoolGate.ts'
 
 /** 一个内存版 localStorage（不依赖浏览器） */
 function memoryStorage(seed?: Record<string, string>) {
@@ -102,11 +102,13 @@ test('🔴 绝不落 token 明文 / 学号姓名原文：写盘文本里只有�
   assert.deepEqual(assertNoCredentials([text]).hits, [], '这份文本不该命中诊断红线')
   // 开关是 1 ⇒ 当时的门禁终值应当是"被人脸拦住"（历史事实，与实时无关）
   /**
-   * ⚠️ 2026-09-23（pre3 采数据期）：门禁默认**放宽**（`RELAX_GATE_FOR_CAPTURE = true`，有命中项也只警告不拦）
-   * ⇒ 那时的"门禁终值"就是 `allow: true`，而 `blockedBy` 仍如实记录**本该拦住的那一条**（`start_face`）。
-   * 严格语义由本目录 `schoolGate.test.ts` 的 `relaxGate: false` 那一组继续钉住。
+   * ⚠️ **跟着开关常量断言**（而不是写死一个值 —— 写死就会在"开/关闸"时假红）：
+   * · 2026-09-23~24 采数据期 `RELAX_GATE_FOR_CAPTURE = true` ⇒ 门禁终值 `allow:true`（有命中项也只警告）；
+   * · **2026-09-25 起已关闸（`false`）** ⇒ 命中「开场人脸」就是 `allow:false`（严格语义）。
+   * 两种情形下 `blockedBy` 都如实记录**本该拦住的那一条**（`start_face`）。
+   * 严格/放宽两条路径本身由 `schoolGate.test.ts` 显式传 `relaxGate` 各跑一遍钉住。
    */
-  assert.equal(s!.gateAllow, true, 'pre3 放宽：有命中项也只警告不拦')
+  assert.equal(s!.gateAllow, RELAX_GATE_FOR_CAPTURE, '门禁终值跟随开关常量：严格=false（命中即拦）/ 放宽=true')
   assert.equal(s!.gateBlockedBy, 'start_face', 'blockedBy 仍记录"本该拦住的那条"（历史事实）')
 })
 
