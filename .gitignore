@@ -21,8 +21,10 @@ npm-debug.log*
 DEVELOPMENT.md
 ERROR.md
 HANDOVER.md
-# 鸣谢名单填写表（2026-09-25）：用户填、代理生成进 pages/credits.vue —— 属"协作输入表"，不进仓库
-鸣谢名单填写表.md
+# 鸣谢名单编辑面板 + 它导出的草稿 JSON（2026-09-25）：用户填、代理读后生成进 pages/credits.vue
+# —— 属"协作输入工具"，跟 DEVELOPMENT/HANDOVER 同类：只留开发副本、不进仓库
+鸣谢名单编辑面板.html
+鸣谢名单*.json
 _mp-analyze/
 # 第三方同目标项目研究材料（含厂商版权解包源码）——仅本地留档，绝不入库/分发
 Totoro-main*
