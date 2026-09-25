@@ -357,6 +357,23 @@ try {
     if (code === 0) failures.push('`.ps1` 丢了 BOM，但检查器仍然通过（R13 守卫失效）')
     else if (!out.includes('BOM')) failures.push(`报错信息不是预期的：\n${out}`)
   }
+  // ---------- 注入 17：把「本机几何」的键名塞进提交报文（R14，2026-09-25 新加）----------
+  // 模拟最容易发生的那种"手滑"：未下发线路时 `lineId` 本该是空串，有人为了"看起来有线路"塞了 `local:free`
+  // （本机路径的键名）。R14 必须报出来（判据：报文构造器里不得出现任何本机几何符号）。
+  {
+    const dir = copyBase()
+    const file = join(dir, 'utils/mp/submitPayload.ts')
+    const text = readFileSync(file, 'utf8')
+    const injected = text.replace(
+      "lineId: freeRun ? '' : (context.line?.pointId ?? '')",
+      "lineId: freeRun ? '' : (context.line?.pointId ?? 'local:free')",
+    )
+    if (injected === text) failures.push('注入 17：submitPayload.ts 里找不到 `lineId` 的取值表达式（自测需同步更新）')
+    writeFileSync(file, injected, 'utf8')
+    const { code, out } = run(dir)
+    if (code === 0) failures.push('报文里塞了本机几何的键名，但检查器仍然通过（R14 守卫失效）')
+    else if (!out.includes('本机几何')) failures.push(`报错信息不是预期的：\n${out}`)
+  }
 } finally {
   rmSync(sandbox, { recursive: true, force: true })
 }
@@ -368,9 +385,9 @@ if (failures.length) {
   process.exit(1)
 }
 console.log(
-  '✅ 自测通过：基线通过、16 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
+  '✅ 自测通过：基线通过、17 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
     '代理重复声明前缀 / 模板裸取可空状态 / 空 catch / 夜间限制套回「开始跑步」/ 提示退回字符串注入键 / ' +
     'kebab 绑定丢 prop / **开始跑步不再要求已配置跑道** / **dev 少了 host** / **本机回调写死地址族** / ' +
-    '**`.ps1` 丢 BOM**）都被抓到且退出码非 0，' +
+    '**`.ps1` 丢 BOM** / **报文里塞了本机几何**）都被抓到且退出码非 0，' +
     '且"写了 v-if 守卫"的反向用例不会被误报。',
 )

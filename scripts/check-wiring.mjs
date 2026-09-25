@@ -700,6 +700,47 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
   }
 }
 
+// ---------- R14：本机几何（非官方路径 / 本机跑道）**绝不进提交报文**（2026-09-25）----------
+/**
+ * 背景（判据总表见 `HANDOVER.md` 附录 **J7**）：服务端**未下发线路**的任务用**本机几何**生成轨迹，
+ * 但厂商**没有"自定义路径"这个概念** ⇒ 报文里的 `lineId` 只能来自 `context.line?.pointId`
+ * （未下发线路时调用方传 `line: null` ⇒ `lineId` 为空串）。
+ *
+ * 为什么值得一条机器守卫：E33 的教训就是"**顺手把别处的东西塞进报文**"（多发 3 个真包没有的字段
+ * ⇒ 整条轨迹明细被服务端拒收 ⇒ 云端记录没有轨迹）。而"本机几何"是最容易被顺手塞进去的东西
+ * （它就在旁边、名字也像线路）。
+ *
+ * 判据（可执行）：**报文构造器**里不得出现任何"本机几何"的符号。
+ * ⚠️ 范围**故意收窄**，避免误报：只管报文构造器（`utils/mp/submitPayload.ts`）。
+ *    调用方那一侧由分层规则 **R6** 兜底（`utils/mp` 不得 import `composables/**`）——
+ *    所以 `composables/real/submit.ts` 里**允许**出现 `freeRouteGeometryChoice`（那是**门禁入参**，不是报文）。
+ */
+{
+  const builders = ['utils/mp/submitPayload.ts']
+  const forbidden = [
+    ['LOCAL_FREE_LINE_ID', '本机路径的固定键常量'],
+    ['freeRouteChoice', '本机路径的选择状态'],
+    ['freeRouteGeometry', '本机几何解析'],
+    ['useTrackLibrary', '本机路线库（Nuxt 状态）'],
+    ['local:free', '本机路径的键名字面量'],
+  ]
+  for (const rel of builders) {
+    const text = read(rel)
+    if (!text) continue
+    const lines = text.split(/\r?\n/)
+    for (const [needle, why] of forbidden) {
+      lines.forEach((line, i) => {
+        if (line.includes(needle)) {
+          failures.push(
+            `${rel}:${i + 1}：提交报文里出现了 ${why}（\`${needle}\`）—— 本机几何**只影响本地轨迹**，绝不能进报文` +
+              `（未下发线路时 \`lineId\` 必须是空串；判据见 HANDOVER 附录 J7，教训见 E33）。`,
+          )
+        }
+      })
+    }
+  }
+}
+
 console.log('=== check-wiring：接线与契约检查（源码级）===\n')
 console.log(
   `📄 已检查：${SOURCE_FILES.length} 个源文件 + ${DETAIL_BUILDERS.length} 个明细构造点 + ${PAGE_FILES.length} 个页面` +
