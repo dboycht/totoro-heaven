@@ -24,6 +24,9 @@
       <v-btn to="/field" variant="text" prepend-icon="mdi-map-marker-radius" class="text-none">我的场地</v-btn>
       <v-btn to="/data" variant="text" prepend-icon="mdi-database-outline" class="text-none">数据</v-btn>
       <v-btn to="/version-info" variant="text" prepend-icon="mdi-image-multiple-outline" class="text-none">版本</v-btn>
+      <!-- 鸣谢（2026-09-25 用户要求接进正式软件）：以前只能按 `/credits` 直连访问，现在给一个顶栏入口。
+           页面本身是整屏的"片尾式"名单（彩带 + 缓慢滚动 / 放得下就全显），组件 `components/CreditsView.vue` 未改。 -->
+      <v-btn to="/credits" variant="text" prepend-icon="mdi-heart-outline" class="text-none">鸣谢</v-btn>
       <v-spacer />
 
       <v-chip :color="isRealSession ? 'success' : 'default'" variant="tonal" size="small" class="mr-2">
