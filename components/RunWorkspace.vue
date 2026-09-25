@@ -388,7 +388,14 @@
         🆕 2026-09-23（pre3，用户要求）：门禁从"拦住"改成"只警告"以后，**这些理由必须照样看得见** ——
         用户要知道自己在做什么。这里把 `gateStatus.warnings` 逐条列出来（严格模式下 allow=false 时由上一条错误卡负责）。
       -->
-      <v-alert v-if="gateWarnings.length" type="warning" variant="tonal" density="comfortable" class="mt-3">
+      <!--
+        🔴 2026-09-25 修（关闸后才暴露的产品文案 bug）：这张卡是「放宽期专用」的 —— 它的文案写的是
+        "只警告、不阻断 / 当前是测试期放宽模式（RELAX_GATE_FOR_CAPTURE = true）"。
+        以前 `v-if` 只看 `gateWarnings.length`，于是严格模式下一旦门禁拦住（命中项非空）它照样弹出来，
+        说的是假话（那几条其实是"真的拦住了"）。现在：严格模式走下面那张"已阻止真实提交"的红卡
+        （并在那里把全部命中项列出来），这张只在放宽期出现。
+      -->
+      <v-alert v-if="relaxGateForCapture && gateWarnings.length" type="warning" variant="tonal" density="comfortable" class="mt-3">
         <div class="font-weight-bold">
           ⚠️ pre3 采数据模式：下面 {{ gateWarnings.length }} 条本该拦住这次提交，现在<b>只警告、不阻断</b>
         </div>
@@ -481,6 +488,11 @@
       >
         <div class="font-weight-bold">已阻止真实提交（不会创建场次）</div>
         <div class="text-body-2">{{ gateStatus.reason }}</div>
+        <!-- 🆕 2026-09-25：严格模式把「全部」命中项都列出来（上面那句 `reason` 只是「第一条」）。
+             此前"完整 warnings"只在放宽期那张卡里显示 —— 关闸后那张卡不再出现，信息不能因此变少。 -->
+        <ol v-if="gateWarnings.length > 1" class="text-body-2 pl-4 mt-1 mb-0">
+          <li v-for="(w, i) in gateWarnings.slice(1)" :key="`gate-block-${i}`">{{ w }}</li>
+        </ol>
         <div v-if="cameraFlagError" class="text-caption mt-1">读取异常：{{ cameraFlagError }}</div>
       </v-alert>
 
@@ -647,7 +659,8 @@
             🆕 2026-09-23（pre3，用户要求）：确认时**把"本该拦住、现在只警告"的理由一并显示** ——
             用户要在按下确认前就知道这笔提交是在什么状态下发生的（同时这些理由已上报诊断）。
           -->
-          <v-alert v-if="gateWarnings.length" type="warning" variant="flat" density="comfortable" class="mb-3">
+          <!-- 🔴 2026-09-25：同上 —— 这张也是放宽期专用（严格模式下能走到确认框就说明门禁已放行，不会有 warnings） -->
+          <v-alert v-if="relaxGateForCapture && gateWarnings.length" type="warning" variant="flat" density="comfortable" class="mb-3">
             <div class="font-weight-bold">
               ⚠️ pre3 放宽：以下 {{ gateWarnings.length }} 条本该拦住这次提交（现在只警告、仍会提交）
             </div>
