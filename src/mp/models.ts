@@ -221,6 +221,22 @@ export interface MpSunrunTask {
  */
 export interface MpRunRecord {
   scoreId: string
+  /**
+   * 🆕 2026-10-07：**本机记录 id**（由 `utils/mp/recordState.ts` 的 `newLocalRecordId()` 生成）。
+   * 用途：结算写记录 ≠ 真实提交成功 ⇒ 真实提交后要**按它认领**这一条，把真实场次号写回去。
+   */
+  localId?: string
+  /**
+   * 🆕 2026-10-07：**这条记录的三态** —— `local`（仅本地结算，没提交）/ `submitted`（已真实提交）/
+   * `demo`（演示数据结算）。缺字段 = 旧数据（界面如实显示 `未记录（旧数据）`，不猜）。
+   * ⚠️ 旧实现里那枚绿色「有效」是**本地自检预判**（`check.pass ? 1 : 0`），**不是服务端判定** ——
+   * 用户 2026-10-07 就是被这一点绕住的（一笔没提交的跑也显示"有效"）。
+   */
+  submitState?: string
+  /** 🆕 2026-10-07：那次结算的时刻（与 `run.value.settledAtMs` 同源，用作"认领"的键） */
+  settledAtMs?: number
+  /** 🆕 2026-10-07：轨迹明细是否交上了（只有 `submitted` 的记录才有意义） */
+  detailOk?: boolean
   /** 任务 id（申诉跳转参数 taskId） */
   paperId: string
   /** 日期 YYYY-MM-DD */

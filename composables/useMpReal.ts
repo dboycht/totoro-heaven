@@ -57,6 +57,9 @@ export function useMpReal() {
     dailyQuotaBlocked,
     dailyQuotaNoticeText,
     clearDailyQuotaMark,
+    // 🆕 2026-10-07（实测事故）：待补交的轨迹明细
+    pendingDetail,
+    pendingDetailText,
     selectedLine,
     gateStatus,
     schoolNotice,
@@ -79,7 +82,7 @@ export function useMpReal() {
     retryCameraFlag,
   } = useMpRealData()
 
-  const { phase, phaseMessage, remainingSeconds, result, progress, submitRealRun, fetchVerdict, stopWait } =
+  const { phase, phaseMessage, remainingSeconds, result, progress, submitRealRun, fetchVerdict, stopWait, resendPendingDetail, resendDetail } =
     useMpRealSubmit()
 
   return {
@@ -105,6 +108,14 @@ export function useMpReal() {
     dailyQuotaNoticeText,
     /** 清除上面那个标记（"仍要试一次"） */
     clearDailyQuotaMark,
+    /** 🆕 2026-10-07（实测事故）：待补交的轨迹明细（有值 = 有一笔成绩没交上轨迹） */
+    pendingDetail,
+    /** 那句完整说明（含场次号与"点了才发"的性质；空串=没有欠账） */
+    pendingDetailText,
+    /** 🆕 2026-10-07：补交轨迹明细（用户点一次发一次；不自动重试） */
+    resendPendingDetail,
+    /** 🆕 2026-10-07：用当前结算这一笔的轨迹重发明细（逐点与当时一致；页面没被杀时最精确） */
+    resendDetail,
     selectedLine,
     /** 开跑前三合一否决门禁状态（allow / reason / blockedBy） */
     gateStatus,

@@ -13,6 +13,8 @@ import type { MpSunrunTask } from '~/src/mp/types'
 import { FREE_RUN_UNSUPPORTED_KEY } from '~/utils/mp/freeRun'
 // 🆕 2026-10-07（用户要求）：服务端说"今日该任务次数已达上限"时的标记（键名/解析/跨天判定都在纯逻辑层）
 import { DAILY_QUOTA_KEY, localDateKey, parseQuotaMark, type DailyQuotaMark } from '~/utils/mp/dailyQuota'
+// 🆕 2026-10-07（实测事故）：待补交的轨迹明细（键名/解析/文案都在纯逻辑层）
+import { PENDING_DETAIL_KEY, parsePendingDetail, serializePendingDetail, type PendingDetail } from '~/utils/mp/pendingDetail'
 // 🆕 2026-09-21：提交过程清单的行类型（清单本体从 `real/submit.ts` 的局部 ref 提上来做单例）
 import type { SubmitProgressLine } from '~/utils/mp/submitProgress'
 
@@ -156,6 +158,62 @@ export function useRealState() {
     }
   }
 
+  /**
+   * 🆕 2026-10-07（实测事故）：**「待补交的轨迹明细」** —— 成绩提交成功、但轨迹明细还没发出去时的那笔欠账。
+   *
+   * 事故现场：`sunRunExercises` 提交成功（20:53:41，耗时 13.8 s），紧随其后的
+   * `sunRunExercisesDetail` **一个请求都没发**（日志里该端点出现次数 = 0）——
+   * 因为切换标签页后 Edge 冻结/丢弃了页面，成绩响应刚回来、还没走到"发明细"那一步，JS 上下文就没了。
+   * 后果与 **E33** 同族：**云端成绩有效、却没有轨迹**（详情页地图空白）。
+   *
+   * 旧实现**完全不落盘** ⇒ 页面一死，"这笔还欠一条轨迹"就没人知道了。
+   * 现在：成绩成功 ⇒ **发明细之前**先把这笔欠账（含轨迹点本体）落盘；明细成功 ⇒ 清掉；
+   * 页面重启后若还欠着，跑步页会提示并可**由用户点一次补交一次**（不自动重试）。
+   *
+   * ⚠️ 与"凭据"无关（不含 token）⇒ 不在退出登录/清空数据时清除；但它**必须**在明细成功后清掉，
+   *    否则界面会一直提示一笔已经交上的轨迹。
+   */
+  const pendingDetail = useState<PendingDetail | null>('mpPendingDetail', () => {
+    if (import.meta.client) {
+      try {
+        return parsePendingDetail(localStorage.getItem(PENDING_DETAIL_KEY))
+      } catch {
+        /* ignore */
+      }
+    }
+    return null
+  })
+  const savePendingDetail = (detail: PendingDetail) => {
+    pendingDetail.value = detail
+    if (import.meta.client) {
+      try {
+        localStorage.setItem(PENDING_DETAIL_KEY, serializePendingDetail(detail))
+      } catch {
+        /* ignore：写不进去也不影响本次提交（只是失去"重启后还能补交"这一层保护） */
+      }
+    }
+  }
+  const clearPendingDetail = () => {
+    pendingDetail.value = null
+    if (import.meta.client) {
+      try {
+        localStorage.removeItem(PENDING_DETAIL_KEY)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  /** 补交尝试后如实记账（次数 + 上次失败原因），别假装没试过 */
+  const patchPendingDetail = (patch: { attempts?: number; lastError?: string }) => {
+    const cur = pendingDetail.value
+    if (!cur) return
+    savePendingDetail({
+      ...cur,
+      ...(typeof patch.attempts === 'number' ? { attempts: patch.attempts } : {}),
+      ...(typeof patch.lastError === 'string' ? { lastError: patch.lastError } : {}),
+    })
+  }
+
   // 「上次读取的会话」缓存的界面状态（**刷新后不再自动回填**；只作为可选的显式恢复入口）
   const cacheAt = useState('mpRealCacheAt', () => 0)
   const cachePaperName = useState('mpRealCachePaper', () => '')
@@ -217,6 +275,11 @@ export function useRealState() {
     dailyQuotaMark,
     markDailyQuotaReached,
     clearDailyQuotaMark,
+    // 🆕 2026-10-07（实测事故）：待补交的轨迹明细（成绩成功即落盘；明细成功后清除）
+    pendingDetail,
+    savePendingDetail,
+    clearPendingDetail,
+    patchPendingDetail,
     cacheAt,
     cachePaperName,
     cacheHasToken,

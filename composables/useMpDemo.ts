@@ -95,6 +95,13 @@ export function useMpDemo() {
     finish: runner.finish,
     reset: runner.reset,
     resetRecords: records.resetRecords,
+    /**
+     * 🆕 2026-10-07（用户要求）：按纯函数改写本机记录并落盘。
+     * 真实提交成功后由 `composables/real/submit.ts` 借它**认领**那条记录
+     * （写回真实场次号 / 轨迹是否交上 / 服务端判定）—— 记录的 owner 仍是 `demo/records.ts`，
+     * 这里只是把出口透出去，避免真实践另起一份 state。
+     */
+    mutateRecords: records.mutateRecords,
     stopTimer: runner.stopTimer,
     refreshFitDegree: runner.refreshFitDegree,
   }

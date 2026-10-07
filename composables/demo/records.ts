@@ -51,6 +51,22 @@ export function useDemoRecords(demoMode: Ref<boolean>) {
     persistRecords()
   }
 
+  /**
+   * 🆕 2026-10-07（用户要求）：**按纯函数改写本机记录并落盘**。
+   *
+   * 为什么要有这个口子：本机记录的三态（`local` 仅本地结算 / `submitted` 已真实提交 / `demo` 演示）
+   * 不能只在结算时定死 —— **真实提交成功后**要回来认领那一条（写回真实场次号、轨迹是否交上、
+   * 服务端判定）。认领/写回的规则是纯函数（`utils/mp/recordState.ts`，有单测），
+   * 这里只负责"套上去 + 落盘"。
+   *
+   * ⚠️ 传入的 `fn` **不许就地改数组元素**（纯函数都返回新数组）；**一定要 persist**，
+   *    否则刷新就丢（与 `resetRecords` 同一条纪律）。
+   */
+  const mutateRecords = (fn: (list: MpRunRecord[]) => MpRunRecord[]) => {
+    records.value = fn(records.value)
+    persistRecords()
+  }
+
   // ---------- 展示用派生值 ----------
 
   const stats = computed(() => {
@@ -74,6 +90,8 @@ export function useDemoRecords(demoMode: Ref<boolean>) {
     records,
     persistRecords,
     resetRecords,
+    /** 🆕 2026-10-07：真实提交后按纯函数改写记录并落盘（认领 / 写回场次号 / 判定 / 轨迹状态） */
+    mutateRecords,
     stats,
     term,
   }

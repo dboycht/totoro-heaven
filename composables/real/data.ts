@@ -13,6 +13,8 @@ import type { MpRunLine, MpSunrunTask } from '~/src/mp/types'
 import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
 // 🆕 2026-10-07（用户要求）：服务端"今日该任务次数已达上限" ⇒ 真实提交入口标灰 + 就地说明
 import { dailyQuotaNotice, isQuotaMarkActive } from '~/utils/mp/dailyQuota'
+// 🆕 2026-10-07（实测事故）：待补交轨迹的说明文案
+import { pendingDetailSummary } from '~/utils/mp/pendingDetail'
 // 🔴 2026-09-23（pre3）：任务号走兜底链（厂商响应可能只有 paperId/id，没有 taskId）
 import { routeRequirementOf, taskPaperIdOf } from '~/utils/mp/taskShape'
 // 🆕 2026-09-23（pre3）：门禁要判"本机有没有可用几何" ⇒ 与跑步页/引擎**同一处判据**
@@ -103,6 +105,8 @@ export function useMpRealData() {
     // 🆕 2026-10-07：今日该任务次数已满（服务端拒绝过一次就记住；跨天自动失效）
     dailyQuotaMark,
     clearDailyQuotaMark,
+    // 🆕 2026-10-07（实测事故）：待补交的轨迹明细（成绩成功即落盘、明细成功才清除）
+    pendingDetail,
     cacheAt,
     cachePaperName,
     cacheHasToken,
@@ -943,6 +947,14 @@ export function useMpRealData() {
   )
 
   /**
+   * 🆕 2026-10-07（实测事故）：**有一笔成绩的轨迹还没交上** ⇒ 界面上给一句完整说明 + 补交入口。
+   * 空串 = 没有欠账（正常情况）。
+   */
+  const pendingDetailText = computed(() =>
+    pendingDetail.value ? pendingDetailSummary(pendingDetail.value) : '',
+  )
+
+  /**
    * 未验证学校的软提示（不阻断开跑，只提醒"判分口径未实测"；已验证学校为空串）。
    * 支持范围已改为条件式（共享域 + 无风控校验），登记表只承担这个提示职责。
    */
@@ -988,6 +1000,10 @@ export function useMpRealData() {
     dailyQuotaNoticeText,
     /** 清除该标记（"仍要试一次"） */
     clearDailyQuotaMark,
+    /** 🆕 2026-10-07（实测事故）：待补交的轨迹明细（有值 = 有一笔成绩没交上轨迹） */
+    pendingDetail,
+    /** 那句完整说明（含场次号与"点了才发"的性质；空串=没有欠账） */
+    pendingDetailText,
     selectedLine,
     /** 开跑前三合一否决门禁状态（allow / reason / blockedBy） */
     gateStatus,

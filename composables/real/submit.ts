@@ -44,12 +44,22 @@ import {
 import { isFreeRunUnsupportedMessage } from '~/utils/mp/freeRun'
 // 🆕 2026-10-07（用户要求）：服务端"今日该任务次数已达上限"的判据与人话文案（纯逻辑层，单一来源）
 import { dailyQuotaNotice, dailyQuotaProgressNote, isDailyQuotaReachedMessage } from '~/utils/mp/dailyQuota'
+// 🆕 2026-10-07（实测事故）：待补交轨迹的文案；成绩成功即落盘、明细成功才清除
+import { pendingDetailProgressNote, type PendingDetail } from '~/utils/mp/pendingDetail'
+// 🆕 2026-10-07（用户要求）：本机记录三态 —— 真实提交后**认领**那一条并写回真实场次号/服务端判定
+import { applyServerVerdict, claimRecordForRealSubmit, setRecordDetailOk } from '~/utils/mp/recordState'
 import { useRealState, type RealSubmitResult } from './state'
 
 export function useMpRealSubmit() {
   const { session } = useMpSession()
-  const { profile, task, switches, cameraFlag, cameraFlagLineId, phase, phaseMessage, remainingSeconds, result, submitProgress, markFreeRunUnsupported, markDailyQuotaReached } =
+  const { profile, task, switches, cameraFlag, cameraFlagLineId, phase, phaseMessage, remainingSeconds, result, submitProgress, markFreeRunUnsupported, markDailyQuotaReached, pendingDetail, savePendingDetail, clearPendingDetail, patchPendingDetail } =
     useRealState()
+  /**
+   * 🆕 2026-10-07：改写**本机记录**（认领"已真实提交"、写回场次号与判定）。
+   * ⚠️ 本机记录的 owner 是 `composables/demo/records.ts`（`useState('mpDemoRecords')`）——
+   *    这里只借用它暴露的 `mutateRecords`（套纯函数 + 落盘），**不自己另起一份 state**。
+   */
+  const { mutateRecords } = useMpDemo()
   // 🆕 2026-09-23（pre3）：门禁的 `localGeometryReady` 与跑步页/引擎读同一份本机路线库状态
   const lib = useTrackLibrary()
 
@@ -105,6 +115,12 @@ export function useMpRealSubmit() {
     km: number
     fitDegree: number
     plannedSeconds: number
+    /**
+     * 🆕 2026-10-07（用户要求）：本次结算的时刻（= 本机记录的 `settledAtMs`）。
+     * 用途：真实提交成功后**认领**那条本机记录，把真实场次号写回去（记录页据此区分
+     * "已真实提交 / 仅本地结算 / 演示"）。缺省 ⇒ 认领不到，只影响记录页的标注，不影响提交。
+     */
+    settledAtMs?: number
   }): Promise<RealSubmitResult | null> {
     /**
      * ⚠️ **并发互斥（2026-09-19 审计 S2，2026-09-20 审计补 `begin`）**：本函数**会创建服务端场次**
@@ -475,6 +491,37 @@ export function useMpRealSubmit() {
 
     // ④ 轨迹明细（**成绩成功，或"超时但已核实入库"**时都要发；照源码顺序）
     if (scoreOk) {
+      /**
+       * 🆕 2026-10-07（实测事故，顺序很关键）：**先把这笔欠账落盘，再发明细**。
+       *
+       * 事故：成绩提交成功（20:53:41），而紧随其后的明细**一个请求都没发** ——
+       * 切标签页后 Edge 冻结/丢弃了页面，成绩响应刚回来、还没走到"发明细"就没了 JS 上下文
+       * ⇒ 云端成绩有效但**没有轨迹**（E33 同族）。
+       * 若反过来（先发再存），"发了但页面立刻死"的窗口里照样会丢保护；现在的顺序覆盖两个窗口。
+       */
+      const pending: PendingDetail = {
+        scantronId,
+        taskId: paperId,
+        lineId: input.line?.pointId ?? '',
+        runType,
+        km: input.km,
+        durationSeconds: planned,
+        startMs: startedAt,
+        endMs: submittedAt,
+        points: context.points,
+        at: Date.now(),
+        attempts: 0,
+        lastError: '',
+      }
+      savePendingDetail(pending)
+      pushProgress('step', pendingDetailProgressNote(pending))
+      // 认领本机记录：把**真实场次号**写回去（记录页据此把"仅本地结算"改成"已真实提交"）
+      if (typeof input.settledAtMs === 'number') {
+        mutateRecords((rs) =>
+          claimRecordForRealSubmit(rs, { settledAtMs: input.settledAtMs, scantronId }).records,
+        )
+      }
+
       phaseMessage.value = '成绩已提交，正在提交轨迹明细（sunRunExercisesDetail）…'
       pushProgress('step', SUBMIT_PROGRESS.detail(context.points.length))
       const detailStartedAt = Date.now()
@@ -483,9 +530,15 @@ export function useMpRealSubmit() {
       out.detailOk = detail.ok
       out.detailMessage = detail.message || (detail.ok ? '轨迹提交成功' : '轨迹提交失败')
       if (detail.ok) {
+        // 交上了 ⇒ 欠账销掉（不清的话界面会一直提示一笔已经交上的轨迹）
+        clearPendingDetail()
+        mutateRecords((rs) => setRecordDetailOk(rs, scantronId, true))
         pushProgress('ok', SUBMIT_PROGRESS.detailOk(detailMs))
         logInfo('submit', '轨迹明细已提交', { detail: out.detailMessage })
       } else {
+        // 没交上 ⇒ **留着这笔欠账**（记下原话），界面给「补交轨迹」入口（用户点一次发一次）
+        patchPendingDetail({ lastError: out.detailMessage })
+        mutateRecords((rs) => setRecordDetailOk(rs, scantronId, false))
         pushProgress('error', SUBMIT_PROGRESS.detailFail(out.detailMessage))
         logWarn('submit', '轨迹明细提交失败', { message: out.detailMessage })
       }
@@ -631,6 +684,17 @@ export function useMpRealSubmit() {
     const data = (arch.data as { data?: Record<string, unknown>[] } | undefined)?.data ?? []
     const mine = data.find((r) => String(r.scoreId) === String(id)) ?? null
     if (mine) {
+      /**
+       * 🆕 2026-10-07（用户要求）：**把服务端判定写回那条本机记录**。
+       * 于是记录页里的「有效」在"已真实提交"的行上才是**服务端说的**；
+       * 而"仅本地结算 / 演示"的行仍显示本地预判（并明确加前缀）—— 这是用户被绕住的那个点。
+       */
+      mutateRecords((rs) =>
+        applyServerVerdict(rs, id, {
+          scorePassType: mine.scorePassType as number | string | undefined,
+          scorePassRemark: typeof mine.scorePassRemark === 'string' ? mine.scorePassRemark : undefined,
+        }),
+      )
       if (!opts.quiet) pushProgress('ok', SUBMIT_PROGRESS.verdictOk(verdictText(mine)))
       logInfo('submit', '判定已读回', {
         scantronId: id,
@@ -657,6 +721,78 @@ export function useMpRealSubmit() {
     return mine
   }
 
+  /**
+   * 🆕 2026-10-07（用户要求）：**重发轨迹明细** —— 把"待补交"的那笔轨迹再发一次。
+   *
+   * 为什么需要：成绩成功后到明细发出前，页面可能被浏览器冻结/丢弃（实测事故），
+   * 那笔成绩就会**只有成绩、没有轨迹**（E33 同族）。欠账在成绩成功时就落盘了
+   * （含轨迹点本体 ⇒ **逐点重现**同一笔），所以这里能原样重发。
+   *
+   * ⚠️ **纪律**：**用户点一次发一次** —— 不自动重试、不设定时器、不批量；
+   *    每次失败都把服务端原话记进 `lastError`（界面如实显示"已补交 N 次"）。
+   */
+  const sendDetail = async (cur: PendingDetail): Promise<{ ok: boolean; message: string }> => {
+    const tokenNow = session.value?.token
+    if (!tokenNow) {
+      const msg = '没有可用会话（请先在工作台「一键获取 token」或重新读取真实数据）'
+      if (pendingDetail.value?.scantronId === cur.scantronId) patchPendingDetail({ lastError: msg })
+      logWarn('submit', '补交轨迹失败：无可用会话', { scantronId: cur.scantronId })
+      return { ok: false, message: msg }
+    }
+    pushProgress('step', `补交轨迹明细（场次 ${cur.scantronId}，${cur.km.toFixed(2)} km）…`)
+    const options = { token: tokenNow, baseUrl: session.value?.baseUrl }
+    const detail = await MpApiWrapper.saveScoreDetail(
+      buildScoreDetailRequest({
+        // ⚠️ 明细构造器只用 points / startMs / durationSeconds / scantronId / token，
+        //    其余字段是占位（见 `submitPayload.ts` 的注释）—— 这里如实填"能填的"，别编造。
+        snCode: profile.value?.snCode ?? '',
+        schoolCode: profile.value?.schoolCode ?? '',
+        task: task.value,
+        line: null,
+        paperId: cur.taskId,
+        km: cur.km,
+        durationSeconds: cur.durationSeconds,
+        fitDegree: 0,
+        points: cur.points,
+        token: tokenNow,
+        scantronId: cur.scantronId,
+        startMs: cur.startMs,
+        endMs: cur.endMs,
+      }),
+      options,
+    )
+    // 只有"同一场次"才动那份欠账：用当前这一笔重发时，别去改另一笔的记账
+    const samePending = pendingDetail.value?.scantronId === cur.scantronId
+    if (detail.ok) {
+      if (samePending) clearPendingDetail()
+      mutateRecords((rs) => setRecordDetailOk(rs, cur.scantronId, true))
+      pushProgress('ok', `补交成功：轨迹明细已提交（场次 ${cur.scantronId}）`)
+      logInfo('submit', '补交轨迹明细成功', { scantronId: cur.scantronId, detail: detail.message })
+      return { ok: true, message: detail.message || '轨迹提交成功' }
+    }
+    const msg = detail.message || '轨迹提交失败'
+    if (samePending) patchPendingDetail({ attempts: (pendingDetail.value?.attempts ?? 0) + 1, lastError: msg })
+    pushProgress('error', `补交失败：${msg}`)
+    logWarn('submit', '补交轨迹明细失败', { scantronId: cur.scantronId, message: msg })
+    return { ok: false, message: msg }
+  }
+
+  /** 补交"落盘的那笔欠账"（跑步页顶部提示卡上的按钮） */
+  const resendPendingDetail = async (): Promise<{ ok: boolean; message: string }> => {
+    const cur = pendingDetail.value
+    if (!cur) return { ok: false, message: '没有待补交的轨迹' }
+    return sendDetail(cur)
+  }
+
+  /**
+   * 🆕 2026-10-07：用**当前结算的这一笔**（内存里那份轨迹）重发明细。
+   *
+   * 与 `resendPendingDetail` 的区别：那条靠**落盘的**欠账（页面被杀也能用，但轨迹是落盘副本）；
+   * 这条直接用界面上的 `run.result.points` + 本次提交的 `startedAt/durationSeconds`
+   * ⇒ **逐点与当时完全一致**，且连"欠账都没记上"的历史笔（功能上线前那种）也能救。
+   */
+  const resendDetail = async (detail: PendingDetail): Promise<{ ok: boolean; message: string }> => sendDetail(detail)
+
   return {
     phase,
     phaseMessage,
@@ -668,6 +804,10 @@ export function useMpRealSubmit() {
     submitRealRun,
     fetchVerdict,
     stopWait,
+    // 🆕 2026-10-07：补交轨迹明细（成绩成功但明细没发出去时的欠账；用户点一次发一次）
+    resendPendingDetail,
+    /** 🆕 2026-10-07：用**当前结算这一笔**（内存里那份轨迹）重发明细 —— 逐点与当时一致 */
+    resendDetail,
   }
 }
 

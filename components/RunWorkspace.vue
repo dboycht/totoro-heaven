@@ -68,6 +68,35 @@
     </v-alert>
 
     <!--
+      🆕 2026-10-07（实测事故；用户问"能不能补发"）：有一笔成绩的轨迹没交上。
+      现场：sunRunExercises 提交成功（耗时 13.8 s），紧随其后的 sunRunExercisesDetail
+      一个请求都没发 —— 切标签页后 Edge 冻结/丢弃了页面，成绩响应刚回来、还没走到"发明细"，
+      JS 上下文就没了 ⇒ 云端成绩有效、却没有轨迹（与 E33 同族）。
+      欠账在"成绩成功"那一刻就已落盘（含轨迹点本体 ⇒ 能逐点重现），所以这里能补交。
+      ⚠️ 纪律：用户点一次发一次 —— 不自动重试、不设定时器、不批量。
+    -->
+    <v-alert v-if="pendingDetail" type="warning" variant="tonal" density="comfortable" class="mb-3">
+      <div class="font-weight-bold">
+        <v-icon class="mr-1" size="18">mdi-map-marker-question-outline</v-icon>有一笔成绩的轨迹还没交上
+      </div>
+      <div class="text-body-2 mt-1">{{ pendingDetailText }}</div>
+      <div class="d-flex flex-wrap ga-2 mt-2 align-center">
+        <v-btn
+          size="small"
+          color="warning"
+          variant="flat"
+          prepend-icon="mdi-cloud-upload-outline"
+          :loading="resendLoading"
+          :disabled="resendLoading || submitInFlight"
+          @click="onResendDetail"
+        >
+          补交轨迹
+        </v-btn>
+        <span class="text-caption align-self-center">点一次发一次（不自动重试）；交上后这条提示会自己消失</span>
+      </div>
+    </v-alert>
+
+    <!--
       🆕 2026-09-24（pre3 连带修复）："重新读取该线路的开关"入口放在最上面（常驻）——
       原先它在"已阻止真实提交"那张卡里，而 pre3 放宽后 `allow` 恒为 true ⇒ 那张卡不再出现，
       用户就没有任何入口重查摄像头杆了（他现场正是"开关读不到又没法重试"）；
@@ -653,6 +682,24 @@
         >
           查询判定
         </v-btn>
+        <!--
+          🆕 2026-10-07（实测事故；用户问"能不能补发"）：重发轨迹明细。
+          场景：成绩已提交成功，但紧随其后的明细请求没发出去（页面被浏览器冻结/丢弃）。
+          本按钮直接用"当前结算这一笔"的轨迹与时间口径 ⇒ 与当时逐点一致；
+          它连"欠账都没来得及记上"的历史笔也能救（那种笔没有落盘记录，只能靠内存里这份）。
+          ⚠️ 只在内存里还有那一笔的轨迹时出现（刷新/重启后就没有了 —— 那时用顶部那张提示卡补交）。
+        -->
+        <v-btn
+          v-if="canResendRunDetail"
+          variant="tonal"
+          color="warning"
+          prepend-icon="mdi-cloud-upload-outline"
+          :loading="resendRunLoading"
+          :disabled="resendRunLoading || submitInFlight"
+          @click="onResendRunDetail"
+        >
+          重发轨迹明细
+        </v-btn>
         <v-chip v-if="phase !== 'idle'" size="small" variant="tonal" :color="phaseColor">{{ phaseMessage }}</v-chip>
       </div>
 
@@ -998,6 +1045,12 @@ const {
   dailyQuotaBlocked,
   dailyQuotaNoticeText,
   clearDailyQuotaMark,
+  /** 🆕 2026-10-07（实测事故）：有一笔成绩的轨迹没交上 ⇒ 提示 + 补交入口 */
+  pendingDetail,
+  pendingDetailText,
+  resendPendingDetail,
+  /** 🆕 2026-10-07：用**当前结算这一笔**（内存里那份轨迹）重发明细 —— 逐点与当时一致 */
+  resendDetail,
   applyToRunner,
   /** 🆕 2026-09-22（真实用户实测）：刷新后从本机缓存自动恢复任务（不联网、幂等） */
   autoRestoreFromCache,
@@ -1784,6 +1837,8 @@ const doRealSubmit = async () => {
       km: r.km,
       fitDegree: r.fitDegree,
       plannedSeconds: r.durationSeconds,
+      // 🆕 2026-10-07：本次结算时刻 —— 真实提交成功后用它**认领**那条本机记录（写回真实场次号）
+      settledAtMs: run.value.settledAtMs,
     })
     if (out?.scoreOk) {
       showSnackbar('真实提交成功，正在读判定…', 'success')
@@ -1819,6 +1874,86 @@ async function onFetchVerdict(id?: string) {
     await fetchVerdict(id)
   } finally {
     verdictLoading.value = false
+  }
+}
+
+/**
+ * 🆕 2026-10-07（实测事故，用户问"能不能补发"）：**补交轨迹明细**的在途标记。
+ * 与查询判定同一条纪律：**进行中禁用并转圈**（点一次发一次，连点会重复发写请求）。
+ */
+const resendLoading = ref(false)
+
+/**
+ * 补交那一笔没发出去的轨迹明细。
+ * ⚠️ 失败时**不重试**（服务端原话会被记下来、界面如实显示"已补交 N 次"）；
+ *    成功后才由 `resendPendingDetail()` 内部销账 ⇒ 这条提示自己消失。
+ */
+async function onResendDetail() {
+  if (resendLoading.value) return
+  resendLoading.value = true
+  try {
+    const out = await resendPendingDetail()
+    if (out.ok) {
+      showSnackbar(`轨迹已补交：${out.message}`, 'success')
+    } else {
+      showSnackbar(`补交失败：${out.message}`, 'error')
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    logError('submit', '补交轨迹抛出未捕获异常（已兜住）', { message })
+    showSnackbar(`补交异常（未完成）：${message}`, 'error')
+  } finally {
+    resendLoading.value = false
+  }
+}
+
+/**
+ * 🆕 2026-10-07（实测事故）：**重发当前这一笔的轨迹明细**的在途标记。
+ * 判据：内存里既有"本次提交的场次号"又有"那次结算的轨迹点"（缺一不可）。
+ */
+const resendRunLoading = ref(false)
+const canResendRunDetail = computed(
+  () => Boolean(result.value?.scantronId) && (run.value.result?.points?.length ?? 0) >= 2,
+)
+
+/**
+ * 用当前这一笔（run.result.points + 本次提交的 startedAt/durationSeconds）重发明细。
+ * 与顶部那张提示卡的区别：那条靠**落盘的**欠账，这条靠**内存里的**轨迹 ⇒ 与当时逐点一致，
+ * 且能救"功能上线前没记上欠账"的历史笔（本轮实测事故就是这种）。
+ */
+async function onResendRunDetail() {
+  if (resendRunLoading.value) return
+  const r = run.value.result
+  const submitted = result.value
+  if (!r || !submitted?.scantronId) {
+    showSnackbar('没有可重发的轨迹（先跑一条并真实提交）', 'info')
+    return
+  }
+  resendRunLoading.value = true
+  try {
+    const out = await resendDetail({
+      scantronId: submitted.scantronId,
+      taskId: r.scoreRequest?.taskId ?? '',
+      lineId: run.value.lineId || '',
+      runType: r.submitRunType,
+      km: r.km,
+      durationSeconds: r.durationSeconds,
+      startMs: submitted.startedAt,
+      endMs: submitted.submittedAt,
+      // ⚠️ 用**实际跑出来的那一段**（与提交时同一份），并转成数字坐标
+      points: r.points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) })),
+      at: Date.now(),
+      attempts: 0,
+      lastError: '',
+    })
+    if (out.ok) showSnackbar(`轨迹已重发：${out.message}`, 'success')
+    else showSnackbar(`重发失败：${out.message}`, 'error')
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    logError('submit', '重发轨迹明细抛出未捕获异常（已兜住）', { message })
+    showSnackbar(`重发异常（未完成）：${message}`, 'error')
+  } finally {
+    resendRunLoading.value = false
   }
 }
 </script>

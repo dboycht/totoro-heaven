@@ -23,6 +23,8 @@ import { routeRequirementOf, taskPaperIdOf } from '~/utils/mp/taskShape'
 import { resolveFreePathGeometry } from '~/utils/mp/freePathGeometry'
 import { freeRouteGeometryChoice, resolveEntryName, type TrackRouteEntry } from '~/utils/mp/trackLibrary'
 import { newRunSeed, planRealisticRun, type RunPlan } from '~/utils/mp/realism'
+// 🆕 2026-10-07（用户要求）：本机记录 id（真实提交成功后要按它 / 按 settledAtMs 认领这一条）
+import { newLocalRecordId } from '~/utils/mp/recordState'
 // 🆕 2026-09-29（issue #13）：研途健行的"目标里程"归一化入口（与跑步页显示**同一个函数**）
 import { YTU_TARGET_KM_FALLBACK, clampYtuTargetKm } from '~/utils/mp/ytuRun'
 import { toSubmitRunType, type MpRunLine, type MpScoreDetailRequest, type MpScoreRequest } from '~/src/mp/types'
@@ -475,9 +477,22 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
     }
 
     // 写入记录（本地演示；真实环境由服务端判定，这里用自检结果预判）
+    /**
+     * 🆕 2026-10-07（用户要求）：给这条记录补上**三态所需的元数据** ——
+     *   · `localId`：本机记录 id；
+     *   · `submitState`：演示跑 ⇒ `demo`，真实模式（尚未提交）⇒ `local`；
+     *   · `settledAtMs`：与 `run.value.settledAtMs` **同一个值** ⇒ 真实提交成功后按它**认领**这一条
+     *     （毫秒时间戳天然唯一），把**真实场次号**与**服务端判定**写回来。
+     * 起因：这枚绿色「有效」是**本地自检预判**，而用户把它读成了服务端判定（"为什么有两条有效"）。
+     */
+    const localId = newLocalRecordId()
+    run.value.localRecordId = localId
     records.value = [
       {
         scoreId: scantronId,
+        localId,
+        submitState: demoMode.value ? 'demo' : 'local',
+        settledAtMs: run.value.settledAtMs,
         paperId: scoreRequest.taskId,
         runTime: timeFields.evaluateDate,
         startTmie: timeFields.startTime,

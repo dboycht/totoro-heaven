@@ -100,6 +100,11 @@ export interface DemoRunState {
    * `run.value` 会被保留；若结算时刻早于"本次任务读取时刻"，提交按钮就不允许点。
    */
   settledAtMs?: number
+  /**
+   * 🆕 2026-10-07：**本次结算写进本机记录时用的 `localId`**。
+   * 用途：真实提交成功后按 `settledAtMs` 认领那条记录、把**真实场次号**写回去（见 `utils/mp/recordState.ts`）。
+   */
+  localRecordId?: string
 }
 
 export interface DemoRunResult {
