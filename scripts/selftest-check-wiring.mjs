@@ -34,6 +34,10 @@ const NEEDED = [
   'composables/demo/state.ts',
   'composables/demo/records.ts',
   'composables/demo/runner.ts',
+  // ⚠️ 2026-10-07（防 kill 重构）：那段"等待几十分钟 + 两次写"搬到服务端作业；
+  //    检查器现在要读它（两次写顺序 / 报文唯一构造器 / E33 守卫）⇒ 副本里必须存在，
+  //    否则**基线副本就会失败**（自测会把这误报成"守卫失效"）。
+  'server/utils/runSubmitJob.ts',
   'pages/run.vue',
   'pages/index.vue',
   // ⚠️ 2026-09-21（R13）：`.ps1` 编码纪律 —— 注入 16 要把它改写成"无 BOM"，副本里必须存在
@@ -142,25 +146,38 @@ try {
     else if (!out.includes('E33 复发')) failures.push(`注入了 E33 复发字段，但报错信息不是预期的：\n${out}`)
   }
 
-  // ---------- 注入 2：提交顺序被打乱（成绩早于建场次）----------
+  // ---------- 注入 2：客户端又自己发成绩（防 kill 重构后**唯一的写出口**被绕过）----------
   {
     const dir = copyBase()
-    // ⚠️ 结构整理后 `submitRealRun` 在 `composables/real/submit.ts`（useMpReal.ts 里只剩组装器）；
-    //    注入必须打在**那个**文件上，否则检查器找不到序列 → 自测会误判成"没抓到"。
     if (!REAL_SUBMIT_REL) {
       failures.push('找不到真实提交源文件（composables/real/submit.ts / composables/useMpReal.ts 都不存在）：自测需同步更新')
     } else {
       const file = join(dir, REAL_SUBMIT_REL)
       const text = readFileSync(file, 'utf8')
-      // 把首次出现的 getRunBegin 前面塞一个 saveScores 调用 → saveScores 抢到更靠前的位置
       writeFileSync(file, text.replace(
         'MpApiWrapper.getRunBegin(',
         'MpApiWrapper.saveScores({} as never, {}), MpApiWrapper.getRunBegin(',
       ), 'utf8')
       const { code, out } = run(dir)
-      if (code === 0) failures.push('打乱了提交顺序但检查器仍然通过（顺序守卫失效）')
-      else if (!out.includes('顺序错误')) failures.push(`顺序被打乱，但报错信息不是预期的：\n${out}`)
+      if (code === 0) failures.push('客户端又自己发了成绩，但检查器仍然通过（唯一写出口守卫失效）')
+      else if (!out.includes('不允许')) failures.push(`报错信息不是预期的：\n${out}`)
     }
+  }
+
+  // ---------- 注入 2b：服务端作业里两次写**顺序反了**（成绩必须在明细之前）----------
+  {
+    const dir = copyBase()
+    const rel = 'server/utils/runSubmitJob.ts'
+    const file = join(dir, rel)
+    const text = readFileSync(file, 'utf8')
+    const scorePath = "'/wxxcx/sunrun/sunRunExercises'"
+    const detailPath = "'/wxxcx/platform/recrecord/sunRunExercisesDetail'"
+    // 把两处端点路径互换 ⇒ 明细抢到成绩前面（模拟"顺序反了"）
+    const swapped = text.split(scorePath).join('@@TMP@@').split(detailPath).join(scorePath).split('@@TMP@@').join(detailPath)
+    writeFileSync(file, swapped, 'utf8')
+    const { code, out } = run(dir)
+    if (code === 0) failures.push('把服务端作业的两次写顺序调反，但检查器仍然通过（顺序守卫失效）')
+    else if (!out.includes('顺序反了')) failures.push(`报错信息不是预期的：\n${out}`)
   }
 
   // ---------- 注入 3：明细不走单一构造器 ----------
@@ -385,7 +402,8 @@ if (failures.length) {
   process.exit(1)
 }
 console.log(
-  '✅ 自测通过：基线通过、17 类注入（E33 复发 / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
+  '✅ 自测通过：基线通过、18 类注入（E33 复发 / **客户端绕过唯一写出口（自发票据）** / ' +
+    '**服务端作业两次写顺序反了** / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
     '代理重复声明前缀 / 模板裸取可空状态 / 空 catch / 夜间限制套回「开始跑步」/ 提示退回字符串注入键 / ' +
     'kebab 绑定丢 prop / **开始跑步不再要求已配置跑道** / **dev 少了 host** / **本机回调写死地址族** / ' +
     '**`.ps1` 丢 BOM** / **报文里塞了本机几何**）都被抓到且退出码非 0，' +

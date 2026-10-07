@@ -119,12 +119,47 @@ if (!realSubmit) {
   const { body } = bodyOf(realSubmit.text, 'async function submitRealRun(')
   if (!body) failures.push(`${realSubmit.rel}：找不到 submitRealRun(（检查器已失效）`)
   else {
-    assertOrder('真实提交顺序（门禁 → getRunBegin → saveScores → saveScoreDetail）', body, [
+    /**
+     * ⚠️ 2026-10-07（**防 kill 重构**）：那段"真实等待 + 成绩 + 轨迹明细 + 读判定"搬到了
+     * `server/utils/runSubmitJob.ts`（用户口径："就是得等待几十分钟的那个需要重构"、
+     * "前端只是展示，不作为一种步进的过程"）。所以这条守卫**拆成两半**，意图不变：
+     *   · 顺序必须有人保证；
+     *   · **成绩只能有一个出口**（客户端不许再自己发）。
+     */
+    assertOrder('真实提交顺序（客户端：门禁 → getRunBegin → 启动作业）', body, [
       /evaluateRunGate\(|gate\b/,
       /MpApiWrapper\.getRunBegin\(/,
-      /MpApiWrapper\.saveScores\(/,
-      /MpApiWrapper\.saveScoreDetail\(/,
+      /startServerSubmitJob\(/,
     ])
+    if (/MpApiWrapper\.saveScores\(/.test(body)) {
+      failures.push(
+        `${realSubmit.rel}：客户端**不允许**再自己发成绩 —— 成绩的唯一出口是服务端作业` +
+          '（`/api/local/run/submit/start`）。防 kill 的前提就是"写操作不跟着页面走"。',
+      )
+    }
+  }
+}
+
+// ---------- R2b（2026-10-07 新增）：服务端作业里的两次写**顺序与唯一出口** ----------
+const RUN_JOB_FILE = 'server/utils/runSubmitJob.ts'
+const runJob = readFirstExisting([RUN_JOB_FILE])
+if (!runJob) {
+  failures.push(`找不到服务端提交作业源文件（${RUN_JOB_FILE}）—— 检查器需同步更新（check-wiring.mjs）`)
+} else {
+  /**
+   * ⚠️ 用**端点全路径**定位（不要用 `sunRunExercises`）—— 因为 `sunRunExercisesDetail` 里包含前者，
+   * 只写短名时 `indexOf` 会两者都指到明细那处、顺序守卫就形同虚设（自测能抓到这种"守卫自己失效"）。
+   */
+  const scoreAt = runJob.text.indexOf("'/wxxcx/sunrun/sunRunExercises'")
+  const detailAt = runJob.text.indexOf("'/wxxcx/platform/recrecord/sunRunExercisesDetail'")
+  if (scoreAt < 0 || detailAt < 0) {
+    failures.push(`${RUN_JOB_FILE}：找不到成绩 / 轨迹明细端点全路径（检查器已失效）`)
+  } else if (scoreAt > detailAt) {
+    failures.push(`${RUN_JOB_FILE}：两次写**顺序反了** —— 必须先发成绩、再发轨迹明细（E33 的后果就是"成绩在、轨迹没上"）`)
+  }
+  // 报文必须仍出自唯一构造器（不许在作业里手拼 18 字段）
+  for (const must of [/buildScoreRequest\(/, /buildScoreDetailRequest\(/]) {
+    if (!must.test(runJob.text)) failures.push(`${RUN_JOB_FILE}：没有用唯一构造器 ${must}（报文口径会分叉）`)
   }
 }
 
@@ -144,6 +179,9 @@ const SOURCE_FILES = [
   'composables/demo/state.ts',
   'composables/demo/records.ts',
   'composables/demo/runner.ts',
+  // ⚠️ 2026-10-07（防 kill 重构）新增：服务端提交作业 —— 它现在**构造并发出**成绩/轨迹报文，
+  //    E33 守卫必须跟着代码搬家（否则"那 3 个字段又回来了"会藏在这个新文件里）
+  'server/utils/runSubmitJob.ts',
   'src/mp/envelope.ts',
   'src/mp/types.ts',
   'src/wrappers/MpApiWrapper.ts',

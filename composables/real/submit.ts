@@ -33,7 +33,7 @@ import { logError, logEvent, logInfo, logWarn } from '../useEventLog'
 // 🆕 2026-09-23（pre3 要求 3️⃣）：**放宽放行**（本该拦住但只警告）也要逐条上报，便于从包里看出"这笔是在放宽状态下提交的"
 import { newEventId, reportBlocked, reportDiagEvent } from '../useDiagEventReporter'
 // 写操作"结果未知"的判定与措辞（2026-09-21 修 issue #11：超时 ≠ 失败，必须核实）
-import { classifyWriteOutcome, outcomeIsSuccess, writeOutcomeMessage } from '~/utils/mp/writeOutcome'
+import type { WriteOutcome } from '~/utils/mp/writeOutcome'
 // 提交过程清单的文案（2026-09-21 用户要求"要能看到现在在传什么"）
 import {
   SUBMIT_PROGRESS,
@@ -340,54 +340,28 @@ export function useMpRealSubmit() {
       points: input.points.length,
     })
 
-    // ② 真实等待（安全设计：让 endTime-startTime 与服务器观测一致）
-    const planned = Math.max(1, Math.round(input.plannedSeconds))
-    phase.value = 'waiting'
-    remainingSeconds.value = planned
-    phaseMessage.value = `会话已创建，正在「跑」：为了让时间线一致，需真实等待 ${Math.ceil(planned / 60)} 分钟`
-    pushProgress('step', SUBMIT_PROGRESS.wait(planned, input.km))
-    logInfo('submit', '进入真实等待', { plannedSeconds: planned, minutes: Math.round(planned / 60) })
-    await new Promise<void>((resolve) => {
-      stopWait()
-      waitTimer = setInterval(() => {
-        const left = planned - Math.round((Date.now() - startedAt) / 1000)
-        remainingSeconds.value = Math.max(0, left)
-        if (left <= 0) {
-          stopWait()
-          resolve()
-        }
-      }, 1000)
-    })
-
     /**
-     * ⚠️ **等待结束后必须重新校验上下文**（2026-09-19 审计 S3）。
+     * ②③④⑤ **交给服务端提交作业**（防 kill）—— 2026-10-07 用户明确要求：
+     * "就最终的提交那个地方（就是得等待几十分钟的）这个需要重构"、
+     * "下次你运行的时候在那个终端也显示进度，前端只是展示，不作为一种步进的过程"。
      *
-     * 等待可以长达 20 分钟，期间用户完全可能在顶栏点「退出登录」或在工作台点「清空本机数据」——
-     * 那会把 `profile` / `session` 置空。而下面 `const context = { snCode: profile.value.snCode, … }`
-     * 依赖**进入本函数时**的 TS 窄化（`!profile.value` 已在前面判过），**跨 `await` 后窄化并不能保证非空**
-     * ⇒ 会抛 `TypeError: Cannot read properties of null`，而且：
-     *   · 异常冒到调用方（界面无 catch）⇒ 无任何提示；
-     *   · 已创建的场次被丢弃；
-     *   · `phase` 永久停在 `'waiting'` ⇒ 「真实提交」与「重置」双双灰死，只能刷新页面。
-     * 所以这里重取一次，缺了就明确置错并退出（场次丢弃是已知代价，但至少状态正确、有提示）。
+     * ⇒ 那段"真实等待 + 成绩 + 轨迹明细 + 读判定"全部搬到 Node 进程（`server/utils/runSubmitJob.ts`）：
+     *   · 浏览器被冻结/关闭**不影响**它跑完（旧实现断在中间 ⇒ 云端成绩有效却没轨迹，见 `ERROR.md` E71）；
+     *   · 服务端计时器**不被浏览器节流**（旧实现实测晚了约 12 分钟）；
+     *   · 进度**同时打在服务端终端与当天日志**，并供本函数轮询展示。
+     * 本函数只剩：**启动作业 + 轮询 + 按结果写回界面状态**（不再推进任何一步）。
      */
+    const planned = Math.max(1, Math.round(input.plannedSeconds))
     const tokenNow = session.value?.token
     const profileNow = profile.value
     if (!tokenNow || !profileNow) {
-      pushProgress('error', '等待期间会话/档案被清除 → 本次提交中止（未发送成绩）')
+      pushProgress('error', '会话/档案缺失 → 本次提交中止（未发送成绩）')
       phase.value = 'error'
       phaseMessage.value =
-        '等待期间会话/档案被清除（可能点了「退出登录」或「清空本机数据」）——本次提交已中止，未发送成绩。请重新读取真实数据后再试。'
-      logWarn('submit', '等待期间上下文丢失，提交中止', {
-        scantronId,
-        hadToken: Boolean(tokenNow),
-        hadProfile: Boolean(profileNow),
-      })
+        '缺少会话或档案（可能点了「退出登录」或「清空本机数据」）——本次提交已中止，未发送成绩。请重新读取真实数据后再试。'
+      logWarn('submit', '启动服务端作业前上下文丢失，提交中止', { scantronId })
       return null
     }
-    pushProgress('ok', SUBMIT_PROGRESS.waitDone())
-
-    // ③ 提交成绩（写；只发一次，失败不重试）
     const submittedAt = Date.now()
     const context = {
       snCode: profileNow.snCode,
@@ -402,81 +376,77 @@ export function useMpRealSubmit() {
       points: toSubmitPoints(input.points),
       token: tokenNow,
       scantronId,
+      /**
+       * ⚠️ 这两个时间戳**只是本地占位**（用于 `out.scoreRequestMasked` 那份报文预览）：
+       * 真正进报文的时间戳由**服务端作业在发出的那一刻**算（`startMs` = 作业开始、`endMs` = 发出前），
+       * 否则 `endTime` 会停在"等待开始"的时刻、白白少掉整个等待时长。
+       */
       startMs: startedAt,
       endMs: submittedAt,
     }
-    phase.value = 'submitting'
-    phaseMessage.value = '正在提交成绩（sunRunExercises）…'
-    // ⚠️ 自由跑必须把 runType 传进报文构造器：它决定 taskId=''、sunrunPathPointList=[]
-    //    （厂商源码：自由跑不带任务号、路径点列为空数组）
-    const usedTimeText = `${String(Math.floor(planned / 60)).padStart(2, '0')}:${String(planned % 60).padStart(2, '0')}`
-    pushProgress('step', SUBMIT_PROGRESS.score(input.km, input.line?.pointList?.length ?? 0, usedTimeText))
-    const scoreStartedAt = Date.now()
-    const score = await MpApiWrapper.saveScores(buildScoreRequest(context, { runType }), options)
-    const scoreMs = Date.now() - scoreStartedAt
+    phase.value = 'waiting'
+    remainingSeconds.value = planned
+    phaseMessage.value = `已交给服务端执行：需真实等待 ${Math.ceil(planned / 60)} 分钟（进度同时打在服务端终端）`
+    stopWait()
+    const started = await startServerSubmitJob({
+      token: tokenNow,
+      baseUrl: session.value?.baseUrl,
+      plannedSeconds: planned,
+      scantronId,
+      context: {
+        snCode: context.snCode,
+        schoolCode: context.schoolCode,
+        task: context.task,
+        line: context.line,
+        paperId: context.paperId,
+        km: context.km,
+        durationSeconds: context.durationSeconds,
+        fitDegree: context.fitDegree,
+        points: context.points,
+        runType,
+      },
+      verdictRequest: await buildVerdictRequest(tokenNow),
+      meta: {
+        km: input.km,
+        lineName: input.line?.pointName ?? '',
+        runTypeLabel: freeRun ? '自由跑' : '阳光跑',
+      },
+    })
+    if (!started.ok) {
+      pushProgress('error', `无法启动服务端提交作业：${started.message}`)
+      phase.value = 'error'
+      phaseMessage.value = `无法启动服务端提交作业：${started.message}（未发送成绩）`
+      logError('submit', '启动服务端提交作业失败', { scantronId, message: started.message })
+      return null
+    }
+    logInfo('submit', '已启动服务端提交作业（等待与两次写都在服务端）', { jobId: started.id, scantronId, planned })
+    const job = await pollServerSubmitJob(started.id)
+    const outcome = (job.result?.scoreOutcome ?? 'failed') as WriteOutcome
+    const scoreOk = Boolean(job.result?.scoreOk)
+    const scoreMessage = job.result?.scoreMessage ?? '服务端作业没有返回结果（请查看服务端终端与当天日志）'
+    const submittedAtFinal = job.finishedAt || Date.now()
+
+    // 过程清单：按服务端作业的结论打点（**超时 ≠ 失败**，未知态要说清"别急着重试"）
+    if (outcome === 'ok' || outcome === 'timeout-landed') {
+      pushProgress('ok', outcome === 'ok' ? '④ 成绩已提交（服务端发出）' : SUBMIT_PROGRESS.scoreVerified())
+    } else if (outcome === 'timeout-unknown') {
+      pushProgress('warn', SUBMIT_PROGRESS.scoreUnknown())
+    } else {
+      pushProgress('error', SUBMIT_PROGRESS.scoreFail(scoreMessage))
+    }
 
     /**
-     * ⚠️ **2026-09-21 修 GitHub issue #11（有实测日志）**：**超时 ≠ 失败**。
-     *
-     * 用户的服务端日志原文：厂商回 `{"message":"提交成功"}`、本地代理耗时 **`ms:15404`**，
-     * 而客户端超时上限是 **15000 ms** ⇒ 浏览器只比真实响应早放弃 **404 毫秒**。
-     * 结果：界面报"提交失败"、**轨迹明细被跳过**，可成绩其实已经入库（用户称"假报错"）。
-     *
-     * 判据：写操作超时后**必须去服务端核实**（`fetchVerdict` 按 `scantronId` 查归档）：
-     *   · 核实到已入库 ⇒ 按成功继续，并**补交轨迹明细**（把缺掉的那一步补上）；
-     *   · 核实不到     ⇒ 只能说"**结果未知**"并明确"**请勿立即重复提交**"
-     *     （重复提交会多录一条成绩，比缺轨迹严重得多）。
+     * ③④⑤ 的**实际执行**见 `server/utils/runSubmitJob.ts`（本函数在上面启动作业并轮询）——
+     * 这里保留这段说明是为了让后来者知道"那两步为什么不在这个文件里了"：
+     *   · 旧实现在这里做"前端等待 + 两次写 + 读判定"，页面被冻结/关闭就会断在中间（`ERROR.md` E71）；
+     *   · 现在**由服务端作业按同一顺序执行**，报文仍由同一套唯一构造器产出（口径一字未变）。
      */
-    let landedAfterTimeout: boolean | null = null
-    if (!score.ok && score.timedOut) {
-      phaseMessage.value = '提交请求超时，正在向服务端核实是否已入库…'
-      pushProgress('warn', SUBMIT_PROGRESS.scoreTimeout(scoreMs))
-      logWarn('submit', '提交超时（结果未知），开始核实是否已入库', { scantronId, message: score.message })
-      /**
-       * ⚠️ **2026-09-21 审计修复（B1，本轮最关键）**：核实**必须延时重试**。
-       *
-       * 项目自己的实测（`DEVELOPMENT.md` §27）明确写着：**提交后"立刻"读回 `getSunrunArch` 是读不到的**
-       * （回 `total=0`，要过几分钟才可见）。所以第一版"超时后立刻查一次"几乎必然查不到
-       * ⇒ 承诺的"自动补交轨迹明细"形同虚设，issue #11 的第二半（轨迹仍被跳过）实际没修好。
-       *
-       * 判据：**核实的时机要匹配"服务端可见延迟"** —— 3 s / 8 s / 20 s 三次递进重试，命中即停；
-       * 一旦外部复位了状态（清空本机数据等）就立刻放弃，不做无谓等待。
-       */
-      const delays = [3_000, 8_000, 20_000]
-      for (const waitMs of delays) {
-        await new Promise<void>((resolve) => setTimeout(resolve, waitMs))
-        if (phase.value !== 'submitting') {
-          logWarn('submit', '核实期间状态被外部复位，停止核实', { scantronId, phase: phase.value })
-          break
-        }
-        try {
-          landedAfterTimeout = Boolean(await fetchVerdict(scantronId, { quiet: true }))
-        } catch (err) {
-          landedAfterTimeout = null
-          logWarn('submit', '超时后的核实失败（保持"未知"）', {
-            scantronId,
-            message: err instanceof Error ? err.message : String(err),
-          })
-        }
-        if (landedAfterTimeout) break
-      }
-      if (!landedAfterTimeout) {
-        logWarn('submit', `超时后核实三次仍未在归档中找到（可能仍在处理）`, { scantronId, delays })
-      }
-    }
-    const outcome = classifyWriteOutcome(score, landedAfterTimeout)
-    const scoreOk = outcomeIsSuccess(outcome)
-    const scoreMessage = outcome === 'ok' ? score.message || '提交成功' : writeOutcomeMessage(outcome, score.message)
-    // 过程清单：把这一步的结论如实打出来（**超时 ≠ 失败**，未知态要说清"别急着重试"）
-    if (outcome === 'ok') pushProgress('ok', SUBMIT_PROGRESS.scoreOk(scoreMs))
-    else if (outcome === 'timeout-landed') pushProgress('ok', SUBMIT_PROGRESS.scoreVerified())
-    else if (outcome === 'timeout-unknown') pushProgress('warn', SUBMIT_PROGRESS.scoreUnknown())
-    else pushProgress('error', SUBMIT_PROGRESS.scoreFail(scoreMessage))
+
 
     const out: RealSubmitResult = {
       scantronId,
       startedAt,
-      submittedAt,
+      submittedAt: submittedAtFinal,
       scoreOk,
       // 🆕 2026-09-21（冗余加固）：把四态结局透给界面 —— 别让它按 scoreOk 二分成"红/绿"
       scoreOutcome: outcome,
@@ -489,58 +459,48 @@ export function useMpRealSubmit() {
       },
     }
 
-    // ④ 轨迹明细（**成绩成功，或"超时但已核实入库"**时都要发；照源码顺序）
+    /**
+     * ④ 轨迹明细的**结果**（由服务端作业发出并记账）。
+     *
+     * ⚠️ 与旧实现的关键差别：旧实现"发明细"这件事**只存在于前端执行流里**，页面一死就静默消失
+     * （`ERROR.md` E71）；现在成败由**服务端**判定并写进日志/状态，本函数只按结论记账：
+     *   · 交上了 ⇒ 销掉本地欠账；
+     *   · 没交上 ⇒ 落一笔欠账（界面给「补交轨迹」，用户点一次发一次）。
+     */
     if (scoreOk) {
-      /**
-       * 🆕 2026-10-07（实测事故，顺序很关键）：**先把这笔欠账落盘，再发明细**。
-       *
-       * 事故：成绩提交成功（20:53:41），而紧随其后的明细**一个请求都没发** ——
-       * 切标签页后 Edge 冻结/丢弃了页面，成绩响应刚回来、还没走到"发明细"就没了 JS 上下文
-       * ⇒ 云端成绩有效但**没有轨迹**（E33 同族）。
-       * 若反过来（先发再存），"发了但页面立刻死"的窗口里照样会丢保护；现在的顺序覆盖两个窗口。
-       */
-      const pending: PendingDetail = {
-        scantronId,
-        taskId: paperId,
-        lineId: input.line?.pointId ?? '',
-        runType,
-        km: input.km,
-        durationSeconds: planned,
-        startMs: startedAt,
-        endMs: submittedAt,
-        points: context.points,
-        at: Date.now(),
-        attempts: 0,
-        lastError: '',
-      }
-      savePendingDetail(pending)
-      pushProgress('step', pendingDetailProgressNote(pending))
       // 认领本机记录：把**真实场次号**写回去（记录页据此把"仅本地结算"改成"已真实提交"）
       if (typeof input.settledAtMs === 'number') {
         mutateRecords((rs) =>
           claimRecordForRealSubmit(rs, { settledAtMs: input.settledAtMs, scantronId }).records,
         )
       }
-
-      phaseMessage.value = '成绩已提交，正在提交轨迹明细（sunRunExercisesDetail）…'
-      pushProgress('step', SUBMIT_PROGRESS.detail(context.points.length))
-      const detailStartedAt = Date.now()
-      const detail = await MpApiWrapper.saveScoreDetail(buildScoreDetailRequest(context), options)
-      const detailMs = Date.now() - detailStartedAt
-      out.detailOk = detail.ok
-      out.detailMessage = detail.message || (detail.ok ? '轨迹提交成功' : '轨迹提交失败')
-      if (detail.ok) {
-        // 交上了 ⇒ 欠账销掉（不清的话界面会一直提示一笔已经交上的轨迹）
+      out.detailOk = job.result?.detailOk
+      out.detailMessage = job.result?.detailMessage ?? '（服务端未返回轨迹明细结果，请看服务端终端与当天日志）'
+      if (out.detailOk === true) {
         clearPendingDetail()
         mutateRecords((rs) => setRecordDetailOk(rs, scantronId, true))
-        pushProgress('ok', SUBMIT_PROGRESS.detailOk(detailMs))
-        logInfo('submit', '轨迹明细已提交', { detail: out.detailMessage })
+        pushProgress('ok', `⑤ 轨迹已交（服务端发出）：${out.detailMessage}`)
+        logInfo('submit', '轨迹明细已提交（服务端作业）', { detail: out.detailMessage })
       } else {
-        // 没交上 ⇒ **留着这笔欠账**（记下原话），界面给「补交轨迹」入口（用户点一次发一次）
-        patchPendingDetail({ lastError: out.detailMessage })
+        const pending: PendingDetail = {
+          scantronId,
+          taskId: paperId,
+          lineId: input.line?.pointId ?? '',
+          runType,
+          km: input.km,
+          durationSeconds: planned,
+          startMs: startedAt,
+          endMs: submittedAtFinal,
+          points: context.points,
+          at: Date.now(),
+          attempts: 0,
+          lastError: '',
+        }
+        savePendingDetail(pending)
+        pushProgress('step', pendingDetailProgressNote(pending))
         mutateRecords((rs) => setRecordDetailOk(rs, scantronId, false))
         pushProgress('error', SUBMIT_PROGRESS.detailFail(out.detailMessage))
-        logWarn('submit', '轨迹明细提交失败', { message: out.detailMessage })
+        logWarn('submit', '轨迹明细未交上（服务端作业的结论）', { message: out.detailMessage })
       }
     } else {
       out.detailOk = undefined
@@ -557,8 +517,12 @@ export function useMpRealSubmit() {
      * ⚠️ 这两种情形**必须分开处理**（第一版混在一起 ⇒ 退出登录会把 `phase` 永久钉在 `submitting`，
      *    「真实提交」与「重置」双双灰死到刷新页面为止，而已成功的成绩被静默丢弃）。
      */
-    if (phase.value !== 'submitting') {
-      // ① phase 已被外部复位（清空本机数据）⇒ 静默返回，不写回
+    if ((phase.value as string) !== 'submitting') {
+      /**
+       * ① phase 已被外部复位（清空本机数据）⇒ 静默返回，不写回。
+       * ⚠️ 这里显式按 `string` 比较：TS 会按上面那句 `phase.value = 'waiting'` 把类型窄化成字面量，
+       *    而**轮询是在闭包里改它的**（TS 看不见），窄化后的比较会被判成"永远不成立"。
+       */
       logWarn('submit', '提交期间状态被外部复位，本地状态不写回', { scantronId, phase: phase.value })
       return null
     }
@@ -582,26 +546,35 @@ export function useMpRealSubmit() {
       : // ⚠️ "结果未知"那条文案自带完整说明，**不能**再前缀"提交失败"（会自相矛盾：既说失败又说未知）
         outcome === 'timeout-unknown'
         ? out.scoreMessage
-        : looksLikeTokenExpired(score.raw)
+        : job.result?.tokenExpired
           ? TOKEN_EXPIRED_HINT
           : `提交失败：${out.scoreMessage}`
     if (scoreOk) {
-      logInfo('submit', outcome === 'timeout-landed' ? '提交超时，但已核实成绩入库（按成功处理）' : '成绩提交成功', {
+      logInfo('submit', outcome === 'timeout-landed' ? '提交超时，但已核实成绩入库（按成功处理）' : '成绩提交成功（服务端作业）', {
         scantronId,
         km: Number(input.km.toFixed(2)),
         durationSeconds: planned,
         fitDegree: input.fitDegree,
-        waitedSeconds: Math.round((submittedAt - startedAt) / 1000),
-        ...(outcome === 'timeout-landed' ? { note: '首次请求超时，已按 scantronId 在服务端归档中核实' } : {}),
+        waitedSeconds: Math.round((submittedAtFinal - startedAt) / 1000),
+        ...(outcome === 'timeout-landed' ? { note: '首次请求超时，已在服务端归档中核实' } : {}),
       })
-      // 超时核实的那条：把判定读回来填进结果（先前那次核实发生在 `result` 赋值之前，判定文本要重取一次才有）
-      if (outcome === 'timeout-landed') {
-        try {
-          await fetchVerdict(scantronId)
-        } catch {
-          /* 只读补充信息：失败不影响"提交已成功"这个结论 */
-        }
+      /**
+       * 🆕 2026-10-07：判定**由服务端作业读回**（它是编排的最后一步）⇒ 这里只把服务端判定写回本机记录。
+       * 于是记录页的「已真实提交」那一行显示的就是**服务端判定**，不再有"本地预判冒充"的歧义。
+       */
+      const verdict = job.result?.verdict ?? null
+      if (verdict) {
+        mutateRecords((rs) =>
+          applyServerVerdict(rs, scantronId, {
+            scorePassType: verdict.scorePassType as number | string | undefined,
+            scorePassRemark: typeof verdict.scorePassRemark === 'string' ? verdict.scorePassRemark : undefined,
+          }),
+        )
       }
+      /**
+       * ⚠️ 旧实现在这里会再调一次 `fetchVerdict`（超时核实那条）——现在**不需要了**：
+       * 作业在超时后已经自己核实过并读回了判定（`job.result.verdict`），重复只读请求没有意义。
+       */
     } else {
       logError('submit', outcome === 'timeout-unknown' ? '成绩提交结果未知（超时且归档暂无）' : '成绩提交失败', {
         scantronId,
@@ -631,10 +604,124 @@ export function useMpRealSubmit() {
         detailOk: out.detailOk ?? null,
         autoRetried: false,
         retryPolicy: '写操作绝不重试（只有 GET 会重试一次）',
-        waitedSeconds: Math.round((submittedAt - startedAt) / 1000),
+        waitedSeconds: Math.round((submittedAtFinal - startedAt) / 1000),
       },
     )
     return out
+  }
+
+  /**
+   * 🆕 2026-10-07（防 kill；用户要求："就是得等待几十分钟的那个需要重构"、"前端只是展示"）：
+   * **启动作业 + 轮询状态**。类型在这里**就地声明**（不从 `server/utils/runSubmitJob.ts` 导 —— 那会把
+   * 服务端模块拉进前端包）；形状以服务端返回为准，前端只读不改。
+   */
+  interface ServerSubmitJobView {
+    id: string
+    active: boolean
+    phase: 'idle' | 'waiting' | 'scoring' | 'detail' | 'verdict' | 'done' | 'error'
+    phaseMessage: string
+    progress: { at: number; kind: 'step' | 'ok' | 'warn' | 'error'; text: string }[]
+    remainingSeconds: number
+    startedAt: number
+    finishedAt: number
+    result: {
+      scoreOk: boolean
+      scoreOutcome: string
+      scoreMessage: string
+      detailOk?: boolean
+      detailMessage?: string
+      tokenExpired?: boolean
+      verdict?: Record<string, unknown> | null
+      verdictMessage?: string
+      scantronId: string
+    } | null
+  }
+
+  /** 把报文上下文交给服务端作业（本机端点，带"只允许本机"校验） */
+  const startServerSubmitJob = async (body: unknown): Promise<{ ok: boolean; message: string; id: string }> => {
+    try {
+      return await $fetch<{ ok: boolean; message: string; id: string }>('/api/local/run/submit/start', {
+        method: 'POST',
+        body: body as Record<string, unknown>,
+      })
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err), id: '' }
+    }
+  }
+
+  /**
+   * 轮询服务端作业，把**阶段 / 倒计时 / 进度清单**镜像到界面（纯展示，不推进任何一步）。
+   * ⚠️ 轮询中断（页面被冻结）不会影响作业：下次唤醒继续读同一个状态；页面被关掉后重开也能重新接上。
+   */
+  const pollServerSubmitJob = async (jobId: string): Promise<ServerSubmitJobView> => {
+    let lastMessage = ''
+    for (;;) {
+      let job: ServerSubmitJobView
+      try {
+        const res = await $fetch<{ ok: boolean; job: ServerSubmitJobView }>('/api/local/run/submit/status')
+        job = res.job
+      } catch (err) {
+        logWarn('submit', '轮询服务端作业状态失败（2 秒后重试；作业本身不受影响）', {
+          jobId,
+          message: err instanceof Error ? err.message : String(err),
+        })
+        await new Promise<void>((r) => setTimeout(r, 2000))
+        continue
+      }
+      // 镜像（进度清单以**服务端**为唯一来源：它记着 ① 建场次 ② 真实等待 ③ 成绩 ④ 轨迹 ⑤ 判定）
+      submitProgress.value = job.progress.map((l) => ({ ...l }))
+      remainingSeconds.value = job.remainingSeconds
+      /**
+       * 阶段映射：**作业在途时** waiting / submitting；**作业结束时仍停在 `submitting`** ——
+       * 最终的 `done`/`error` 由下面的写回段落统一决定（与此前同一条纪律：
+       * `submitting` 是"本函数在途"的标记，清空数据会把它复位 ⇒ 写回前复查据此发现"状态被外部复位"）。
+       */
+      phase.value = job.active && job.phase === 'waiting' ? 'waiting' : 'submitting'
+      phaseMessage.value = job.phaseMessage
+      if (job.phaseMessage && job.phaseMessage !== lastMessage) {
+        lastMessage = job.phaseMessage
+        logInfo('submit', `服务端作业：${job.phaseMessage}`, { jobId, phase: job.phase })
+      }
+      /**
+       * ⚠️ 用户在作业期间点了「退出登录 / 清空本机数据」：**作业仍在服务端继续跑**（这正是"防 kill"的另一面），
+       * 所以这里**不能**假装什么都没发生 —— 停掉展示并如实告知"成绩可能仍会入库"。
+       * （要"中途叫停"需要一个服务端 abort 端点，属下一轮；见本轮交接说明。）
+       */
+      if (!session.value?.token || !profile.value) {
+        phase.value = 'error'
+        phaseMessage.value =
+          '凭据/档案已被清除 —— 服务端作业仍在继续（成绩可能仍会入库）；请看服务端终端与「成绩记录」页确认'
+        logWarn('submit', '轮询期间凭据被清除：停止展示，但服务端作业仍在跑', { jobId, phase: job.phase })
+        return job
+      }
+      if (!job.active) return job
+      await new Promise<void>((r) => setTimeout(r, 1000))
+    }
+  }
+
+  /**
+   * 读判定用的入参（`getSunrunArch`）：学期/月份必须先读出来才能查归档 ——
+   * 与 `fetchVerdict` 同口径（同两个只读端点、同样的 `rowNumber: 1000`）。
+   * 因为要先发两个只读请求，所以这里是 `async`：在**启动作业前**算好交给服务端（作业只读一次）。
+   */
+  const buildVerdictRequest = async (token: string): Promise<Record<string, unknown>> => {
+    const options = { token, baseUrl: session.value?.baseUrl }
+    const terms = await MpApiWrapper.getTermList(options)
+    const termList = (terms.data as { id?: string; isActive?: string | number }[] | undefined) ?? []
+    const activeTerm = termList.find((t) => String(t.isActive) === '1') ?? termList[0]
+    const months = await MpApiWrapper.getSchoolMonthByTerm(options)
+    const monthList = (months.data as { monthId?: string; ifCurrent?: string | number }[] | undefined) ?? []
+    const currentMonth = monthList.find((m) => String(m.ifCurrent) === '1') ?? monthList[0]
+    return {
+      projectName: '阳光跑',
+      monthId: currentMonth?.monthId ?? '',
+      termId: activeTerm?.id ?? '',
+      paperId: '',
+      stuNumber: profile.value?.snCode ?? '',
+      snCode: profile.value?.snCode ?? '',
+      pageNumber: 1,
+      rowNumber: 1000,
+    }
   }
 
   /** 四态结局的人话标签（与 `writeOutcome` 的文案口径一致：**超时 ≠ 失败**） */
