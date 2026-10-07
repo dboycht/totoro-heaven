@@ -11,6 +11,8 @@
 import { MpApiWrapper, MP_DEFAULT_BASE_URL } from '~/src/wrappers/MpApiWrapper'
 import type { MpRunLine, MpSunrunTask } from '~/src/mp/types'
 import { groupRoutesByCampus } from '~/utils/mp/routeGroups'
+// 🆕 2026-10-07（用户要求）：服务端"今日该任务次数已达上限" ⇒ 真实提交入口标灰 + 就地说明
+import { dailyQuotaNotice, isQuotaMarkActive } from '~/utils/mp/dailyQuota'
 // 🔴 2026-09-23（pre3）：任务号走兜底链（厂商响应可能只有 paperId/id，没有 taskId）
 import { routeRequirementOf, taskPaperIdOf } from '~/utils/mp/taskShape'
 // 🆕 2026-09-23（pre3）：门禁要判"本机有没有可用几何" ⇒ 与跑步页/引擎**同一处判据**
@@ -98,6 +100,9 @@ export function useMpRealData() {
     // 🆕 2026-09-21（E）：自由跑入口标灰（"本机已知该校未开通自由跑任务"）
     freeRunUnsupported,
     clearFreeRunUnsupported,
+    // 🆕 2026-10-07：今日该任务次数已满（服务端拒绝过一次就记住；跨天自动失效）
+    dailyQuotaMark,
+    clearDailyQuotaMark,
     cacheAt,
     cachePaperName,
     cacheHasToken,
@@ -923,6 +928,21 @@ export function useMpRealData() {
   )
 
   /**
+   * 🆕 2026-10-07（用户要求）：**服务端已说"今日该任务次数已达上限"** ⇒ 真实提交入口标灰 + 就地说明。
+   * 判据：标记仍在**今天**、且属于**当前任务**（标记里没记任务号时按当前任务算，见 `isQuotaMarkActive`）。
+   * 为什么要有这一条：实测 2026-10-07 —— 当天已提交成功一笔后再点「真实提交」，
+   * 服务端在 `getRunBegin` 就回 `该任务次数今日已达上限!`，旧界面只把它显示成一句"开跑失败：…"，
+   * 用户会以为是自己操作或本程序的问题（实际是**每日次数配额**，当天再试仍会被拒）。
+   */
+  const dailyQuotaBlocked = computed(() =>
+    isQuotaMarkActive(dailyQuotaMark.value, taskPaperIdOf(task.value)),
+  )
+  /** 标灰时就地要说的话（服务端原话在里面；空串=没标灰） */
+  const dailyQuotaNoticeText = computed(() =>
+    dailyQuotaBlocked.value ? dailyQuotaNotice(dailyQuotaMark.value?.message) : '',
+  )
+
+  /**
    * 未验证学校的软提示（不阻断开跑，只提醒"判分口径未实测"；已验证学校为空串）。
    * 支持范围已改为条件式（共享域 + 无风控校验），登记表只承担这个提示职责。
    */
@@ -962,6 +982,12 @@ export function useMpRealData() {
     freeRunUnsupported,
     /** 清除该标记（"仍要试一次"） */
     clearFreeRunUnsupported,
+    /** 🆕 2026-10-07：服务端已说"今日该任务次数已达上限"（真实提交入口标灰） */
+    dailyQuotaBlocked,
+    /** 标灰时就地要说的话（含服务端原话；空串=没标灰） */
+    dailyQuotaNoticeText,
+    /** 清除该标记（"仍要试一次"） */
+    clearDailyQuotaMark,
     selectedLine,
     /** 开跑前三合一否决门禁状态（allow / reason / blockedBy） */
     gateStatus,

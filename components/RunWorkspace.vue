@@ -595,6 +595,15 @@
            先前拆成两张卡会多出一层边框与间距（已由结构对照脚本抓出并修正）。 -->
       <!-- ===== 真实提交 ===== -->
       <v-divider class="my-3" />
+      <!-- 🆕 2026-10-07（用户要求）：服务端说"今日该任务次数已达上限"时，就地（就在按钮上方）说清原因，含服务端原话。
+           起因：用户当天第二次提交被拒，旧界面只显示一句"开跑失败：该任务次数今日已达上限!"，
+           看起来像本程序的错 —— 实际是每日次数配额（当天再试仍会被拒，明天再试即可）。 -->
+      <v-alert v-if="dailyQuotaBlocked" type="warning" variant="tonal" density="compact" class="mb-2">
+        <div class="font-weight-bold">
+          <v-icon class="mr-1" size="18">mdi-calendar-remove-outline</v-icon>今日该任务的次数已用完
+        </div>
+        <div class="text-body-2 mt-1">{{ dailyQuotaNoticeText }}</div>
+      </v-alert>
       <div class="d-flex align-center flex-wrap ga-2 mb-2">
         <v-btn
           color="error"
@@ -607,6 +616,7 @@
             alreadySubmitted ||
             staleSettlement ||
             freeRunBlocked ||
+            dailyQuotaBlocked ||
             !gateStatus.allow
           "
           @click="openRealSubmit"
@@ -621,6 +631,14 @@
             已标灰：本机记录显示你所在学校未开通「自由跑任务」（服务端会拒绝真实提交）
           </span>
           <v-btn size="x-small" variant="text" @click="clearFreeRunUnsupported()">仍要试一次</v-btn>
+        </template>
+        <!-- 🆕 2026-10-07（用户要求）：服务端说"今日该任务次数已达上限"时，灰按钮旁边就地说明
+             （同审计 B3 的教训：为什么灰必须在按钮旁边说），并留「仍要试一次」的出口。 -->
+        <template v-if="dailyQuotaBlocked">
+          <span class="text-caption text-warning">
+            已标灰：服务端说今天这个任务的次数已经用完（原话「该任务次数今日已达上限!」）—— 当天再提交仍会被拒
+          </span>
+          <v-btn size="x-small" variant="text" @click="clearDailyQuotaMark()">清除标记，仍要试一次</v-btn>
         </template>
         <!-- ⚠️ 2026-09-21：`:disabled` 里带 `submitInFlight` —— 提交流程内部自己也会调一次 `fetchVerdict`
              （同样往过程清单里插 ⑥ 行），只锁"按钮连点"挡不住这种并发（审计指出） -->
@@ -976,6 +994,10 @@ const {
   /** 🆕 2026-09-21（E）：本机已知该校未开通自由跑 ⇒ 标灰真实提交入口 */
   freeRunUnsupported,
   clearFreeRunUnsupported,
+  /** 🆕 2026-10-07（用户要求）：服务端已说"今日该任务次数已达上限" ⇒ 标灰真实提交入口 + 就地说明 */
+  dailyQuotaBlocked,
+  dailyQuotaNoticeText,
+  clearDailyQuotaMark,
   applyToRunner,
   /** 🆕 2026-09-22（真实用户实测）：刷新后从本机缓存自动恢复任务（不联网、幂等） */
   autoRestoreFromCache,

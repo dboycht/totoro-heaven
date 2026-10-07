@@ -11,6 +11,8 @@
 import type { MpSunrunTask } from '~/src/mp/types'
 // 🆕 2026-09-21（E：自由跑入口标灰）：键名与"是不是未开通"的判据都在纯逻辑层（单一来源）
 import { FREE_RUN_UNSUPPORTED_KEY } from '~/utils/mp/freeRun'
+// 🆕 2026-10-07（用户要求）：服务端说"今日该任务次数已达上限"时的标记（键名/解析/跨天判定都在纯逻辑层）
+import { DAILY_QUOTA_KEY, localDateKey, parseQuotaMark, type DailyQuotaMark } from '~/utils/mp/dailyQuota'
 // 🆕 2026-09-21：提交过程清单的行类型（清单本体从 `real/submit.ts` 的局部 ref 提上来做单例）
 import type { SubmitProgressLine } from '~/utils/mp/submitProgress'
 
@@ -107,6 +109,53 @@ export function useRealState() {
     }
   }
 
+  /**
+   * 🆕 2026-10-07（用户要求）：**服务端说"今日该任务次数已达上限"** 的标记。
+   *
+   * 实测：同一任务当天已真实提交成功过一笔后，再提交会被 `getRunBegin` 拒绝
+   * （原话 `该任务次数今日已达上限!`）—— 这是**服务端按"任务 + 当天"的配额**，当天再试仍会被拒。
+   * 所以照「自由跑未开通」那套：**记住今天**，下次开跑前把入口标灰并说明原因，同时留「仍要试一次」出口。
+   *
+   * ⚠️ 与 `freeRunUnsupported` 的一处**有意不同**：这里**不在"退出登录/清空本机数据"时清除** ——
+   *    它表达的是"服务端今天的配额用完了"，既不是凭据也不是用户数据，而且跨天会**自动失效**
+   *    （判定走 `isQuotaMarkActive` 的日期比较，不依赖任何清理动作）。
+   */
+  const dailyQuotaMark = useState<DailyQuotaMark | null>('mpDailyQuotaMark', () => {
+    if (import.meta.client) {
+      try {
+        return parseQuotaMark(localStorage.getItem(DAILY_QUOTA_KEY))
+      } catch {
+        /* ignore */
+      }
+    }
+    return null
+  })
+  const markDailyQuotaReached = (message: string, paperId: string) => {
+    const mark: DailyQuotaMark = {
+      date: localDateKey(),
+      paperId: String(paperId ?? ''),
+      message: String(message ?? ''),
+    }
+    dailyQuotaMark.value = mark
+    if (import.meta.client) {
+      try {
+        localStorage.setItem(DAILY_QUOTA_KEY, JSON.stringify(mark))
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  const clearDailyQuotaMark = () => {
+    dailyQuotaMark.value = null
+    if (import.meta.client) {
+      try {
+        localStorage.removeItem(DAILY_QUOTA_KEY)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   // 「上次读取的会话」缓存的界面状态（**刷新后不再自动回填**；只作为可选的显式恢复入口）
   const cacheAt = useState('mpRealCacheAt', () => 0)
   const cachePaperName = useState('mpRealCachePaper', () => '')
@@ -164,6 +213,10 @@ export function useRealState() {
     freeRunUnsupported,
     markFreeRunUnsupported,
     clearFreeRunUnsupported,
+    // 🆕 2026-10-07：今日该任务次数已满（服务端 getRunBegin 拒绝过一次就记住；跨天自动失效，可清除）
+    dailyQuotaMark,
+    markDailyQuotaReached,
+    clearDailyQuotaMark,
     cacheAt,
     cachePaperName,
     cacheHasToken,

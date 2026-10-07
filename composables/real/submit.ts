@@ -42,11 +42,13 @@ import {
 } from '~/utils/mp/submitProgress'
 // 🆕 2026-09-21（E 自由跑入口标灰）："是不是未开通自由跑"的判据在纯逻辑层（单一来源）
 import { isFreeRunUnsupportedMessage } from '~/utils/mp/freeRun'
+// 🆕 2026-10-07（用户要求）：服务端"今日该任务次数已达上限"的判据与人话文案（纯逻辑层，单一来源）
+import { dailyQuotaNotice, dailyQuotaProgressNote, isDailyQuotaReachedMessage } from '~/utils/mp/dailyQuota'
 import { useRealState, type RealSubmitResult } from './state'
 
 export function useMpRealSubmit() {
   const { session } = useMpSession()
-  const { profile, task, switches, cameraFlag, cameraFlagLineId, phase, phaseMessage, remainingSeconds, result, submitProgress, markFreeRunUnsupported } =
+  const { profile, task, switches, cameraFlag, cameraFlagLineId, phase, phaseMessage, remainingSeconds, result, submitProgress, markFreeRunUnsupported, markDailyQuotaReached } =
     useRealState()
   // 🆕 2026-09-23（pre3）：门禁的 `localGeometryReady` 与跑步页/引擎读同一份本机路线库状态
   const lib = useTrackLibrary()
@@ -274,25 +276,38 @@ export function useMpRealSubmit() {
       const noFreeRunTask = freeRun && isFreeRunUnsupportedMessage(begin.message)
       // 🆕 2026-09-21（E）：记住"该校未开通自由跑"，下次开跑前就把真实提交入口标灰（可手动清除再试）
       if (noFreeRunTask) markFreeRunUnsupported()
+      /**
+       * 🆕 2026-10-07（用户要求）：**"今日该任务次数已达上限"要单独翻译 + 记住今天**。
+       * 实测（用户当天第二次提交）：厂商在 `getRunBegin` 就回 `status:"01" code:"1" msg:"该任务次数今日已达上限!"`。
+       * 这是**服务端按"任务 + 当天"的配额**（不是本机操作错、不是报文格式问题、也没有参数可补），
+       * 而旧界面只会把它显示成一句 `开跑失败：…` ⇒ 用户以为是自己或程序出了问题。
+       */
+      const quotaReached = !freeRun && isDailyQuotaReachedMessage(begin.message)
+      // 只有"有任务号"时才记标记：没有任务号就记的话，会把"别的任务"也一起标灰（宁可少挡，不可乱挡）
+      if (quotaReached && paperId) markDailyQuotaReached(begin.message, paperId)
       // 若失败原因是 token 过期 → 给"退出登录并重新登录小程序"的可操作提示
       phaseMessage.value = looksLikeTokenExpired(begin.raw)
         ? TOKEN_EXPIRED_HINT
-        : noFreeRunTask
-          ? `你所在学校/账号暂无「自由跑任务」——厂商服务端拒绝开跑（原话：${begin.message}）。` +
-            `自由跑目前只能用于本地模拟与预览，真实提交需要学校开通；阳光跑不受影响。`
-          : `开跑失败：${begin.message}`
+        : quotaReached
+          ? dailyQuotaNotice(begin.message)
+          : noFreeRunTask
+            ? `你所在学校/账号暂无「自由跑任务」——厂商服务端拒绝开跑（原话：${begin.message}）。` +
+              `自由跑目前只能用于本地模拟与预览，真实提交需要学校开通；阳光跑不受影响。`
+            : `开跑失败：${begin.message}`
       if (noFreeRunTask) {
         pushProgress(
           'warn',
           '② 说明：服务端未给该校/该账号开通「自由跑任务」⇒ 自由跑无法真实提交（与报文格式、本机操作无关）；阳光跑可正常提交',
         )
       }
+      if (quotaReached) pushProgress('warn', dailyQuotaProgressNote(begin.message))
       logError('submit', '开跑失败（getRunBegin）', {
         message: begin.message,
         // 日志里如实区分三种情形（自由跑 / 本任务未下发线路 / 有线路）
         lineId: input.line?.pointId ?? (freeRun ? '(自由跑)' : '(本任务未下发线路)'),
         paperId,
         ...(noFreeRunTask ? { note: '服务端未开通自由跑任务（2026-09-21 实测）' } : {}),
+        ...(quotaReached ? { note: '服务端说今日该任务次数已达上限（每日配额，非本机问题；2026-10-07 实测）' } : {}),
       })
       return null
     }

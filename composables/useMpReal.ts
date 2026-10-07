@@ -53,6 +53,10 @@ export function useMpReal() {
     // 🆕 2026-09-21（E）：自由跑入口标灰（服务端拒绝过一次就记住）
     freeRunUnsupported,
     clearFreeRunUnsupported,
+    // 🆕 2026-10-07：今日该任务次数已满（服务端拒绝过一次就记住；跨天自动失效）
+    dailyQuotaBlocked,
+    dailyQuotaNoticeText,
+    clearDailyQuotaMark,
     selectedLine,
     gateStatus,
     schoolNotice,
@@ -95,6 +99,12 @@ export function useMpReal() {
     freeRunUnsupported,
     /** 清除上面那个标记（"仍要试一次"） */
     clearFreeRunUnsupported,
+    /** 🆕 2026-10-07：服务端已说"今日该任务次数已达上限"（标灰真实提交入口） */
+    dailyQuotaBlocked,
+    /** 标灰时就地要说的话（含服务端原话；空串=没标灰） */
+    dailyQuotaNoticeText,
+    /** 清除上面那个标记（"仍要试一次"） */
+    clearDailyQuotaMark,
     selectedLine,
     /** 开跑前三合一否决门禁状态（allow / reason / blockedBy） */
     gateStatus,
