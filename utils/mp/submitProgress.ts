@@ -75,4 +75,17 @@ export const SUBMIT_PROGRESS = {
   verdict: () => '⑥ 读回判定（getSunrunArch，只读）…',
   verdictOk: (text: string) => `⑥ 判定已读回：${text}`,
   verdictNone: () => '⑥ 归档里暂时还没找到这条（服务端可能仍在处理，稍后再点「查询判定」）',
+
+  /** 🆕 2026-10-08 进程级续跑：重启后发现上次没跑完的作业（**等用户点「继续提交」才发**） */
+  suspended: (scantronId: string, km: number, targetText: string) =>
+    `发现上次没跑完的提交：场次 ${scantronId} · ${km.toFixed(2)} km · 原定 ${targetText} 提交` +
+    '（等你点「继续提交」才发；只在你点的时候发一次，不自动重试）',
+  resumed: (reason: string) => `继续上次的提交：${reason}`,
+  /** 用户主动中途叫停（**还没发出任何写请求**） */
+  aborting: () => '正在停止本次提交（它还没发出任何写请求）…',
+  aborted: (scantronId: string) =>
+    `已停止本次提交：场次 ${scantronId} 已作废（没有发送成绩，也不会再发；如需重跑请重新开始一次跑步）`,
+  abortRefused: (phase: string) => `现在不能叫停（当前阶段：${phase}）：写请求可能已经在路上，中途打断反而会留下半成品`,
+  /** 恢复得太晚 ⇒ 作废（**不提交**） */
+  discarded: (reason: string) => `上次那笔提交已作废（不发送）：${reason}`,
 } as const

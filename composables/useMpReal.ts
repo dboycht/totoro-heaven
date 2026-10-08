@@ -82,7 +82,7 @@ export function useMpReal() {
     retryCameraFlag,
   } = useMpRealData()
 
-  const { phase, phaseMessage, remainingSeconds, result, progress, submitRealRun, fetchVerdict, stopWait, resendPendingDetail, resendDetail } =
+  const { phase, phaseMessage, remainingSeconds, result, progress, submitRealRun, fetchVerdict, stopWait, resendPendingDetail, resendDetail, suspendedJob, refreshSubmitJobStatus, abortServerSubmitJob, resumeServerSubmitJob, discardSuspendedSubmitJob } =
     useMpRealSubmit()
 
   return {
@@ -116,6 +116,17 @@ export function useMpReal() {
     resendPendingDetail,
     /** 🆕 2026-10-07：用当前结算这一笔的轨迹重发明细（逐点与当时一致；页面没被杀时最精确） */
     resendDetail,
+    // 🆕 2026-10-08（用户要求，防 kill 的第二个边界）：跨进程续跑 + 中途叫停
+    /** 上次没跑完的作业摘要（`null` = 没有）；界面据此渲染「继续提交 / 作废」卡片 */
+    suspendedJob,
+    /** 只查一次服务端作业状态（页面打开时用来发现"上次没跑完的提交"） */
+    refreshSubmitJobStatus,
+    /** **中途叫停**本次提交（只在"还没发出任何写请求"的阶段有效） */
+    abortServerSubmitJob,
+    /** **继续**上次没跑完的提交（用户点一次发一次） */
+    resumeServerSubmitJob,
+    /** **放弃**上次没跑完的那笔 */
+    discardSuspendedSubmitJob,
     selectedLine,
     /** 开跑前三合一否决门禁状态（allow / reason / blockedBy） */
     gateStatus,

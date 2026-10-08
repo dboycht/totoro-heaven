@@ -48,11 +48,14 @@ import { dailyQuotaNotice, dailyQuotaProgressNote, isDailyQuotaReachedMessage } 
 import { pendingDetailProgressNote, type PendingDetail } from '~/utils/mp/pendingDetail'
 // 🆕 2026-10-07（用户要求）：本机记录三态 —— 真实提交后**认领**那一条并写回真实场次号/服务端判定
 import { applyServerVerdict, claimRecordForRealSubmit, setRecordDetailOk } from '~/utils/mp/recordState'
+// 🆕 2026-10-08（用户要求，防 kill 的第二个边界）：跨进程续跑 —— 挂起作业摘要的**共享形状**
+//   （定义在算法层：装配层不许直接 import `server/`，见守卫 R6 与 `utils/mp/runResume.ts` 的说明）
+import type { SuspendedJobSummary } from '~/utils/mp/runResume'
 import { useRealState, type RealSubmitResult } from './state'
 
 export function useMpRealSubmit() {
   const { session } = useMpSession()
-  const { profile, task, switches, cameraFlag, cameraFlagLineId, phase, phaseMessage, remainingSeconds, result, submitProgress, markFreeRunUnsupported, markDailyQuotaReached, pendingDetail, savePendingDetail, clearPendingDetail, patchPendingDetail } =
+  const { profile, task, switches, cameraFlag, cameraFlagLineId, phase, phaseMessage, remainingSeconds, result, submitProgress, markFreeRunUnsupported, markDailyQuotaReached, pendingDetail, savePendingDetail, clearPendingDetail, patchPendingDetail, pendingResume, savePendingResume, clearPendingResume, suspendedJob } =
     useRealState()
   /**
    * 🆕 2026-10-07：改写**本机记录**（认领"已真实提交"、写回场次号与判定）。
@@ -420,6 +423,20 @@ export function useMpRealSubmit() {
       return null
     }
     logInfo('submit', '已启动服务端提交作业（等待与两次写都在服务端）', { jobId: started.id, scantronId, planned })
+    /**
+     * 🆕 2026-10-08（进程级续跑，用户要求）：作业已受理 ⇒ 记下**浏览器侧**要补交的那三样，
+     * "关掉 EXE 重启也能接着跑"从这一刻起才成立。
+     * 🔒 只记 `jobId / scantronId / startedAt / snCode / 轨迹点`：**token 不进这里**（现从会话取）——
+     * 落盘边界见 `utils/mp/runResume.ts`（用户 2026-10-08 拍板：token 与轨迹点都不进**服务端**磁盘）。
+     */
+    savePendingResume({
+      jobId: started.id,
+      scantronId,
+      startedAt,
+      snCode: context.snCode,
+      points: toSubmitPoints(input.points),
+      at: Date.now(),
+    })
     const job = await pollServerSubmitJob(started.id)
     const outcome = (job.result?.scoreOutcome ?? 'failed') as WriteOutcome
     const scoreOk = Boolean(job.result?.scoreOk)
@@ -458,6 +475,15 @@ export function useMpRealSubmit() {
         sunrunPathPointList: `（${input.line?.pointList?.length ?? 0} 点）`,
       },
     }
+
+    /**
+     * 🆕 2026-10-08（进程级续跑）：作业已经**有结论**（跑到 done/error 了）⇒
+     * 浏览器侧那份"待续跑载荷"使命结束，清掉（不清的话下次启动会提示一笔早就跑完的作业）。
+     * ⚠️ `phase === 'suspended'` 的情形在上面的轮询里就 return 了，走不到这里；
+     *    那种情况**必须保留**载荷（那是"还能不能续跑"的唯一依据）。
+     */
+    if (job.phase !== 'suspended') clearPendingResume()
+    suspendedJob.value = null
 
     /**
      * ④ 轨迹明细的**结果**（由服务端作业发出并记账）。
@@ -618,12 +644,14 @@ export function useMpRealSubmit() {
   interface ServerSubmitJobView {
     id: string
     active: boolean
-    phase: 'idle' | 'waiting' | 'scoring' | 'detail' | 'verdict' | 'done' | 'error'
+    phase: 'idle' | 'waiting' | 'scoring' | 'detail' | 'verdict' | 'done' | 'error' | 'suspended' | 'aborted' | 'discarded'
     phaseMessage: string
     progress: { at: number; kind: 'step' | 'ok' | 'warn' | 'error'; text: string }[]
     remainingSeconds: number
     startedAt: number
     finishedAt: number
+    /** 🆕 2026-10-08：`phase === 'suspended'` 时的非敏感摘要（渲染「继续提交」卡片用） */
+    suspended?: SuspendedJobSummary | null
     result: {
       scoreOk: boolean
       scoreOutcome: string
@@ -685,18 +713,144 @@ export function useMpRealSubmit() {
       /**
        * ⚠️ 用户在作业期间点了「退出登录 / 清空本机数据」：**作业仍在服务端继续跑**（这正是"防 kill"的另一面），
        * 所以这里**不能**假装什么都没发生 —— 停掉展示并如实告知"成绩可能仍会入库"。
-       * （要"中途叫停"需要一个服务端 abort 端点，属下一轮；见本轮交接说明。）
+       * ✅ 2026-10-08：现在有**中途叫停**了（`abortServerSubmitJob` → `POST /api/local/run/submit/abort`），
+       * 界面会在这种情形下引导用户去叫停（只在"还没发出写请求"的阶段有效，见该函数说明）。
        */
       if (!session.value?.token || !profile.value) {
         phase.value = 'error'
         phaseMessage.value =
-          '凭据/档案已被清除 —— 服务端作业仍在继续（成绩可能仍会入库）；请看服务端终端与「成绩记录」页确认'
+          '凭据/档案已被清除 —— 服务端作业仍在继续（成绩可能仍会入库）；可用「停止本次提交」叫停它，' +
+          '或看服务端终端与「成绩记录」页确认'
         logWarn('submit', '轮询期间凭据被清除：停止展示，但服务端作业仍在跑', { jobId, phase: job.phase })
+        return job
+      }
+      /**
+       * 🆕 2026-10-08（进程级续跑）：`suspended` = 服务端发现**上次没跑完的作业**（等用户点「继续提交」）。
+       * 这时**不要继续轮询**（它不会自己动），也别把它当成"正在提交" ⇒ 把摘要交给界面渲染卡片后立刻返回。
+       */
+      suspendedJob.value = job.suspended ?? null
+      if (job.phase === 'suspended') {
+        phase.value = 'idle'
         return job
       }
       if (!job.active) return job
       await new Promise<void>((r) => setTimeout(r, 1000))
     }
+  }
+
+  /**
+   * 🆕 2026-10-08（用户要求）：**只查一次**服务端作业状态，用来在页面刚打开时发现
+   * "上次没跑完的提交"（服务端会在启动后从磁盘把它读回来、进入 `suspended`）。
+   *
+   * 为什么不复用 `pollServerSubmitJob`：那个是"盯着一次提交跑完"的循环，会一直轮询；
+   * 这里只需要**一次快照**，而且**绝不能**因为一次网络抖动就把界面卡住。
+   */
+  const refreshSubmitJobStatus = async (): Promise<SuspendedJobSummary | null> => {
+    try {
+      const res = await $fetch<{ ok: boolean; job: ServerSubmitJobView }>('/api/local/run/submit/status')
+      suspendedJob.value = res.job?.suspended ?? null
+      return suspendedJob.value
+    } catch (err) {
+      /**
+       * 读不到就**保持原样**（不清空）：这只是一次展示用快照，
+       * 服务端磁盘上的作业不会因为它失败而变化；下次进页面还会再查。
+       */
+      logWarn('submit', '查询服务端提交作业状态失败（不影响磁盘上那笔作业）', {
+        message: err instanceof Error ? err.message : String(err),
+      })
+      return suspendedJob.value
+    }
+  }
+
+  /**
+   * 🆕 2026-10-08（用户要求，防 kill 的第二个边界）：**中途叫停**当前提交。
+   *
+   * ⚠️ 只在"**还没发出任何写请求**"的阶段有效（服务端 `abortRunSubmitJob` 的口径）；
+   * 已进入提交阶段时服务端会**明确拒绝**并说明原因（那时打断只会留下半成品，见 E71）。
+   * 叫停成功后清掉浏览器侧那份续跑载荷（不然下次启动还会提示一笔已经作废的作业）。
+   */
+  const abortServerSubmitJob = async (): Promise<{ ok: boolean; message: string }> => {
+    try {
+      const res = await $fetch<{ ok: boolean; message: string; phase: string }>(
+        '/api/local/run/submit/abort',
+        { method: 'POST', body: {} },
+      )
+      if (res.ok) {
+        clearPendingResume()
+        suspendedJob.value = null
+        phase.value = 'idle'
+        pushProgress('warn', res.message)
+        logInfo('submit', '已按用户要求叫停提交作业', { phase: res.phase })
+      } else {
+        pushProgress('warn', res.message)
+        logWarn('submit', '叫停提交作业被拒', { message: res.message, phase: res.phase })
+      }
+      return { ok: res.ok, message: res.message }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      pushProgress('error', `叫停失败：${message}`)
+      logWarn('submit', '叫停提交作业的请求失败', { message })
+      return { ok: false, message }
+    }
+  }
+
+  /**
+   * 🆕 2026-10-08（用户要求）：**继续上次没跑完的提交**（进程级续跑）。
+   *
+   * 由用户点一次发起一次；服务端按 `decideResume()` 判"接着等 / 立即提交 / 作废"。
+   * 这里负责把那三样**只有浏览器才有**的东西补交上去（**token 现从会话取**，不在载荷里）：
+   *   · `token`：会话里的当前 token（用户可能已经重新取过 token，所以**用现在的**）；
+   *   · `snCode`：档案里的学号（落盘时按隐私口径剥掉了）；
+   *   · `points`：那次跑步的轨迹点（在 `pendingResume` 里，浏览器 localStorage）。
+   */
+  const resumeServerSubmitJob = async (): Promise<{ ok: boolean; message: string; action?: string }> => {
+    const token = session.value?.token
+    if (!token) return { ok: false, message: '没有可用会话：请先在「工作台」取 token，再点「继续提交」' }
+    const payload = pendingResume.value
+    if (!payload) {
+      return {
+        ok: false,
+        message: '找不到那次跑步的轨迹点（浏览器本机数据可能被清过）⇒ 无法继续这笔提交；可以点「作废」放弃它',
+      }
+    }
+    try {
+      const snCode = profile.value?.snCode || payload.snCode || ''
+      const res = await $fetch<{ ok: boolean; message: string; action: 'wait' | 'submit' | 'discard' | '' }>(
+        '/api/local/run/submit/resume',
+        { method: 'POST', body: { token, snCode, points: payload.points } },
+      )
+      pushProgress(res.ok ? 'ok' : 'warn', res.message)
+      logInfo('submit', `续跑请求结果：${res.message}`, { action: res.action, points: payload.points.length })
+      if (res.ok && res.action === 'discard') {
+        // 作废：载荷没用了，清掉（服务端也已删掉落盘作业）
+        clearPendingResume()
+        suspendedJob.value = null
+        phase.value = 'idle'
+        return { ok: true, message: res.message, action: res.action }
+      }
+      if (!res.ok) return { ok: false, message: res.message }
+      /** 受理了 ⇒ 接着轮询（与首次提交同一条展示路径） */
+      suspendedJob.value = null
+      phase.value = 'waiting'
+      const job = await pollServerSubmitJob(payload.jobId)
+      if (job.phase !== 'suspended') clearPendingResume()
+      return { ok: true, message: res.message, action: res.action }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      pushProgress('error', `继续提交失败：${message}`)
+      logWarn('submit', '续跑请求失败', { message })
+      return { ok: false, message }
+    }
+  }
+
+  /**
+   * 🆕 2026-10-08：**放弃**上次没跑完的那笔（= 走叫停那条路，但不需要它在途）。
+   * 服务端 `abortRunSubmitJob` 对 `suspended` 阶段是允许的（那时确实一个写请求都没发）。
+   */
+  const discardSuspendedSubmitJob = async (): Promise<{ ok: boolean; message: string }> => {
+    const out = await abortServerSubmitJob()
+    if (out.ok) clearPendingResume()
+    return out
   }
 
   /**
@@ -895,6 +1049,17 @@ export function useMpRealSubmit() {
     resendPendingDetail,
     /** 🆕 2026-10-07：用**当前结算这一笔**（内存里那份轨迹）重发明细 —— 逐点与当时一致 */
     resendDetail,
+    // 🆕 2026-10-08（用户要求，防 kill 的第二个边界）：跨进程续跑 + 中途叫停
+    /** 上次没跑完的作业摘要（`null` = 没有）；界面据此渲染「继续提交 / 作废」卡片 */
+    suspendedJob,
+    /** 只查一次服务端作业状态（页面打开时用来发现"上次没跑完的提交"） */
+    refreshSubmitJobStatus,
+    /** **中途叫停**（只在"还没发出任何写请求"的阶段有效；进入提交阶段会被服务端拒绝） */
+    abortServerSubmitJob,
+    /** **继续**上次没跑完的提交（用户点一次发一次；由服务端判"接着等 / 立即提交 / 作废"） */
+    resumeServerSubmitJob,
+    /** **放弃**上次没跑完的那笔（等价于对挂起作业叫停） */
+    discardSuspendedSubmitJob,
   }
 }
 

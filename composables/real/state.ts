@@ -15,6 +15,16 @@ import { FREE_RUN_UNSUPPORTED_KEY } from '~/utils/mp/freeRun'
 import { DAILY_QUOTA_KEY, localDateKey, parseQuotaMark, type DailyQuotaMark } from '~/utils/mp/dailyQuota'
 // 🆕 2026-10-07（实测事故）：待补交的轨迹明细（键名/解析/文案都在纯逻辑层）
 import { PENDING_DETAIL_KEY, parsePendingDetail, serializePendingDetail, type PendingDetail } from '~/utils/mp/pendingDetail'
+// 🆕 2026-10-08（用户要求，防 kill 的第二个边界）：跨进程续跑 ——
+//   · `pendingResume`：**浏览器侧**要补交的那三样（轨迹点/学号/作业 id；**token 不在这里**，现从会话取）
+//   · `suspendedJob`：服务端"上次没跑完的作业"的**非敏感摘要**（界面据此渲染「继续提交」卡片）
+import {
+  PENDING_SUBMIT_RESUME_KEY,
+  parsePendingResume,
+  serializePendingResume,
+  type PendingResumePayload,
+  type SuspendedJobSummary,
+} from '~/utils/mp/runResume'
 // 🆕 2026-09-21：提交过程清单的行类型（清单本体从 `real/submit.ts` 的局部 ref 提上来做单例）
 import type { SubmitProgressLine } from '~/utils/mp/submitProgress'
 
@@ -214,6 +224,51 @@ export function useRealState() {
     })
   }
 
+  /**
+   * 🆕 2026-10-08（用户要求）：**跨进程续跑**用到的两份状态。
+   *
+   * ## `pendingResume`（浏览器侧，落 `localStorage`）
+   * 用户拍板的落盘边界是"**轨迹点不落服务端磁盘**"（沿用「补交轨迹」那套口径）⇒
+   * 那三样里只有浏览器有 `points`，恢复时由浏览器回传。
+   *   · 作业**启动成功那一刻**写入；作业跑完 / 叫停 / 作废时清除；
+   *   · 🔒 **不含 token**（它在 `mp_session` 里，现取现用 —— 少一份副本少一个泄漏面）。
+   *
+   * ## `suspendedJob`（服务端摘要，**不落 localStorage**）
+   * 每次读 `GET /api/local/run/submit/status` 时由服务端给（那是"磁盘上到底有没有一笔没跑完"的**唯一真值**）；
+   * 界面据此渲染「继续提交 / 作废」卡片。**刷新后由一次状态查询重新填上**，不自己存一份（避免与磁盘不一致）。
+   */
+  const pendingResume = useState<PendingResumePayload | null>('mpPendingResume', () => {
+    if (import.meta.client) {
+      try {
+        return parsePendingResume(localStorage.getItem(PENDING_SUBMIT_RESUME_KEY))
+      } catch {
+        /* ignore */
+      }
+    }
+    return null
+  })
+  const savePendingResume = (p: PendingResumePayload) => {
+    pendingResume.value = p
+    if (import.meta.client) {
+      try {
+        localStorage.setItem(PENDING_SUBMIT_RESUME_KEY, serializePendingResume(p))
+      } catch {
+        /* ignore：写不进去只失去"重启后可续跑"这一层保护，不影响本次提交 */
+      }
+    }
+  }
+  const clearPendingResume = () => {
+    pendingResume.value = null
+    if (import.meta.client) {
+      try {
+        localStorage.removeItem(PENDING_SUBMIT_RESUME_KEY)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  const suspendedJob = useState<SuspendedJobSummary | null>('mpSuspendedJob', () => null)
+
   // 「上次读取的会话」缓存的界面状态（**刷新后不再自动回填**；只作为可选的显式恢复入口）
   const cacheAt = useState('mpRealCacheAt', () => 0)
   const cachePaperName = useState('mpRealCachePaper', () => '')
@@ -280,6 +335,11 @@ export function useRealState() {
     savePendingDetail,
     clearPendingDetail,
     patchPendingDetail,
+    // 🆕 2026-10-08（用户要求，防 kill 的第二个边界）：跨进程续跑
+    pendingResume,
+    savePendingResume,
+    clearPendingResume,
+    suspendedJob,
     cacheAt,
     cachePaperName,
     cacheHasToken,

@@ -68,6 +68,48 @@
     </v-alert>
 
     <!--
+      🆕 2026-10-08（用户要求，"防 kill"的第二个边界）：上次有一笔提交没跑完。
+      背景：防 kill 重构把"真实等待 + 两次写"搬到了服务端（浏览器关掉不影响），
+      但关掉整个 EXE 进程作业照样会死 —— 那笔就白等了。现在在途作业会以非敏感元数据落盘，
+      重启后由服务端读回来、进入 suspended，由用户点「继续这笔提交」才发（绝不自动发写请求）。
+      🔒 落盘不含 token / 轨迹点 / 学号；那三样由浏览器在恢复时补交（见 utils/mp/runResume.ts）。
+      ⚠️ 恢复得太晚会作废而不是硬发（判据在服务端 decideResume()：超出任务允许的时长区间就不提交）。
+    -->
+    <v-alert v-if="suspendedJob" type="info" variant="tonal" density="comfortable" class="mb-3">
+      <div class="font-weight-bold">
+        <v-icon class="mr-1" size="18">mdi-progress-clock</v-icon>上次有一笔提交没跑完（被关掉了）
+      </div>
+      <div class="text-body-2 mt-1">{{ suspendedJob.summary }}</div>
+      <div class="d-flex flex-wrap ga-2 mt-2 align-center">
+        <v-btn
+          size="small"
+          color="primary"
+          variant="flat"
+          prepend-icon="mdi-play-circle-outline"
+          :loading="resumeLoading"
+          :disabled="resumeLoading || abortLoading || submitInFlight"
+          @click="onResumeSubmit"
+        >
+          继续这笔提交
+        </v-btn>
+        <v-btn
+          size="small"
+          color="grey-darken-2"
+          variant="text"
+          prepend-icon="mdi-cancel"
+          :loading="abortLoading"
+          :disabled="resumeLoading || abortLoading || submitInFlight"
+          @click="onDiscardSubmit"
+        >
+          作废这笔
+        </v-btn>
+        <span class="text-caption align-self-center">
+          只在你点的时候发一次（不自动重试）；点「作废」则不会向服务端发送任何成绩
+        </span>
+      </div>
+    </v-alert>
+
+    <!--
       🆕 2026-10-07（实测事故；用户问"能不能补发"）：有一笔成绩的轨迹没交上。
       现场：sunRunExercises 提交成功（耗时 13.8 s），紧随其后的 sunRunExercisesDetail
       一个请求都没发 —— 切标签页后 Edge 冻结/丢弃了页面，成绩响应刚回来、还没走到"发明细"，
@@ -471,6 +513,26 @@
               <div v-if="submitInFlight" class="text-caption text-warning">
                 ⚠️ 真实提交正在进行（{{ phaseMessage }}）——<b>请勿关闭程序或离开本页</b>，等待结束会自动提交。
               </div>
+              <!--
+                🆕 2026-10-08（用户要求）：中途叫停。
+                此前只能靠「清空本机数据」，而那只停界面展示、作业仍在服务端跑（会照样提交）。
+                ⚠️ 服务端只在"还没发出任何写请求"的阶段允许叫停（waiting / suspended）；
+                一旦进入提交阶段会明确拒绝并说明原因 —— 那时打断只会留下"成绩在、轨迹没发"的半成品（E71）。
+              -->
+              <v-btn
+                v-if="submitInFlight"
+                size="small"
+                color="warning"
+                variant="tonal"
+                block
+                class="mt-2"
+                prepend-icon="mdi-stop-circle-outline"
+                :loading="abortLoading"
+                :disabled="abortLoading"
+                @click="onAbortSubmit"
+              >
+                停止本次提交（还没发出成绩时有效）
+              </v-btn>
             </div>
 
             <v-alert v-if="run.error" type="error" variant="tonal" density="compact" class="mt-3">{{ run.error }}</v-alert>
@@ -1051,6 +1113,17 @@ const {
   resendPendingDetail,
   /** 🆕 2026-10-07：用**当前结算这一笔**（内存里那份轨迹）重发明细 —— 逐点与当时一致 */
   resendDetail,
+  // 🆕 2026-10-08（用户要求，"防 kill"的第二个边界）：跨进程续跑 + 中途叫停
+  /** 上次没跑完的作业摘要（`null` = 没有）；据此渲染「继续提交 / 作废」卡片 */
+  suspendedJob,
+  /** 只查一次服务端作业状态（本页挂载时用来发现"上次没跑完的提交"） */
+  refreshSubmitJobStatus,
+  /** **中途叫停**本次提交（只在"还没发出任何写请求"的阶段有效） */
+  abortServerSubmitJob,
+  /** **继续**上次没跑完的提交（用户点一次发一次） */
+  resumeServerSubmitJob,
+  /** **放弃**上次没跑完的那笔 */
+  discardSuspendedSubmitJob,
   applyToRunner,
   /** 🆕 2026-09-22（真实用户实测）：刷新后从本机缓存自动恢复任务（不联网、幂等） */
   autoRestoreFromCache,
@@ -1727,6 +1800,13 @@ const clearYtuLaps = () => {
 onMounted(() => {
   autoRestoreFromCache()
   applyToRunner()
+  /**
+   * 🆕 2026-10-08（用户要求）：进页面时**查一次服务端作业状态** ——
+   * 若上次关掉 EXE 时有笔没跑完的提交，服务端已从磁盘把它读回来（`suspended`），
+   * 这里把摘要填上，界面才会出现「继续提交 / 作废」那张卡。
+   * ⚠️ 只是一次只读快照，**不会发出任何写请求**（发不发由用户点决定）。
+   */
+  void refreshSubmitJobStatus()
 })
 
 /**
@@ -1882,6 +1962,68 @@ async function onFetchVerdict(id?: string) {
  * 与查询判定同一条纪律：**进行中禁用并转圈**（点一次发一次，连点会重复发写请求）。
  */
 const resendLoading = ref(false)
+
+/**
+ * 🆕 2026-10-08（用户要求）：**续跑 / 叫停**两个动作的在途标记（同一套纪律：进行中禁用并转圈）。
+ */
+const resumeLoading = ref(false)
+const abortLoading = ref(false)
+
+/**
+ * 继续上次没跑完的提交（用户点一次发一次）。
+ * 报备时长 / 是否还能提交由**服务端**判（`decideResume()`：接着等 / 立即提交 / 作废）。
+ */
+async function onResumeSubmit() {
+  if (resumeLoading.value || abortLoading.value || submitInFlight.value) return
+  resumeLoading.value = true
+  try {
+    const out = await resumeServerSubmitJob()
+    if (out.ok) showSnackbar(`已继续上次的提交：${out.message}`, 'success')
+    else showSnackbar(`无法继续上次的提交：${out.message}`, 'error')
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    logError('submit', '继续提交抛出未捕获异常（已兜住）', { message })
+    showSnackbar(`继续提交异常：${message}`, 'error')
+  } finally {
+    resumeLoading.value = false
+  }
+}
+
+/** 放弃上次没跑完的那笔（= 对挂起作业叫停；服务端不会发送任何成绩） */
+async function onDiscardSubmit() {
+  if (resumeLoading.value || abortLoading.value || submitInFlight.value) return
+  abortLoading.value = true
+  try {
+    const out = await discardSuspendedSubmitJob()
+    showSnackbar(out.message, out.ok ? 'info' : 'error')
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    logError('submit', '作废挂起作业抛出未捕获异常（已兜住）', { message })
+    showSnackbar(`作废失败：${message}`, 'error')
+  } finally {
+    abortLoading.value = false
+  }
+}
+
+/**
+ * 🆕 2026-10-08（用户要求）：**中途叫停**正在跑的提交。
+ * ⚠️ 服务端**只在"还没发出任何写请求"的阶段**允许（`waiting` / `suspended`）；
+ * 进入提交阶段会被拒绝并给出原因 —— 那时打断只会留下半成品（E71），所以宁可让它跑完。
+ */
+async function onAbortSubmit() {
+  if (abortLoading.value) return
+  abortLoading.value = true
+  try {
+    const out = await abortServerSubmitJob()
+    showSnackbar(out.message, out.ok ? 'warning' : 'error')
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    logError('submit', '叫停提交抛出未捕获异常（已兜住）', { message })
+    showSnackbar(`叫停失败：${message}`, 'error')
+  } finally {
+    abortLoading.value = false
+  }
+}
 
 /**
  * 补交那一笔没发出去的轨迹明细。

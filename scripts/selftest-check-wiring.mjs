@@ -74,6 +74,9 @@ const NEEDED = [
   'nuxt.config.ts',
   'pack/sea/launcher.mjs',
   'server/api/local/token-scan/start.post.ts',
+  // ⚠️ 2026-10-08（R15，落盘边界）：检查器要断言"落盘唯一出口存在"⇒ 纯逻辑层那份也必须在副本里，
+  //    否则基线副本会因为"找不到 runResume.ts"而失败（自测会把它误报成"守卫失效"）。
+  'utils/mp/runResume.ts',
 ]
 
 /**
@@ -391,6 +394,21 @@ try {
     if (code === 0) failures.push('报文里塞了本机几何的键名，但检查器仍然通过（R14 守卫失效）')
     else if (!out.includes('本机几何')) failures.push(`报错信息不是预期的：\n${out}`)
   }
+  // ---------- 注入 18：把**在途输入**直接写进落盘作业文件（R15，2026-10-08 新加）----------
+  // 模拟最常见的那种"手滑"：落盘时图省事写成 `JSON.stringify(state.input)` ——
+  // 在途输入里带着 **token / 轨迹点 / 学号**，一写下去就把用户拍板的落盘边界破了（而且不会有任何报错）。
+  // R15 必须报出来。
+  {
+    const dir = copyBase()
+    const file = join(dir, 'server/utils/runSubmitJob.ts')
+    const text = readFileSync(file, 'utf8')
+    const injected = text.replace('JSON.stringify(p)', 'JSON.stringify(state.input)')
+    if (injected === text) failures.push('注入 18：runSubmitJob.ts 里找不到 `JSON.stringify(p)`（自测需同步更新）')
+    writeFileSync(file, injected, 'utf8')
+    const { code, out } = run(dir)
+    if (code === 0) failures.push('把在途输入直接写盘，但检查器仍然通过（R15 落盘边界守卫失效）')
+    else if (!out.includes('落盘')) failures.push(`报错信息不是预期的：\n${out}`)
+  }
 } finally {
   rmSync(sandbox, { recursive: true, force: true })
 }
@@ -402,10 +420,10 @@ if (failures.length) {
   process.exit(1)
 }
 console.log(
-  '✅ 自测通过：基线通过、18 类注入（E33 复发 / **客户端绕过唯一写出口（自发票据）** / ' +
+  '✅ 自测通过：基线通过、19 类注入（E33 复发 / **客户端绕过唯一写出口（自发票据）** / ' +
     '**服务端作业两次写顺序反了** / 顺序错乱 / 绕过明细构造器 / 绕过成绩构造器 / 纯逻辑层拉框架 / ' +
     '代理重复声明前缀 / 模板裸取可空状态 / 空 catch / 夜间限制套回「开始跑步」/ 提示退回字符串注入键 / ' +
     'kebab 绑定丢 prop / **开始跑步不再要求已配置跑道** / **dev 少了 host** / **本机回调写死地址族** / ' +
-    '**`.ps1` 丢 BOM** / **报文里塞了本机几何**）都被抓到且退出码非 0，' +
+    '**`.ps1` 丢 BOM** / **报文里塞了本机几何** / **把在途输入直接写进落盘作业（R15 落盘边界）**）都被抓到且退出码非 0，' +
     '且"写了 v-if 守卫"的反向用例不会被误报。',
 )

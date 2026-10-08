@@ -779,6 +779,63 @@ for (const rel of [...listDir('composables'), ...listDir('src'), ...listDir('ser
   }
 }
 
+// ---------- R15：跨进程续跑的**落盘边界**（2026-10-08 用户拍板）----------
+/**
+ * 背景：`防 kill` 重构只保证"浏览器被冻结/关闭不影响"；**关掉整个 EXE** 作业照样死
+ * ⇒ 2026-10-08 用户要求补"进程级续跑"。跨进程续跑必须写盘，但**不是什么都写**
+ * （用户当天三选一里选的是"**只落非敏感元数据**"）：
+ *   · ❌ **token**：项目红线（任何形态不落盘）；
+ *   · ❌ **轨迹点**：由**浏览器** `localStorage` 存，恢复时回传；
+ *   · ❌ **学号**：与诊断包"学号打码"同一套口径。
+ *
+ * 为什么值得一条机器守卫：这条边界**没有任何编译期或运行期错误**会提醒你 ——
+ * 谁哪天"顺手把整个 input 传进去"，token 就静默落盘了（而且只有出事时才会有人发现）。
+ *
+ * 判据（可执行，三条同时守）：
+ *   ① 唯一出口存在：`utils/mp/runResume.ts` 必须导出 `toPersistedSubmitJob`；
+ *   ② 作业**必须走**那个出口：`server/utils/runSubmitJob.ts` 里必须调用 `toPersistedSubmitJob(`；
+ *   ③ 写盘函数**不许碰在途输入**：`persistJob()` 的函数体里只能出现 `state.persisted`，
+ *      **不得**出现 `state.input`（也不能把 `state.input` 塞进 `JSON.stringify` 写文件）。
+ * ⚠️ 范围**故意收窄**（只管这一个写盘点），避免误报；纯逻辑层那份"显式挑字段 + 断言"另有单测守着。
+ */
+{
+  const PURE = 'utils/mp/runResume.ts'
+  const JOB = 'server/utils/runSubmitJob.ts'
+  const pureText = read(PURE)
+  if (pureText && !/export function toPersistedSubmitJob\(/.test(pureText)) {
+    failures.push(`${PURE}：找不到落盘唯一出口 \`toPersistedSubmitJob()\`（检查器需同步更新，或有人删了它）`)
+  }
+  const jobText = read(JOB)
+  if (jobText) {
+    if (!/toPersistedSubmitJob\(/.test(jobText)) {
+      failures.push(
+        `${JOB}：落盘作业**必须**走唯一出口 \`toPersistedSubmitJob()\`（它显式挑非敏感字段 + 内部断言）——` +
+          '直接拼对象写盘会把 token / 轨迹点 / 学号带出去（用户 2026-10-08 拍板的落盘边界）',
+      )
+    }
+    // ③ 写盘函数体里不许出现在途输入
+    const { body, start } = bodyOf(jobText, 'function persistJob(')
+    if (start < 0) {
+      failures.push(`${JOB}：找不到 \`persistJob(\`（检查器已失效）`)
+    } else {
+      if (!/state\.persisted/.test(body)) {
+        failures.push(`${JOB}：\`persistJob()\` 没有写 \`state.persisted\`（落盘的应是那份**已剥敏感项**的对象）`)
+      }
+      if (/state\.input/.test(body)) {
+        const line = lineOf(jobText, start + (body.indexOf('state.input') || 0))
+        failures.push(
+          `${JOB}:${line}：\`persistJob()\` 里出现了 \`state.input\`（在途输入含 **token / 轨迹点 / 学号**）——` +
+            '落盘只能写 `state.persisted`（唯一出口的产物）。',
+        )
+      }
+    }
+    // 兜底：整个作业文件里不许把在途输入直接 JSON 化写文件
+    if (/JSON\.stringify\(\s*state\.input/.test(jobText)) {
+      failures.push(`${JOB}：出现了 \`JSON.stringify(state.input…)\` —— 这会把 token 写进磁盘（落盘边界被绕过）`)
+    }
+  }
+}
+
 console.log('=== check-wiring：接线与契约检查（源码级）===\n')
 console.log(
   `📄 已检查：${SOURCE_FILES.length} 个源文件 + ${DETAIL_BUILDERS.length} 个明细构造点 + ${PAGE_FILES.length} 个页面` +
@@ -794,4 +851,5 @@ if (failures.length) {
   for (const f of failures) console.log('   - ' + f)
   process.exit(1)
 }
-console.log('\n✅ 接线契约全部满足：门禁在写操作前、顺序正确、无 E33 复发字段、**成绩与明细都只有单一构造出口**。')
+console.log('\n✅ 接线契约全部满足：门禁在写操作前、顺序正确、无 E33 复发字段、**成绩与明细都只有单一构造出口**、'
+  + '**续跑落盘只走唯一出口且不碰在途输入（R15）**。')
