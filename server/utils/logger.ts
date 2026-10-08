@@ -83,11 +83,47 @@ export function logEvent(level: LogLevel, cat: string, msg: string, data?: Recor
     if (process.env.NODE_ENV !== 'production') {
       const d = entry.data && Object.keys(entry.data).length ? ` ${JSON.stringify(entry.data)}` : ''
       // eslint-disable-next-line no-console
-      console.log(`[${entry.level.toUpperCase()}] [${cat}] ${entry.msg}${d}`)
+      console.log(paintLine(entry.level, cat, `${entry.msg}${d}`))
     }
   } catch {
     /* 日志失败不影响业务 */
   }
+}
+
+/**
+ * 🆕 2026-10-08（用户要求）：**终端配色**。
+ *
+ * ## 铁律：**只给终端上色，日志文件永远是纯文本**
+ * 否则 ANSI 转义码会写进日志与一键诊断包（那里是给人看/给机器解析的纯 JSON 行），
+ * 变成一串看不懂的 `\x1b[33m`。
+ *
+ * ## 什么时候上色（三个条件同时满足）
+ *   ① stdout 是 **TTY**（被管道/重定向时自动关掉 —— 探针与 `| Select-String` 都不会被污染）；
+ *   ② 没设 `NO_COLOR`（社区惯例：只要存在就关色，不管值）；
+ *   ③ 没设 `TOTORO_NO_COLOR=1`（本机开关，方便排查）。
+ *
+ * ## 配什么色
+ *   · `[INFO]` 灰标签 + 正文默认色；**`[run]` 这类进度行的正文走青色**（终端里最好看的就是它）；
+ *   · `[WARN]` 黄、`[ERROR]` 红（标签与正文同色）。
+ */
+const COLOR_ON = Boolean(process.stdout?.isTTY) && !('NO_COLOR' in process.env) && process.env.TOTORO_NO_COLOR !== '1'
+const ANSI = {
+  reset: '\x1b[0m',
+  bold: '\x1b[1m',
+  gray: '\x1b[90m',
+  cyan: '\x1b[36m',
+  yellow: '\x1b[33m',
+  red: '\x1b[31m',
+} as const
+
+/** 按等级/类别给一整行上色；不上色时返回与以前**逐字相同**的文本 */
+function paintLine(level: LogLevel, cat: string, body: string): string {
+  const plain = `[${level.toUpperCase()}] [${cat}] ${body}`
+  if (!COLOR_ON) return plain
+  const tag = level === 'error' ? ANSI.red : level === 'warn' ? ANSI.yellow : ANSI.gray
+  const text = level === 'error' ? ANSI.red : level === 'warn' ? ANSI.yellow : cat === 'run' ? ANSI.cyan : ''
+  const tail = text ? ANSI.reset : ''
+  return `${tag}${ANSI.bold}[${level.toUpperCase()}]${ANSI.reset} ${ANSI.cyan}[${cat}]${ANSI.reset} ${text}${body}${tail}`
 }
 
 export const logInfo = (cat: string, msg: string, data?: Record<string, unknown>) => logEvent('info', cat, msg, data)
@@ -118,7 +154,7 @@ export function logRawLine(level: LogLevel, cat: string, lineJson: string): void
     }
     if (process.env.NODE_ENV !== 'production') {
       // eslint-disable-next-line no-console
-      console.log(`[${level.toUpperCase()}] [${cat}] ${lineJson.slice(0, 400)}`)
+      console.log(paintLine(level, cat, lineJson.slice(0, 400)))
     }
   } catch {
     /* 日志失败不影响业务 */
