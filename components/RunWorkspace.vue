@@ -68,6 +68,54 @@
     </v-alert>
 
     <!--
+      🆕 2026-10-08（用户要求，防 kill 的第二个边界）：本次提交的状态区（常驻在页面顶部）。
+
+      ⚠️ 为什么放在这里而不是结算卡里（本轮浏览器探针抓到的真缺口）：
+      结算卡那一整块是 `v-if="run.status !== 'idle'"` —— 而续跑时用户并没有在本次会话里跑过模拟
+      （run.status 是 idle）⇒ 放在那里的「停止本次提交」与结论永远渲染不出来：
+      用户点了「继续这笔提交」之后既看不到能不能停、跑完了也看不到结论。
+      所以这一块必须与跑步状态无关，只跟着"提交在途 / 刚出结论"走。
+
+      条件读法：① 提交在途（submitInFlight）；或 ② 刚出结论且本次会话没有结算卡可承接
+      （run.status !== 'finished'）—— 正常流程走 ② 时结算卡已经把结论显示出来了，这里就不重复。
+    -->
+    <v-alert
+      v-if="submitInFlight || ((phase === 'done' || phase === 'error') && run.status !== 'finished')"
+      :type="submitInFlight ? 'info' : phase === 'done' ? 'success' : 'error'"
+      variant="tonal"
+      density="comfortable"
+      class="mb-3"
+    >
+      <div class="font-weight-bold">
+        <v-icon class="mr-1" size="18">{{ submitInFlight ? 'mdi-cloud-upload-outline' : phase === 'done' ? 'mdi-check-circle-outline' : 'mdi-alert-circle-outline' }}</v-icon>
+        本次提交{{ submitInFlight ? '正在进行' : '已结束' }}（服务端作业）
+      </div>
+      <div class="text-body-2 mt-1">{{ phaseMessage }}</div>
+      <div v-if="submitInFlight" class="text-caption text-warning mt-1">
+        进度同时打在<b>服务端终端</b>上；页面关掉也不影响它跑完。
+      </div>
+      <!--
+        🆕 2026-10-08（用户要求）：中途叫停。
+        此前只能靠「清空本机数据」，而那只停界面展示、作业仍在服务端跑（会照样提交）。
+        ⚠️ 服务端只在"还没发出任何写请求"的阶段允许叫停（waiting / suspended）；
+        一旦进入提交阶段会明确拒绝并说明原因 —— 那时打断只会留下"成绩在、轨迹没发"的半成品（E71）。
+      -->
+      <v-btn
+        v-if="submitInFlight"
+        size="small"
+        color="warning"
+        variant="flat"
+        class="mt-2"
+        prepend-icon="mdi-stop-circle-outline"
+        :loading="abortLoading"
+        :disabled="abortLoading"
+        @click="onAbortSubmit"
+      >
+        停止本次提交（还没发出成绩时有效）
+      </v-btn>
+    </v-alert>
+
+    <!--
       🆕 2026-10-08（用户要求，"防 kill"的第二个边界）：上次有一笔提交没跑完。
       背景：防 kill 重构把"真实等待 + 两次写"搬到了服务端（浏览器关掉不影响），
       但关掉整个 EXE 进程作业照样会死 —— 那笔就白等了。现在在途作业会以非敏感元数据落盘，
@@ -513,26 +561,6 @@
               <div v-if="submitInFlight" class="text-caption text-warning">
                 ⚠️ 真实提交正在进行（{{ phaseMessage }}）——<b>请勿关闭程序或离开本页</b>，等待结束会自动提交。
               </div>
-              <!--
-                🆕 2026-10-08（用户要求）：中途叫停。
-                此前只能靠「清空本机数据」，而那只停界面展示、作业仍在服务端跑（会照样提交）。
-                ⚠️ 服务端只在"还没发出任何写请求"的阶段允许叫停（waiting / suspended）；
-                一旦进入提交阶段会明确拒绝并说明原因 —— 那时打断只会留下"成绩在、轨迹没发"的半成品（E71）。
-              -->
-              <v-btn
-                v-if="submitInFlight"
-                size="small"
-                color="warning"
-                variant="tonal"
-                block
-                class="mt-2"
-                prepend-icon="mdi-stop-circle-outline"
-                :loading="abortLoading"
-                :disabled="abortLoading"
-                @click="onAbortSubmit"
-              >
-                停止本次提交（还没发出成绩时有效）
-              </v-btn>
             </div>
 
             <v-alert v-if="run.error" type="error" variant="tonal" density="compact" class="mt-3">{{ run.error }}</v-alert>

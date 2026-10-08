@@ -715,11 +715,19 @@ export function useMpRealSubmit() {
        * 所以这里**不能**假装什么都没发生 —— 停掉展示并如实告知"成绩可能仍会入库"。
        * ✅ 2026-10-08：现在有**中途叫停**了（`abortServerSubmitJob` → `POST /api/local/run/submit/abort`），
        * 界面会在这种情形下引导用户去叫停（只在"还没发出写请求"的阶段有效，见该函数说明）。
+       *
+       * 🔴 **判据只看 token，不看档案**（2026-10-08 浏览器探针抓到的真 bug）：
+       * 原先这里写的是 `!session.value?.token || !profile.value` —— 而**档案不会被缓存**
+       * （`mp_real_task_v1` 只存 `{at, task, lineId, token}`，见 `composables/real/data.ts`）⇒
+       * **关掉 EXE 重启后档案必然是空的** ⇒ 点「继续这笔提交」会被这里误判成"凭据/档案已被清除"，
+       * 界面报一句**假的**"提交失败（续跑）" —— 而那笔作业其实好好地在服务端跑着。
+       * 轮询只是**镜像服务端状态**（不写任何东西、也不需要档案），所以判据收窄成"**会话 token 没了**"即可：
+       * 那才是"用户真的清了凭据"（退出登录 / 清空本机数据都会清掉它）。
        */
-      if (!session.value?.token || !profile.value) {
+      if (!session.value?.token) {
         phase.value = 'error'
         phaseMessage.value =
-          '凭据/档案已被清除 —— 服务端作业仍在继续（成绩可能仍会入库）；可用「停止本次提交」叫停它，' +
+          '凭据已被清除 —— 服务端作业仍在继续（成绩可能仍会入库）；可用「停止本次提交」叫停它，' +
           '或看服务端终端与「成绩记录」页确认'
         logWarn('submit', '轮询期间凭据被清除：停止展示，但服务端作业仍在跑', { jobId, phase: job.phase })
         return job
@@ -830,10 +838,74 @@ export function useMpRealSubmit() {
       }
       if (!res.ok) return { ok: false, message: res.message }
       /** 受理了 ⇒ 接着轮询（与首次提交同一条展示路径） */
+      const summary = suspendedJob.value // 先留一份（下面要把它清掉，但结果写回还要用它的里程/时长）
       suspendedJob.value = null
       phase.value = 'waiting'
       const job = await pollServerSubmitJob(payload.jobId)
       if (job.phase !== 'suspended') clearPendingResume()
+
+      /**
+       * 🆕 2026-10-08（**本轮浏览器探针抓到的缺口**）：续跑跑完必须**把结论写回界面**。
+       * 原先这里只轮询展示进度 ⇒ 作业跑完后`result` 仍是空的、结果卡什么都不显示，
+       * 用户根本看不出来这笔到底成没成（首次提交那条路是靠 `submitRealRun` 写回的）。
+       * 这里按与 `submitRealRun` **同一口径**落定 `phase / phaseMessage / result`。
+       */
+      const scoreOkResumed = Boolean(job.result?.scoreOk)
+      const outcomeResumed = (job.result?.scoreOutcome ?? 'failed') as WriteOutcome
+      const scoreMessageResumed = job.result?.scoreMessage ?? '服务端作业没有返回结果（请看服务端终端与当天日志）'
+      const submittedAtResumed = job.finishedAt || Date.now()
+      const outResumed: RealSubmitResult = {
+        scantronId: payload.scantronId,
+        startedAt: payload.startedAt,
+        submittedAt: submittedAtResumed,
+        scoreOk: scoreOkResumed,
+        scoreOutcome: outcomeResumed,
+        scoreMessage: scoreMessageResumed,
+        detailOk: job.result?.detailOk,
+        detailMessage: job.result?.detailMessage,
+      }
+      result.value = outResumed
+      phase.value = scoreOkResumed ? 'done' : 'error'
+      phaseMessage.value = scoreOkResumed
+        ? `提交完成（续跑）：${scoreMessageResumed}${outResumed.detailOk ? '；轨迹已提交' : '；轨迹未提交'}`
+        : outcomeResumed === 'timeout-unknown'
+          ? scoreMessageResumed
+          : `提交失败（续跑）：${scoreMessageResumed}`
+      logInfo('submit', `续跑作业结束：${scoreOkResumed ? '成功' : '未成功'}`, {
+        scantronId: payload.scantronId,
+        outcome: outcomeResumed,
+      })
+      if (scoreOkResumed) {
+        /** 判定由服务端读回 ⇒ 写回本机记录（记录页的「已真实提交」显示的才是服务端判定） */
+        const verdict = job.result?.verdict ?? null
+        if (verdict) {
+          mutateRecords((rs) =>
+            applyServerVerdict(rs, payload.scantronId, {
+              scorePassType: verdict.scorePassType as number | string | undefined,
+              scorePassRemark: verdict.scorePassRemark as string | undefined,
+            }),
+          )
+        }
+        /** 轨迹没交上 ⇒ 记一笔欠账（与首次提交同一口径：界面给「补交轨迹」，用户点一次发一次） */
+        if (outResumed.detailOk === false && payload.points.length > 0) {
+          savePendingDetail({
+            scantronId: payload.scantronId,
+            taskId: '',
+            lineId: '',
+            runType: summary?.runType ?? 0,
+            km: summary?.km ?? 0,
+            durationSeconds: summary?.plannedSeconds ?? 0,
+            startMs: payload.startedAt,
+            endMs: submittedAtResumed,
+            points: payload.points,
+            at: Date.now(),
+            attempts: 0,
+            lastError: outResumed.detailMessage ?? '',
+          })
+          mutateRecords((rs) => setRecordDetailOk(rs, payload.scantronId, false))
+          logWarn('submit', '续跑的成绩成功但轨迹没交上 ⇒ 已记一笔待补交', { scantronId: payload.scantronId })
+        }
+      }
       return { ok: true, message: res.message, action: res.action }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)

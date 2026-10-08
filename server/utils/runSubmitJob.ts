@@ -227,6 +227,7 @@ function suspendedSummaryOf(p: PersistedSubmitJob): SuspendedJobSummary {
     runTypeLabel: p.meta.runTypeLabel,
     startedAt: p.startedAt,
     plannedSeconds: p.plannedSeconds,
+    runType: p.context.runType,
     targetClock: targetClock(p),
     summary: resumeSummaryText(p, Date.now()),
   }

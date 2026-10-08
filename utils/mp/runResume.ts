@@ -92,6 +92,12 @@ export interface SuspendedJobSummary {
   startedAt: number
   /** 报备时长（秒） */
   plannedSeconds: number
+  /**
+   * 0 阳光跑 / 1 自由跑（**非个人**）。
+   * ⚠️ 它必须在这里：续跑跑完后若"轨迹没交上"，界面要记一笔待补交的欠账，
+   * 而补交时要按**同一种跑法**重发明细（自由跑与阳光跑的口径不同）—— 拿不到它就只能瞎猜。
+   */
+  runType: 0 | 1
   /** 原定提交时刻 `HH:mm`（展示用） */
   targetClock: string
   /** 人话摘要（进界面；不含 markdown） */
