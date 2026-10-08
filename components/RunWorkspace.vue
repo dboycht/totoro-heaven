@@ -92,7 +92,8 @@
       </div>
       <div class="text-body-2 mt-1">{{ phaseMessage }}</div>
       <div v-if="submitInFlight" class="text-caption text-warning mt-1">
-        进度同时打在<b>服务端终端</b>上；页面关掉也不影响它跑完。
+        进度同时打在<b>服务端终端</b>上。建议<b>让本页保持在前台</b>（不要另开新标签页覆盖它）；
+        即使本页被关掉，等待与提交也仍由服务端继续。
       </div>
       <!--
         🆕 2026-10-08（用户要求）：中途叫停。
@@ -723,6 +724,23 @@
         </div>
         <div class="text-body-2 mt-1">{{ dailyQuotaNoticeText }}</div>
       </v-alert>
+      <!--
+        🆕 2026-10-08（用户明确要求）：「真实提交」按钮上方的「前台提醒」。
+        口径（用户原话）：本轮的健壮性重构"只是优化一下原来的代码"，并不等于"点完就能随便切走"——
+        用户仍然需要挂在浏览器前台。所以按钮上方必须有一句提醒。
+        为什么这句是真话（不是客套）：点完之后仍有几步在本页完成 ——
+          ① getRunBegin（建场次，是写操作）；② 两个只读请求（学期/月份）；③ 才把作业交给服务端。
+        若在这几百毫秒~几秒里被另开的新标签页覆盖、或本页被冻结丢弃，就可能留下一个"开了没跑"的场次，
+        而且那一段没有落盘、续跑也救不了（见 HANDOVER.md §8 的"建场次仍在浏览器"那条边界）。
+        ⚠️ 文案里不许出现"防 kill"这类内部说法（用户 2026-10-08 确认页面上不该有）。
+      -->
+      <div class="text-caption text-medium-emphasis mb-2 d-flex align-start">
+        <v-icon size="16" class="mr-1 mt-1">mdi-tab-unselected</v-icon>
+        <span>
+          点「真实提交」后请<b>让本页保持在前台</b>：<b>不要另开新的标签页覆盖该标签页</b>（也不要马上切走）。
+          提交的前几步仍在本页完成；进入等待后，进度会同时打在服务端终端上。
+        </span>
+      </div>
       <div class="d-flex align-center flex-wrap ga-2 mb-2">
         <v-btn
           color="error"
