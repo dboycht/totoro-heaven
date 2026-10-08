@@ -753,6 +753,91 @@ export function useMpRealSubmit() {
    * 为什么不复用 `pollServerSubmitJob`：那个是"盯着一次提交跑完"的循环，会一直轮询；
    * 这里只需要**一次快照**，而且**绝不能**因为一次网络抖动就把界面卡住。
    */
+  /**
+   * ⭐ **把服务端作业的最终结论写回界面**（2026-10-08 抽出来共用）。
+   * 为什么必须抽出来：这个写回原先只存在于 `submitRealRun` ⇒ 凡**不是由本页发起**的作业
+   * （续跑、以及"刷新后接回"）跑完都会**没有任何结论**，用户看不出来成没成。三条路现在同一份口径。
+   * @param info.label 文案前缀（"续跑" / "接回"）
+   */
+  const applyJobOutcomeToUi = (
+    job: ServerSubmitJobView,
+    info: {
+      scantronId: string
+      startedAt: number
+      points: { latitude: number; longitude: number }[]
+      km: number
+      durationSeconds: number
+      runType: 0 | 1
+      /** 那次结算的时刻 —— **认领本机记录**要用它精确匹配（刷新后由 `pendingResume` 提供） */
+      settledAtMs?: number
+      label: string
+    },
+  ): void => {
+    const scoreOk = Boolean(job.result?.scoreOk)
+    const outcome = (job.result?.scoreOutcome ?? 'failed') as WriteOutcome
+    const scoreMessage = job.result?.scoreMessage ?? '服务端作业没有返回结果（请看服务端终端与当天日志）'
+    const submittedAt = job.finishedAt || Date.now()
+    const out: RealSubmitResult = {
+      scantronId: info.scantronId,
+      startedAt: info.startedAt,
+      submittedAt,
+      scoreOk,
+      scoreOutcome: outcome,
+      scoreMessage,
+      detailOk: job.result?.detailOk,
+      detailMessage: job.result?.detailMessage,
+    }
+    result.value = out
+    phase.value = scoreOk ? 'done' : 'error'
+    phaseMessage.value = scoreOk
+      ? `提交完成（${info.label}）：${scoreMessage}${out.detailOk ? '；轨迹已提交' : '；轨迹未提交'}`
+      : outcome === 'timeout-unknown'
+        ? scoreMessage
+        : `提交失败（${info.label}）：${scoreMessage}`
+    logInfo('submit', `${info.label}作业结束：${scoreOk ? '成功' : '未成功'}`, { scantronId: info.scantronId, outcome })
+    if (!scoreOk) return
+    /**
+     * ① **认领本机记录**（把「仅本地结算」改成「已真实提交」并写回真实场次号）。
+     * ⚠️ 只在拿得到 `settledAtMs`（毫秒级唯一键）时认领；拿不到就**不认领**，绝不瞎认领到别的记录上。
+     */
+    if (typeof info.settledAtMs === 'number' && Number.isFinite(info.settledAtMs)) {
+      mutateRecords((rs) =>
+        claimRecordForRealSubmit(rs, { settledAtMs: info.settledAtMs, scantronId: info.scantronId, detailOk: out.detailOk }).records,
+      )
+    } else {
+      logWarn('submit', '缺少 settledAtMs ⇒ 跳过"认领本机记录"（不瞎认领）', { scantronId: info.scantronId })
+    }
+    /** ② 判定的**权威值是服务端** ⇒ 按场次号写回 */
+    const verdict = job.result?.verdict ?? null
+    if (verdict) {
+      mutateRecords((rs) =>
+        applyServerVerdict(rs, info.scantronId, {
+          scorePassType: verdict.scorePassType as number | string | undefined,
+          scorePassRemark: verdict.scorePassRemark as string | undefined,
+        }),
+      )
+    }
+    /** ③ 轨迹没交上 ⇒ 记一笔欠账（与首次提交同一口径：界面给「补交轨迹」，用户点一次发一次） */
+    if (out.detailOk === false && info.points.length > 0) {
+      savePendingDetail({
+        scantronId: info.scantronId,
+        taskId: '',
+        lineId: '',
+        runType: info.runType,
+        km: info.km,
+        durationSeconds: info.durationSeconds,
+        startMs: info.startedAt,
+        endMs: submittedAt,
+        points: info.points,
+        at: Date.now(),
+        attempts: 0,
+        lastError: out.detailMessage ?? '',
+      })
+      mutateRecords((rs) => setRecordDetailOk(rs, info.scantronId, false))
+      logWarn('submit', `${info.label}的成绩成功但轨迹没交上 ⇒ 已记一笔待补交`, { scantronId: info.scantronId })
+    }
+  }
+
   const refreshSubmitJobStatus = async (): Promise<SuspendedJobSummary | null> => {
     try {
       const res = await $fetch<{ ok: boolean; job: ServerSubmitJobView }>('/api/local/run/submit/status')
@@ -768,6 +853,68 @@ export function useMpRealSubmit() {
       })
       return suspendedJob.value
     }
+  }
+
+  /**
+   * 🆕 2026-10-08（用户要求）：**刷新/重开页面后自动"接回"正在跑的作业**。
+   *
+   * ## 为什么必须有它（这条是用户点出来的）
+   * 重构后作业跑在服务端 ⇒ **刷新页面不影响提交**；但界面原先**接不回来**：挂载时只查了一次 `suspended`
+   * （那是"进程重启后挂起"那种），**在途**作业（waiting/scoring/…）不出现任何卡片、不显示进度、
+   * 跑完了也**没有任何结论**（写回只存在于本页发起的那次调用里）。
+   * ⚠️ 而 `server/api/local/run/submit/status.get.ts` 的文件头**一直写着**"页面刷新或被关掉再打开，
+   *    也可以靠它重新接上正在跑的作业（进度与倒计时照旧显示）"——那是**意图**，此前**没实现**；本函数兑现它。
+   *
+   * ## 边界（保守）
+   * - **只读 + 只展示**：不发起任何写请求、不改提交口径；
+   * - 服务端没有在途作业 ⇒ **什么都不做**（不打扰）；
+   * - `suspended` ⇒ 设 `suspendedJob`（既有行为，出「继续这笔提交」卡片）；
+   * - 跑完后的写回走**同一个** `applyJobOutcomeToUi`；`settledAtMs` 由 `pendingResume` 提供，
+   *   拿不到就**不认领**本机记录（宁可显示"仅本地结算"，也不瞎认领）。
+   */
+  const reattachServerSubmitJob = async (): Promise<{ attached: boolean }> => {
+    let job: ServerSubmitJobView | null = null
+    try {
+      const res = await $fetch<{ ok: boolean; job: ServerSubmitJobView }>('/api/local/run/submit/status')
+      job = res.job ?? null
+    } catch (err) {
+      logWarn('submit', '接回检查失败（不影响服务端那笔作业）', { message: err instanceof Error ? err.message : String(err) })
+      return { attached: false }
+    }
+    if (!job) return { attached: false }
+    suspendedJob.value = job.suspended ?? null
+    /** 挂起（进程重启过）⇒ 交给卡片，等用户点「继续这笔提交」 */
+    if (job.phase === 'suspended') return { attached: false }
+    /** 不在途 ⇒ 什么都不做（那笔的写回由本页当时那次调用负责，这里补写会重复认领） */
+    if (!job.active) return { attached: false }
+
+    const payload = pendingResume.value
+    const scantronId = String(job.suspended?.scantronId || payload?.scantronId || '')
+    if (!scantronId) logWarn('submit', '服务端有在途作业但本机拿不到场次号 ⇒ 只展示进度、不做写回', { phase: job.phase })
+    logInfo('submit', '页面重开后接回在途作业（进度与倒计时照旧显示）', { scantronId, phase: job.phase })
+    pushProgress('step', `已接回服务端的在途作业（${job.phaseMessage || job.phase}）——页面刷新不影响它继续跑`)
+    phase.value = job.phase === 'waiting' ? 'waiting' : 'submitting'
+    const done = await pollServerSubmitJob(scantronId || 'reattach')
+    if (done.phase === 'suspended') return { attached: true }
+    clearPendingResume()
+    if (scantronId) {
+      applyJobOutcomeToUi(done, {
+        scantronId,
+        startedAt: payload?.startedAt ?? job.startedAt,
+        points: payload?.points ?? [],
+        km: job.suspended?.km ?? 0,
+        durationSeconds: job.suspended?.plannedSeconds ?? 0,
+        runType: job.suspended?.runType ?? 0,
+        /**
+         * ⚠️ **本路径不给 `settledAtMs`**（它只存在于结算那一刻的内存里，刷新后拿不到）
+         * ⇒ `applyJobOutcomeToUi` 会**跳过"认领本机记录"**并记一条日志：
+         * 记录页会如实显示「仅本地结算」，**不会**被瞎认领。要认领请刷新前不要离开本页，
+         * 或刷新后自己点「查询判定」（判定写入是按场次号匹配的，不受影响）。
+         */
+        label: '接回',
+      })
+    }
+    return { attached: true }
   }
 
   /**
@@ -1126,6 +1273,8 @@ export function useMpRealSubmit() {
     suspendedJob,
     /** 只查一次服务端作业状态（页面打开时用来发现"上次没跑完的提交"） */
     refreshSubmitJobStatus,
+    /** 🆕 2026-10-08：**刷新/重开页面后接回正在跑的作业**（只读+只展示；跑完照旧写回结论） */
+    reattachServerSubmitJob,
     /** **中途叫停**（只在"还没发出任何写请求"的阶段有效；进入提交阶段会被服务端拒绝） */
     abortServerSubmitJob,
     /** **继续**上次没跑完的提交（用户点一次发一次；由服务端判"接着等 / 立即提交 / 作废"） */

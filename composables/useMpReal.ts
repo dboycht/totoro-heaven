@@ -84,7 +84,7 @@ export function useMpReal() {
     retryCameraFlag,
   } = useMpRealData()
 
-  const { phase, phaseMessage, remainingSeconds, result, progress, submitRealRun, fetchVerdict, stopWait, resendPendingDetail, resendDetail, suspendedJob, refreshSubmitJobStatus, abortServerSubmitJob, resumeServerSubmitJob, discardSuspendedSubmitJob } =
+  const { phase, phaseMessage, remainingSeconds, result, progress, submitRealRun, fetchVerdict, stopWait, resendPendingDetail, resendDetail, suspendedJob, refreshSubmitJobStatus, reattachServerSubmitJob, abortServerSubmitJob, resumeServerSubmitJob, discardSuspendedSubmitJob } =
     useMpRealSubmit()
 
   return {
@@ -123,6 +123,8 @@ export function useMpReal() {
     suspendedJob,
     /** 只查一次服务端作业状态（页面打开时用来发现"上次没跑完的提交"） */
     refreshSubmitJobStatus,
+    /** 🆕 2026-10-08：**刷新/重开页面后接回正在跑的作业**（只读+只展示；跑完照旧写回结论） */
+    reattachServerSubmitJob,
     /** **中途叫停**本次提交（只在"还没发出任何写请求"的阶段有效） */
     abortServerSubmitJob,
     /** **继续**上次没跑完的提交（用户点一次发一次） */
