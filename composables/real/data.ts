@@ -123,6 +123,27 @@ export function useMpRealData() {
     clockTick,
   } = useRealState()
 
+  /**
+   * 🆕 2026-10-08：**"本机几何可用吗"的唯一出口**（三态）。
+   *
+   * 抽出来是因为它现在有**两个消费方**，而它们**必须同源**（否则诊断包里"当时的门禁终值"
+   * 会与真实那次判得不一样 —— 那正是"诊断包第 3 个发现"的残余部分）：
+   *   ① `evaluateRunGate()` 的入参（真实门禁）；
+   *   ② 写进 `localStorage` 的"最近已知状态"（`buildLastKnown`，用于事后复盘）。
+   * ⚠️ 定义位置必须在 `useRealState()` 解构**之后**（它要用 `task`，放前面会踩 TDZ）。
+   * 🔴 三态口径（2026-09-25 修）：本机库**还没装载**时返回 `undefined`（**未知 ⇒ 不记也不拦**）——
+   *    老写法用 `Boolean(...)` 把"没装载"压成 `false` ⇒ 工作台刚读完数据那一刻必然记一条
+   *    `no_local_geometry`（而他库里明明有几何）⇒ 严格模式下就是**误拦**（`DEVELOPMENT.md` §39.3 第 2 条）。
+   */
+  const localGeometryReady = computed<boolean | undefined>(() =>
+    lib.loaded.value
+      ? Boolean(
+          // ⚠️ 任务"身份"走兜底链（有的响应没有 `taskId`，只有 `id`/`paperId`）
+          freeRouteGeometryChoice(lib.entries.value, task.value, lib.freeRouteChoiceFor(taskPaperIdOf(task.value))).entry,
+        )
+      : undefined,
+  )
+
   // 只在客户端读一次缓存的元信息（用于显示"恢复上次任务"入口 / 自动恢复的判据）
   // ⚠️ 注意：本行**只同步界面状态**，不动任务；真正的自动恢复入口是下面的 `autoRestoreFromCache()`
   //    （由跑步页 / 跑道编辑页 / 非官方路径页在挂载时调用 —— 2026-09-22 真实用户实测后新增）。
@@ -382,6 +403,11 @@ export function useMpRealData() {
         lineId: String(run.value.lineId || selectedId || ''),
         /** 任务下发了线路 ⇒ 门禁那条"未选线路"适用；没下发 ⇒ 不适用（与 `routeRequirementOf()` 同口径） */
         lineRequired: (task.value.runPointList ?? []).length > 0,
+        /**
+         * 🆕 2026-10-08：与**真实门禁**走同一个出口（`localGeometryReady` computed）——
+         * 这正是"诊断包第 3 个发现"的残余部分：两份口径分叉时，事后复盘会得出与当时相反的结论。
+         */
+        localGeometryReady: localGeometryReady.value,
         demoMode: demoMode.value,
       })
       if (snapshot && !saveLastKnown(snapshot)) {
@@ -912,13 +938,11 @@ export function useMpRealData() {
        * `lib.loaded` 为假（本机库**还没装载**）时传 `undefined`（**未知 ⇒ 不记也不拦**）。
        * 老写法用 `Boolean(...)` 把"没装载"也压成 `false` ⇒ 在工作台读数据那一刻**必然**记一条
        * `no_local_geometry`（而他库里明明有 1 条 `local:free`）⇒ 严格模式下就是**误拦**。
+       *
+       * 🆕 2026-10-08：表达式**收口到 `localGeometryReady` computed**（此前这里是第二份副本，
+       * 与"最近已知状态"那份可能分叉 ⇒ 诊断包复盘会与当时判得不一样）。
        */
-      localGeometryReady: lib.loaded.value
-        ? Boolean(
-            // ⚠️ 任务"身份"走兜底链（他这份响应没有 `taskId`，只有 `id`/`paperId`）
-            freeRouteGeometryChoice(lib.entries.value, task.value, lib.freeRouteChoiceFor(taskPaperIdOf(task.value))).entry,
-          )
-        : undefined,
+      localGeometryReady: localGeometryReady.value,
 
       /**
        * ⚠️ 必须带上**本次跑步类型**（2026-09-18 自由跑落地）：
@@ -1007,6 +1031,12 @@ export function useMpRealData() {
     selectedLine,
     /** 开跑前三合一否决门禁状态（allow / reason / blockedBy） */
     gateStatus,
+    /**
+     * 🆕 2026-10-08：本机几何三态（`undefined` = 库还没装载 ⇒ 未知）。
+     * 透出来是给**诊断导出**用的 —— 它重建"当时的门禁终值"时必须与真实门禁**同一个值**，
+     * 否则事后复盘会与当时判得不一样（"诊断包第 3 个发现"的残余部分）。
+     */
+    localGeometryReady,
     /** 未验证学校的软提示（非阻断） */
     schoolNotice,
     isRealApplied,

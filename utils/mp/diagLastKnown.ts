@@ -56,6 +56,14 @@ export interface LastKnownInput {
   lineId?: string
   /** 服务端是否未下发线路（自由路线任务） */
   lineRequired?: boolean
+  /**
+   * 🆕 2026-10-08：**本机有没有可用的本机路径几何**（`undefined` = 当时未知 ⇒ 不记也不拦）。
+   * ⚠️ 不传它 ⇒ "服务端未下发线路"的任务上，重建出来的门禁终值会**与真实那次不一致**
+   * （哪怕真实那次是放行的，这里也可能算出 `camera_unknown` / 缺 `no_local_geometry` 的判据）——
+   * 这正是 `HANDOVER.md` 那条"诊断包第 3 个发现"的残余部分。
+   * 🔴 三态口径与 `composables/real/data.ts` **逐字一致**：没装载 ⇒ `undefined`（不是 `false`）。
+   */
+  localGeometryReady?: boolean
   /** 当前是否演示模式（演示态的东西**不该**被当成本机真实读取的证据） */
   demoMode?: boolean
   /** 采集时刻（默认 now；单测传固定值） */
@@ -90,6 +98,8 @@ export function buildLastKnown(input: LastKnownInput): DiagLastKnown | null {
     line: input.lineId ? { pointId: input.lineId, pointName: '', pointList: [] } : null,
     runType: 0,
     ...(input.lineRequired === false ? { lineRequired: false } : {}),
+    // 🆕 2026-10-08：三态透传（`undefined` = 未知 ⇒ 门禁那边**不记也不拦**，与 data.ts 同口径）
+    ...(typeof input.localGeometryReady === 'boolean' ? { localGeometryReady: input.localGeometryReady } : {}),
     now,
   })
   return {
@@ -108,7 +118,8 @@ export function buildLastKnown(input: LastKnownInput): DiagLastKnown | null {
       studentName: maskName(input.studentName ?? ''),
       phone: maskPhone(input.phone ?? ''),
     },
-    auth: { hasToken: Boolean(input.hasToken), tokenFingerprint: String(input.tokenFingerprint ?? '') },    task: {
+    auth: { hasToken: Boolean(input.hasToken), tokenFingerprint: String(input.tokenFingerprint ?? '') },
+    task: {
       present: Boolean(task),
       paperName: task ? String(task.paperName ?? '') : '',
       paperId: task ? String(task.taskId ?? task.paperId ?? '') : '',
@@ -119,6 +130,8 @@ export function buildLastKnown(input: LastKnownInput): DiagLastKnown | null {
     cameraFlag: input.cameraFlag,
     cameraFlagLineId: String(input.cameraFlagLineId ?? ''),
     cameraFlagError: String(input.cameraFlagError ?? ''),
+    /** 🆕 2026-10-08：三态（`null` = 当时未知/没记）—— 与门禁那一侧**同一个值** */
+    localGeometryReady: typeof input.localGeometryReady === 'boolean' ? input.localGeometryReady : null,
     gateAllow: gate.allow,
     gateBlockedBy: gate.blockedBy ?? '',
     gateReason: gate.reason,

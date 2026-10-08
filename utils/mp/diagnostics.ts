@@ -815,6 +815,14 @@ export interface DiagLastKnown {
   cameraFlag: boolean | null
   cameraFlagLineId: string
   cameraFlagError: string
+  /**
+   * 🆕 2026-10-08：**本机有没有可用的本机路径几何**（`null` = 当时未知/没记）。
+   * ⚠️ 为什么要记它：门禁的 `no_local_geometry` 那一条要看它，而**"服务端未下发线路"的任务**
+   * （如研究生院「研途健行」）正是靠它决定放不放行 ⇒ 不记它，"当时的门禁终值"在那种任务上算不出来/会算错。
+   * 🔴 与 `composables/real/data.ts` 的写法**同一口径**：本机库**还没装载**时是"未知"（不记也不拦），
+   * 不是 `false`（那是"确实没有"，会误拦 —— 见 `DEVELOPMENT.md` §39.3 第 2 条）。
+   */
+  localGeometryReady: boolean | null
   /** **当时**的门禁终值（由同一个 `evaluateRunGate()` 算出；只是证据，不用于放行） */
   gateAllow: boolean
   gateBlockedBy: string

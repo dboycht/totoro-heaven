@@ -1176,6 +1176,12 @@ function captureLastKnown(): DiagLastKnown | null {
     lineId,
     // 任务没下发线路 ⇒ 门禁那条"未选线路"不拦（与真实提交口径一致，别把历史值算错）
     lineRequired: rawTask ? (Array.isArray(rawTask.runPointList) ? rawTask.runPointList.length > 0 : false) : undefined,
+    /**
+     * 🆕 2026-10-08（"诊断包第 3 个发现"的残余部分）：本机几何三态**必须与真实门禁同源** ——
+     * 原先这里没传 ⇒ 重建出来的"当时门禁终值"在**服务端未下发线路**的任务上会与当时判得不一样
+     * （他当时是放行的，复盘却可能显示被拦），正好把这条发现要救的现场又搞乱。
+     */
+    localGeometryReady: realData.localGeometryReady.value,
     demoMode: demoActive.value,
   })
   /**

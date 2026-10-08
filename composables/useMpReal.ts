@@ -62,6 +62,8 @@ export function useMpReal() {
     pendingDetailText,
     selectedLine,
     gateStatus,
+    // 🆕 2026-10-08：本机几何三态（诊断导出重建"当时的门禁终值"要用，必须与真实门禁同源）
+    localGeometryReady,
     schoolNotice,
     isRealApplied,
     loadRealData,
@@ -130,6 +132,8 @@ export function useMpReal() {
     selectedLine,
     /** 开跑前三合一否决门禁状态（allow / reason / blockedBy） */
     gateStatus,
+    /** 🆕 2026-10-08：本机几何三态（`undefined` = 本机库还没装载 ⇒ 未知）；诊断导出用它重建门禁终值 */
+    localGeometryReady,
     /** 未验证学校的软提示（非阻断） */
     schoolNotice,
     phase,

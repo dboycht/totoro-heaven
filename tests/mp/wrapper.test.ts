@@ -96,7 +96,10 @@ test('请求层：给了 baseUrl 就带 `x-mp-upstream` 头；没给则不带', 
 test('请求层：空响应 / 非 JSON / 抛错 三种传输异常都判成 kind=system 且 ok=false', async () => {
   const cases: Array<{ name: string; reply: () => unknown; expect: RegExp }> = [
     { name: '空响应', reply: () => rawReply('   '), expect: /空响应/ },
-    { name: '非 JSON', reply: () => rawReply('<html>502</html>', 502), expect: /不是 JSON/ },
+    // ⚠️ 2026-10-08：这条原先**借 502 来造"非 JSON"**。现在 502/503 被明确认成"网关自己出错"
+    //    （文案是「上游网关错误」，见下一条用例）⇒ 这里改用 **200 + 非 JSON 体**，
+    //    继续覆盖"响应不是 JSON"这句文案本身（它仍然存在，只是不再给网关错误用）。
+    { name: '非 JSON', reply: () => rawReply('<html>200</html>', 200), expect: /不是 JSON/ },
     { name: '网络异常', reply: () => { throw new TypeError('fetch failed') }, expect: /fetch failed/ },
   ]
   for (const c of cases) {
@@ -107,6 +110,29 @@ test('请求层：空响应 / 非 JSON / 抛错 三种传输异常都判成 kind
       assert.equal(res.kind, 'system', c.name)
       assert.match(res.message, c.expect, c.name)
       assert.equal(calls.length, 1, c.name)
+    } finally { restore() }
+  }
+})
+
+test('🆕 请求层：502 / 503 / 504 一律按"结果未知"处理（不是确定失败）', async () => {
+  /**
+   * `HANDOVER.md` §8 第 7 条 / `ERROR.md` E60：这三个都是"**网关没给答复**"——
+   * 504 是超时，502/503 是网关自己出错（Bad Gateway / Service Unavailable）。
+   * 它们**都不等于上游没写入** ⇒ 必须带 `timedOut`（写路径据此走"超时 ⇒ 去核实"而不是"失败 ⇒ 诱导重试"）。
+   *
+   * ⚠️ 为什么用 `saveScores`（POST）：写路径才吃这个标志；`schoolList`（GET）不判写结局。
+   * ⚠️ 为什么特意给一个**可解析的 JSON 体**：这正是 2026-10-08 之前漏掉的分支 ——
+   *    以前只有"空体 / 非 JSON"的 502/503 才被当成未知，**JSON 体的 502/503 会被判成确定失败**。
+   */
+  for (const status of [502, 503, 504]) {
+    const { restore } = stubClient(() => jsonReply({ statusMessage: '' }, status))
+    try {
+      const res = await MpApiWrapper.call('saveScores', {})
+      assert.equal(res.ok, false, `HTTP ${status} 不该判成功`)
+      assert.equal(res.timedOut, true, `HTTP ${status} 必须标 timedOut（结果未知）`)
+      assert.match(res.message, /上游(超时|网关错误)/, `HTTP ${status} 的文案要说清是网关侧的问题`)
+      if (status === 504) assert.match(res.message, /上游超时/, '504 叫"超时"')
+      else assert.match(res.message, /上游网关错误/, `${status} 叫"网关错误"（别叫成超时）`)
     } finally { restore() }
   }
 })
