@@ -52,9 +52,26 @@ export const VERSION_ADVICE = {
 /** 版本列表（最新在前） */
 export const VERSION_ENTRIES: VersionEntry[] = [
   {
-    version: '1.3.1',
+    version: '1.3.2',
     /** ⚠️ 日期口径（规则 12）：定版那天先跑 Get-Date 读本机日期，发布后再用 published_at 复核（有脚本核对）。 */
-    date: '2026-10-10',
+    date: '2026-10-11',
+    channel: 'stable',
+    title: '开发中（尚无已确认的新需求）',
+    planned: true,
+    highlights: [
+      '本版仍在开发中，还没有可以对外说明的新内容；',
+      '定版后会在此处补上完整的更新日志。',
+    ],
+    note: '开发中的条目，不在版本页展示；对外推荐正式版为 1.3.1。',
+  },
+  {
+    version: '1.3.1',
+    /**
+     * ⚠️ 日期口径（规则 12）：**已发布版本以 Release 的 `published_at` 转本地日期为准**。
+     * 本条实测：`published_at = 2026-10-10T16:02:55Z` → 本机 UTC+8 = **2026-10-11 00:02**
+     * （发布动作跨了零点 ⇒ 白天定稿时写的 2026-10-10 是错的，由 `verify_version_dates.mjs` 抓出来）。
+     */
+    date: '2026-10-11',
     channel: 'stable',
     title: '「防 kill」：提交编排移到服务端 + 关机后续跑 + 等待期可停止 + 轨迹补交',
     highlights: [
