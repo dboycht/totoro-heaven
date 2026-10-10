@@ -33,12 +33,14 @@ import { SUBMIT_PROGRESS, submitProgressLine, type SubmitProgressLine } from '..
 import { buildScoreDetailRequest, buildScoreRequest } from '../../utils/mp/submitPayload'
 import {
   PERSISTED_SUBMIT_FILE,
+  checkResumeLinePoints,
   decideResume,
   isPersistedJobExpired,
   parsePersistedSubmitJob,
   resumeSummaryText,
   targetClock,
   toPersistedSubmitJob,
+  withLinePoints,
   withVerdictIdentity,
   type PersistedSubmitJob,
   type SuspendedJobSummary,
@@ -419,27 +421,41 @@ export function startRunSubmitJob(input: RunSubmitJobInput, origin: string): { o
   /**
    * 🆕 落盘（进程级续跑）：**只写非敏感元数据** —— 走纯逻辑层的唯一出口 `toPersistedSubmitJob()`，
    * 它**不含** token / 轨迹点 / 学号（见 `utils/mp/runResume.ts` 的落盘边界）。
+   *
+   * 🔴 **2026-10-10（E76）：整段包在 try/catch 里，落盘失败绝不允许拖垮本次提交。**
+   * 事故现场：`toPersistedSubmitJob()` 里的一句断言被**厂商原样数据**（任务对象带 `token: "null"`）触发抛错，
+   * 而它夹在"作业已登记（`active=true`）"与"`void runJob()`"之间 ⇒
+   * HTTP 500 + **僵尸作业**：永远不会提交，却**一直挡住**后续每一次提交。
+   * 口径：落盘只服务于"关掉再开机还能接着跑"这层**附加能力**；它坏了，本次提交照常发。
    */
-  state.persisted = toPersistedSubmitJob({
-    id,
-    startedAt,
-    plannedSeconds: planned,
-    scantronId: input.scantronId,
-    baseUrl: input.baseUrl,
-    context: {
-      schoolCode: input.context.schoolCode,
-      task: input.context.task,
-      line: input.context.line,
-      paperId: input.context.paperId,
-      km: input.context.km,
-      durationSeconds: input.context.durationSeconds,
-      fitDegree: input.context.fitDegree,
-      runType: input.context.runType,
-    },
-    verdictRequest: input.verdictRequest,
-    meta: input.meta,
-  })
-  persistJob()
+  try {
+    state.persisted = toPersistedSubmitJob({
+      id,
+      startedAt,
+      plannedSeconds: planned,
+      scantronId: input.scantronId,
+      baseUrl: input.baseUrl,
+      context: {
+        schoolCode: input.context.schoolCode,
+        task: input.context.task,
+        line: input.context.line,
+        paperId: input.context.paperId,
+        km: input.context.km,
+        durationSeconds: input.context.durationSeconds,
+        fitDegree: input.context.fitDegree,
+        runType: input.context.runType,
+      },
+      verdictRequest: input.verdictRequest,
+      meta: input.meta,
+    })
+    persistJob()
+  } catch (err) {
+    state.persisted = null
+    logWarn('run', '作业落盘失败：本次提交照常进行，只是"关掉再开机续跑"这层能力本次不可用', {
+      runId: id,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
   state.view.suspended = null
   void runJob(id, { waitSeconds: planned, durationSeconds: planned }).catch((err) => {
     // 兜底：编排里任何未捕获异常都不许让状态悬着（否则前端会一直轮询）
@@ -499,7 +515,13 @@ export function abortRunSubmitJob(): { ok: boolean; message: string; phase: RunS
  *   · 超出区间 / 任务未下发区间且超本地宽限 ⇒ **作废，不提交**。
  */
 export function resumeRunSubmitJob(
-  payload: { token: string; snCode: string; points: { latitude: number; longitude: number }[] },
+  payload: {
+    token: string
+    snCode: string
+    points: { latitude: number; longitude: number }[]
+    /** 🆕 2026-10-10（E76）：**官方线路点列**（首发时 `line.pointList` 的原样副本；只有浏览器有） */
+    linePointList?: unknown
+  },
   origin: string,
 ): { ok: boolean; message: string; action: 'wait' | 'submit' | 'discard' | '' } {
   ensurePersistedJobLoaded()
@@ -515,6 +537,20 @@ export function resumeRunSubmitJob(
       message: '找不到那次跑步的轨迹点（浏览器本机数据被清过）⇒ 无法继续这笔提交；可以点「作废」放弃它',
       action: '',
     }
+  }
+  /**
+   * 🆕 2026-10-10（E76）：**官方线路点列**也必须补齐且数量对得上。
+   * 为什么宁可不续跑：`sunrunPathPointList` 逐字取自它（`ERROR.md` E37），
+   * 缺了就发出一条**与首发口径不一致**的报文 ⇒ 不如如实拒绝，让用户重新跑一次。
+   */
+  const lineIssue = checkResumeLinePoints(p, payload.linePointList)
+  if (lineIssue) {
+    logWarn('run', `续跑被拒（官方线路点列核验不通过）：${lineIssue}`, {
+      runId: p.id,
+      scantronId: p.scantronId,
+      expected: p.context.linePointCount,
+    })
+    return { ok: false, message: lineIssue, action: '' }
   }
 
   const now = Date.now()
@@ -563,7 +599,8 @@ export function resumeRunSubmitJob(
       snCode: payload.snCode,
       schoolCode: p.context.schoolCode,
       task: p.context.task,
-      line: p.context.line,
+      /** 🆕 2026-10-10（E76）：官方线路点列**原样装回**（磁盘上没有它，由浏览器刚补交上来） */
+      line: withLinePoints(p.context.line, payload.linePointList),
       paperId: p.context.paperId,
       km: p.context.km,
       durationSeconds: p.context.durationSeconds,

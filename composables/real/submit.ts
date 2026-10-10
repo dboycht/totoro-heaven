@@ -424,10 +424,13 @@ export function useMpRealSubmit() {
     }
     logInfo('submit', '已启动服务端提交作业（等待与两次写都在服务端）', { jobId: started.id, scantronId, planned })
     /**
-     * 🆕 2026-10-08（进程级续跑，用户要求）：作业已受理 ⇒ 记下**浏览器侧**要补交的那三样，
+     * 🆕 2026-10-08（进程级续跑，用户要求）：作业已受理 ⇒ 记下**浏览器侧**要补交的那几样，
      * "关掉 EXE 重启也能接着跑"从这一刻起才成立。
-     * 🔒 只记 `jobId / scantronId / startedAt / snCode / 轨迹点`：**token 不进这里**（现从会话取）——
-     * 落盘边界见 `utils/mp/runResume.ts`（用户 2026-10-08 拍板：token 与轨迹点都不进**服务端**磁盘）。
+     * 🔒 只记 `jobId / scantronId / startedAt / snCode / 轨迹点 / 官方线路点列`：
+     * **token 不进这里**（现从会话取）—— 落盘边界见 `utils/mp/runResume.ts`
+     * （用户 2026-10-08 拍板：token 与点列都不进**服务端**磁盘）。
+     * 🆕 2026-10-10（E76）：`linePointList` 是**官方线路点列**（`sunrunPathPointList` 的来源），
+     * 不给浏览器留一份，续跑就会发出缺线路点的报文 ⇒ 与轨迹点同一套口径，由浏览器带着。
      */
     savePendingResume({
       jobId: started.id,
@@ -435,6 +438,7 @@ export function useMpRealSubmit() {
       startedAt,
       snCode: context.snCode,
       points: toSubmitPoints(input.points),
+      linePointList: Array.isArray(input.line?.pointList) ? input.line.pointList : [],
       at: Date.now(),
     })
     const job = await pollServerSubmitJob(started.id)
@@ -972,7 +976,11 @@ export function useMpRealSubmit() {
       const snCode = profile.value?.snCode || payload.snCode || ''
       const res = await $fetch<{ ok: boolean; message: string; action: 'wait' | 'submit' | 'discard' | '' }>(
         '/api/local/run/submit/resume',
-        { method: 'POST', body: { token, snCode, points: payload.points } },
+        {
+          method: 'POST',
+          /** 🆕 2026-10-10（E76）：官方线路点列也要补交（磁盘上没有它，服务端要核点数） */
+          body: { token, snCode, points: payload.points, linePointList: payload.linePointList },
+        },
       )
       pushProgress(res.ok ? 'ok' : 'warn', res.message)
       logInfo('submit', `续跑请求结果：${res.message}`, { action: res.action, points: payload.points.length })

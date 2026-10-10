@@ -24,7 +24,7 @@
  *   改用**本地宽限** `RESUME_GRACE_SECONDS`（计划时长 + 5 分钟）—— 那是"这次还算是同一趟吗"的本地判断，
  *   **不是**厂商要求；超了就丢弃。
  */
-import { normalizePendingPoints } from './pendingDetail'
+import { PENDING_DETAIL_MAX_POINTS, normalizePendingPoints } from './pendingDetail'
 import { toDurationSeconds } from './taskRules'
 
 /** 落盘文件名（放在 `server/utils/logger.ts` 的 `RUNTIME_DIR` 下，即 `%TEMP%\totoro-heaven-runtime\`） */
@@ -71,6 +71,16 @@ export interface PersistedSubmitContext {
   durationSeconds: number
   fitDegree: number
   runType: 0 | 1
+  /**
+   * 🆕 2026-10-10（E76 修复）：线路对象里**官方线路点列的点数**（`line.pointList.length`；无线路 = 0）。
+   *
+   * 为什么只留"个数"：`sunRunExercises.sunrunPathPointList` **逐字取自** `line.pointList`
+   * （`utils/mp/submitPayload.ts` 的唯一构造器），而"点列不落盘"是用户 2026-10-08 拍板的边界
+   * ⇒ 点本身由**浏览器**在恢复时补交，磁盘上只留这个**非个人**的数字，
+   * 用来核验"补交回来的就是首发那一份"（数量对不上就拒绝续跑，绝不硬发残缺报文）。
+   * 取 `-1` = **不知道**（旧版文件/被手改），同样按"不硬发"处理。
+   */
+  linePointCount: number
 }
 
 /**
@@ -156,6 +166,38 @@ export function assertNoSensitiveKeys(value: unknown, path = '$'): void {
   walk(value, path)
 }
 
+/**
+ * 🔴 2026-10-10（E76 修复）：把**不该落盘的键**从对象树里剔除（返回深拷贝，**不改入参**）。
+ *
+ * 为什么必须有它：`context.task` / `context.line` 是**厂商原样对象**，而厂商在任务里带一个
+ * **字面键 `token`（实测值恒为字符串 `"null"`）**、在线路里带 `pointList`
+ * ⇒ 光靠 `assertNoSensitiveKeys()` 去"断言"，会把**合法数据**判成违规并**抛错**。
+ * 2026-10-10 实测事故（E76）正是如此：真实提交在 `startRunSubmitJob()` 里抛 500，
+ * 作业已登记却永不启动 ⇒ 僵尸作业 + 一直挡住后续提交。
+ *
+ * 正确口径：**能落盘的照写，越界的键一律剔除**；断言降级为"剔除漏了"的第二道闸。
+ */
+export function stripForbiddenKeysDeep(value: unknown): unknown {
+  const forbidden = new Set(FORBIDDEN_PERSIST_KEYS.map((k) => keyToken(k)))
+  const walk = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map((item) => walk(item))
+    if (!isObj(v)) return v
+    const out: Record<string, unknown> = {}
+    for (const [k, child] of Object.entries(v)) {
+      if (forbidden.has(keyToken(k))) continue
+      out[k] = walk(child)
+    }
+    return out
+  }
+  return walk(value)
+}
+
+/** 线路对象里"官方线路点列"的点数（`line.pointList.length`；读不到就是 0） */
+export function linePointCountOf(line: unknown): number {
+  if (!isObj(line)) return 0
+  return Array.isArray(line.pointList) ? line.pointList.length : 0
+}
+
 /** 从判定入参里**去掉学号**（保留其余非个人字段） */
 export function stripVerdictIdentity(raw: unknown): Record<string, unknown> {
   if (!isObj(raw)) return {}
@@ -205,21 +247,32 @@ export function toPersistedSubmitJob(input: {
     baseUrl: str(input.baseUrl),
     context: {
       schoolCode: str(input.context.schoolCode),
-      task: input.context.task,
-      line: input.context.line,
+      /**
+       * ⚠️ 两个**厂商原样对象**必须先剔除越界键再落盘（`stripForbiddenKeysDeep`）——
+       * 厂商在任务里带 `token`（值 "null"）、在线路里带 `pointList`（E76）。
+       * 剔除只影响"写进磁盘的那一份"，**不影响发给厂商的报文**（报文用的是内存里的原件）。
+       */
+      task: stripForbiddenKeysDeep(input.context.task),
+      line: stripForbiddenKeysDeep(input.context.line),
       paperId: str(input.context.paperId),
       km: num(input.context.km),
       durationSeconds: num(input.context.durationSeconds),
       fitDegree: num(input.context.fitDegree),
       runType: input.context.runType === 1 ? 1 : 0,
+      /** 点列本身不落盘，只留个数（**必须在剔除之前数**，剔除后就没有 `pointList` 了） */
+      linePointCount: linePointCountOf(input.context.line),
     },
-    verdictRequest: stripVerdictIdentity(input.verdictRequest),
+    verdictRequest: stripForbiddenKeysDeep(stripVerdictIdentity(input.verdictRequest)) as Record<string, unknown>,
     meta: {
       km: num(input.meta.km),
       lineName: str(input.meta.lineName),
       runTypeLabel: str(input.meta.runTypeLabel),
     },
   }
+  /**
+   * 第二道闸：剔除之后**再断言**。它现在只可能抓到"将来有人往 job 里加了带越界键的新字段"
+   * （那确实是漏剔），不会再被厂商原样数据误伤 —— 这正是 E76 的修法。
+   */
   assertNoSensitiveKeys(job)
   return job
 }
@@ -261,6 +314,8 @@ export function parsePersistedSubmitJob(raw: unknown): PersistedSubmitJob | null
         durationSeconds,
         fitDegree: Number.isFinite(num(c.fitDegree)) ? num(c.fitDegree) : 0,
         runType: num(c.runType) === 1 ? 1 : 0,
+        /** 缺失/坏值 = `-1` = **不知道**（旧版文件）⇒ 续跑时按"不硬发"处理 */
+        linePointCount: Number.isFinite(num(c.linePointCount)) ? num(c.linePointCount) : -1,
       },
       verdictRequest: isObj(o.verdictRequest) ? o.verdictRequest : {},
       meta: {
@@ -399,7 +454,8 @@ export function targetClock(job: PersistedSubmitJob): string {
  * `localStorage` 键：续跑所需的**浏览器侧**数据（作业跑完/叫停/作废即删）。
  *
  * 为什么要放浏览器：用户 2026-10-08 拍板"**轨迹点不落服务端磁盘**"（沿用「补交轨迹」那套口径），
- * 而那三样里 `points` 只有浏览器有 ⇒ 恢复时由浏览器回传。
+ * 而这几样里只有浏览器有 ⇒ 恢复时由浏览器回传：
+ *   · `points`（用户轨迹点）；· `linePointList`（**官方线路点列**，🆕 2026-10-10 E76）；· `snCode`。
  * `token` **不进这里**（它在 `mp_session` 里，现取现用，少一份副本少一个泄漏面）。
  */
 export const PENDING_SUBMIT_RESUME_KEY = 'mp_pending_submit_v1'
@@ -414,8 +470,76 @@ export interface PendingResumePayload {
   snCode: string
   /** 那次真正要发的轨迹点（**逐点重现**靠它） */
   points: { latitude: number; longitude: number }[]
+  /**
+   * 🆕 2026-10-10（E76 修复）：**官方线路点列**（= 首发时 `line.pointList` 的原样副本）。
+   *
+   * 为什么第四样也得由浏览器带着：`sunRunExercises.sunrunPathPointList` **逐字取自**它
+   * （`utils/mp/submitPayload.ts`），而"点列不落服务端磁盘"是用户拍板的边界
+   * ⇒ 不给浏览器留一份，续跑就只能发出 `sunrunPathPointList: []` 的**残缺报文**（改了提交口径）。
+   * ⚠️ **逐字保留**：厂商原样是**字符串坐标**（`"32.032922"`），转成数字就改了报文。
+   */
+  linePointList: unknown[]
   /** 落盘时刻 */
   at: number
+}
+
+/**
+ * 官方线路点列的归一化：**只做形状体检 + 浅拷贝，绝不改造数值**。
+ * - 允许**空数组**（服务端未下发线路的任务，首发报文里就是 `[]`）；
+ * - 每一项必须是对象且 `latitude`/`longitude` 能读成有限数（number 或数字字符串）；
+ * - ⚠️ **不转数字、不裁字段**：报文要逐字重现首发那一份。
+ */
+export function normalizeLinePoints(raw: unknown): unknown[] | null {
+  if (!Array.isArray(raw)) return null
+  if (raw.length > PENDING_DETAIL_MAX_POINTS) return null
+  const finiteLike = (v: unknown): boolean =>
+    (typeof v === 'number' && Number.isFinite(v)) ||
+    (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)))
+  const out: unknown[] = []
+  for (const item of raw) {
+    if (!isObj(item)) return null
+    if (!finiteLike(item.latitude) || !finiteLike(item.longitude)) return null
+    out.push({ ...item })
+  }
+  return out
+}
+
+/**
+ * 🆕 2026-10-10（E76 修复）：续跑前核验"浏览器补交的官方线路点列"是不是**首发那一份**。
+ *
+ * 判据只有一条：**点数与落盘时记下的个数一致** —— 磁盘上没有点本身（边界如此），只能核个数。
+ * 返回 `''` = 通过；否则是**人话**拒绝原因（进界面与日志；不许含 markdown 标记）。
+ * ⚠️ 宁可拒绝也不硬发：`sunrunPathPointList` 是提交口径的一部分（`ERROR.md` E37）。
+ */
+export function checkResumeLinePoints(job: PersistedSubmitJob, supplied: unknown): string {
+  const expected = num(job?.context?.linePointCount)
+  if (!Number.isFinite(expected) || expected < 0) {
+    return '这是一份旧版落盘作业，无法确认当时的官方线路点列 ⇒ 不硬发（可以点「作废」放弃它，或重新跑一次）'
+  }
+  const list =
+    /**
+     * ⚠️ `undefined` / `null` = "载荷里没有这个字段"（**加它之前**写的浏览器载荷）⇒ 按**空点列**处理：
+     * 首发真的是空的（服务端未下发线路的任务）就照常续跑；真丢了点列则由下面那句**数量核验**拦住。
+     * 而**畸形**（不是数组 / 点坐标读不出数）仍然当场拒绝 —— 那是"数据坏了"，不是"没有"。
+     */
+    supplied === undefined || supplied === null ? [] : normalizeLinePoints(supplied)
+  if (list === null) {
+    return '浏览器里那份「官方线路点列」已不可用（本机数据被清过或被改坏）⇒ 不继续这笔提交（否则会发出缺线路点的报文）；可以点「作废」放弃它'
+  }
+  if (list.length !== expected) {
+    return (
+      `浏览器里那份「官方线路点列」与落盘记录对不上（落盘记 ${expected} 个点，本机有 ${list.length} 个）` +
+      `⇒ 不继续这笔提交（免得发出与首发不一致的报文）；可以点「作废」放弃它`
+    )
+  }
+  return ''
+}
+
+/** 把浏览器补交的官方线路点列**原样装回**线路对象（`line` 为空/点列不可用 ⇒ 原样返回） */
+export function withLinePoints(line: unknown, supplied: unknown): unknown {
+  const list = normalizeLinePoints(supplied)
+  if (!isObj(line) || list === null) return line
+  return { ...line, pointList: list }
 }
 
 /** 从 `localStorage` 读到的原始文本解析；**坏数据一律 null（绝不抛）** */
@@ -431,12 +555,19 @@ export function parsePendingResume(raw: unknown): PendingResumePayload | null {
     if (!Number.isFinite(startedAt) || startedAt <= 0) return null
     const points = normalizePendingPoints(o.points)
     if (!points) return null
+    /**
+     * ⚠️ **加这个字段之前写的**老载荷里没有它 ⇒ 按**空**处理，交给服务端的数量核验去判：
+     * 首发真的是空的（服务端未下发线路的任务）就照常续跑；真丢了点列则会被 `checkResumeLinePoints()` 拒掉。
+     */
+    const linePointList = o.linePointList === undefined ? [] : normalizeLinePoints(o.linePointList)
+    if (linePointList === null) return null
     return {
       jobId,
       scantronId,
       startedAt,
       snCode: str(o.snCode),
       points,
+      linePointList,
       at: Number.isFinite(num(o.at)) ? num(o.at) : 0,
     }
   } catch {
@@ -459,6 +590,10 @@ export function serializePendingResume(p: PendingResumePayload): string {
       latitude: num((pt as { latitude?: unknown })?.latitude),
       longitude: num((pt as { longitude?: unknown })?.longitude),
     })),
+    /** 官方线路点列：**原样**写出（厂商字符串坐标不许被改写成数字） */
+    linePointList: (Array.isArray(p.linePointList) ? p.linePointList : []).map((item) =>
+      item && typeof item === 'object' && !Array.isArray(item) ? { ...(item as Record<string, unknown>) } : item,
+    ),
     at: num(p.at),
   })
 }

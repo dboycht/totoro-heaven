@@ -15,14 +15,19 @@ import {
   PERSISTED_SUBMIT_VERSION,
   RESUME_GRACE_SECONDS,
   assertNoSensitiveKeys,
+  checkResumeLinePoints,
   decideResume,
   isPersistedJobExpired,
+  linePointCountOf,
+  normalizeLinePoints,
   parsePendingResume,
   parsePersistedSubmitJob,
   resumeSummaryText,
   serializePendingResume,
+  stripForbiddenKeysDeep,
   stripVerdictIdentity,
   toPersistedSubmitJob,
+  withLinePoints,
   withVerdictIdentity,
   type PersistedSubmitJob,
 } from '../../utils/mp/runResume.ts'
@@ -258,7 +263,7 @@ test('摘要文案：带场次号与里程，且不含 markdown 标记', () => {
   assert.equal(text.includes('`'), false)
 })
 
-// ---------- ⑤ 浏览器侧续跑载荷（恢复时要补交的那三样） ----------
+// ---------- ⑤ 浏览器侧续跑载荷（恢复时要补交的那几样） ----------
 test('浏览器载荷：往返一致；坏数据一律 null', () => {
   const payload = {
     jobId: 'run-abc',
@@ -268,6 +273,11 @@ test('浏览器载荷：往返一致；坏数据一律 null', () => {
     points: [
       { latitude: 31.9, longitude: 118.78 },
       { latitude: 31.9001, longitude: 118.7801 },
+    ],
+    /** 🆕 E76：官方线路点列（**厂商原样是字符串坐标**，往返必须逐字保留） */
+    linePointList: [
+      { longitude: '119.480801', latitude: '31.373201', time: null },
+      { longitude: '119.480747', latitude: '31.373476', time: null },
     ],
     at: T0 + 1000,
   }
@@ -282,6 +292,8 @@ test('浏览器载荷：往返一致；坏数据一律 null', () => {
     JSON.stringify({ ...payload, jobId: '' }),
     JSON.stringify({ ...payload, points: [] }),
     JSON.stringify({ ...payload, points: [{ latitude: 'x', longitude: 1 }] }),
+    JSON.stringify({ ...payload, linePointList: 'nope' }),
+    JSON.stringify({ ...payload, linePointList: [{ latitude: 'x', longitude: 1 }] }),
   ]) {
     assert.equal(parsePendingResume(bad), null, `${String(bad).slice(0, 50)} 应当解析成 null`)
   }
@@ -294,6 +306,7 @@ test('浏览器载荷：**不含 token**（token 现从会话取，少一份副�
     startedAt: T0,
     snCode: '161900101',
     points: [{ latitude: 31.9, longitude: 118.78 }],
+    linePointList: [],
     at: T0,
     token: 'gho_SHOULD_NOT_BE_STORED',
   }
@@ -304,4 +317,156 @@ test('浏览器载荷：**不含 token**（token 现从会话取，少一份副�
 
 test('浏览器载荷：存储键固定（改名会让老用户的未完成作业找不回来）', () => {
   assert.equal(PENDING_SUBMIT_RESUME_KEY, 'mp_pending_submit_v1')
+})
+
+// ---------- ⑥ 🔴 E76（2026-10-10 真实提交实测事故）的回归 ----------
+/**
+ * 一份**厂商原样**的任务对象（字段名/取值都照实拍报文，
+ * 见 `%TEMP%\totoro-heaven-runtime\captures\c00024-getSunrunPaper-200.json`）。
+ *
+ * 关键：它带一个**字面键 `token`**（值恒为字符串 `"null"`），线路里带 `pointList`。
+ * 修前 `toPersistedSubmitJob()` 会拿 `assertNoSensitiveKeys()` 去断言这两个合法对象 ⇒ 抛错；
+ * 而它在服务端夹在"作业已登记"与"runJob 启动"之间 ⇒ **HTTP 500 + 僵尸作业**（E76）。
+ */
+const vendorTaskFixture = () => ({
+  status: '00',
+  code: '0',
+  token: 'null',
+  id: 'sunrunTaskPaper-20210918000004',
+  paperId: 'sunrunTaskPaper-20210918000004',
+  paperName: '天目湖阳光跑',
+  mileage: '3.20',
+  fitDegree: '0.60',
+  minSpeed: '3',
+  maxSpeed: '15',
+  minTime: '10',
+  maxTime: '25',
+  offsetRange: '300',
+  startTime: '06:00',
+  endTime: '23:00',
+  faceFlag: '0',
+  ifHasRun: '0',
+  detailId: null,
+  runPointList: [
+    {
+      taskId: 'sunrunTaskPaper-20210918000004',
+      pointId: 'sunrunLine-20210918000001',
+      pointName: '天目湖-西操场',
+      longitude: '119.4801785',
+      latitude: '31.3737802',
+      pointList: [
+        { longitude: '119.480801', latitude: '31.373201', time: null },
+        { longitude: '119.480747', latitude: '31.373476', time: null },
+      ],
+      signLongitude: null,
+      signLatitude: null,
+      signQrcode: null,
+    },
+  ],
+})
+
+const jobWithVendorTask = () => {
+  const task = vendorTaskFixture()
+  const line = task.runPointList[0]
+  return toPersistedSubmitJob({
+    ...(inputFixture() as Record<string, unknown>),
+    context: { ...inputFixture().context, task, line },
+  } as never)
+}
+
+test('🔴 E76 回归：厂商原样任务（token:"null"）与线路（pointList）**不得**让落盘抛错', () => {
+  let job: PersistedSubmitJob | undefined
+  assert.doesNotThrow(() => {
+    job = jobWithVendorTask()
+  }, '厂商原样数据是合法输入 —— 落盘只能"剔除越界键"，不许抛错')
+
+  const text = JSON.stringify(job)
+  /** ① 越界的东西一个都不许进磁盘 */
+  assert.equal(text.includes('"token"'), false, '厂商任务里的 token 键不许落盘')
+  assert.equal(text.includes('"pointList"'), false, '官方线路点列不许落盘')
+  assert.equal(text.includes('119.480801'), false, '线路点坐标不许落盘')
+  /** ② 该留的一个都不能少（判分与续跑都要用） */
+  const keptLine = job!.context.line as Record<string, unknown>
+  assert.equal(keptLine.pointId, 'sunrunLine-20210918000001')
+  assert.equal(keptLine.pointName, '天目湖-西操场')
+  assert.equal(keptLine.taskId, 'sunrunTaskPaper-20210918000004')
+  const keptTask = job!.context.task as Record<string, unknown>
+  assert.equal(keptTask.minTime, '10')
+  assert.equal(keptTask.maxTime, '25')
+  assert.equal(keptTask.paperName, '天目湖阳光跑')
+  /** ③ 点列只留**个数**（续跑靠它核验"补交回来的就是那一份"） */
+  assert.equal(job!.context.linePointCount, 2)
+  assert.equal(linePointCountOf(job!.context.line), 0, '剔除之后线路里已经没有 pointList 了')
+  /** ④ 落盘文本 ↔ 读回一致 */
+  const back = parsePersistedSubmitJob(JSON.stringify(job))
+  assert.ok(back)
+  assert.equal(back!.context.linePointCount, 2)
+  assert.equal(back!.scantronId, 'sunrunId202610081234')
+})
+
+test('落盘：越界键按**深度**剔除（含数组里的对象），且绝不改入参', () => {
+  const src = {
+    a: { token: 'x', keep: 1, nested: { points: [1, 2], ok: 'y' } },
+    list: [{ snCode: 'z', name: 'n' }],
+    arr: [1, 'two', null],
+  }
+  const out = stripForbiddenKeysDeep(src) as Record<string, unknown>
+  assert.deepEqual(out, { a: { keep: 1, nested: { ok: 'y' } }, list: [{ name: 'n' }], arr: [1, 'two', null] })
+  /** 剔除是"深拷贝"，入参不动 —— 报文用的是内存里的原件，绝不能被改花 */
+  assert.equal((src.a as Record<string, unknown>).token, 'x')
+  assert.deepEqual(((src.a as { nested: { points: number[] } }).nested).points, [1, 2])
+  /** 剔除之后，第二道闸必过（它现在只可能抓到"将来有人漏剔"） */
+  assert.doesNotThrow(() => assertNoSensitiveKeys(out))
+})
+
+test('续跑核验：官方线路点列**点数对得上**才放行', () => {
+  const job = jobWithVendorTask()
+  const supplied = vendorTaskFixture().runPointList[0]!.pointList
+  assert.equal(checkResumeLinePoints(job, supplied), '', '点数一致 ⇒ 放行')
+
+  assert.match(checkResumeLinePoints(job, [supplied[0]]), /对不上/, '少一个点 ⇒ 拒绝')
+  assert.match(checkResumeLinePoints(job, [...supplied, supplied[0]]), /对不上/, '多一个点 ⇒ 拒绝')
+  assert.match(checkResumeLinePoints(job, 'nope'), /已不可用/, '点列不可用 ⇒ 拒绝')
+  assert.match(checkResumeLinePoints({ ...job, context: { ...job.context, linePointCount: -1 } } as never, supplied), /旧版落盘作业/)
+})
+
+test('续跑核验：服务端**未下发线路**（0 点）的任务，两边都空 ⇒ 照旧放行', () => {
+  const noLineJob = toPersistedSubmitJob(inputFixture() as never) // 夹具的 line 没有 pointList
+  assert.equal(noLineJob.context.linePointCount, 0)
+  assert.equal(checkResumeLinePoints(noLineJob, []), '')
+  assert.equal(checkResumeLinePoints(noLineJob, undefined), '')
+})
+
+test('续跑核验的拒绝文案是**用户可见**的 ⇒ 不许含 markdown 标记', () => {
+  const job = jobWithVendorTask()
+  const msgs = [
+    checkResumeLinePoints(job, []),
+    checkResumeLinePoints(job, 'nope'),
+    checkResumeLinePoints({ ...job, context: { ...job.context, linePointCount: -1 } } as never, []),
+  ]
+  for (const m of msgs) {
+    assert.ok(m.length > 0)
+    for (const mark of ['**', '##', '`']) assert.equal(m.includes(mark), false, `拒绝文案不许含「${mark}」`)
+  }
+})
+
+test('官方线路点列：装回时**逐字保留**（厂商字符串坐标不许被改成数字）', () => {
+  const job = jobWithVendorTask()
+  const supplied = vendorTaskFixture().runPointList[0]!.pointList
+  const line = withLinePoints(job.context.line, supplied) as Record<string, unknown>
+  assert.deepEqual(line.pointList, supplied)
+  assert.equal(typeof (line.pointList as Record<string, unknown>[])[0]!.latitude, 'string', '字符串坐标必须原样留着')
+  assert.equal(line.pointId, 'sunrunLine-20210918000001', '其余字段一个都不能丢')
+  /** 未下发线路的任务（`line` 为空）⇒ 原样返回，不凭空造一个 pointList */
+  assert.equal(withLinePoints(null, []), null)
+  assert.equal(withLinePoints(undefined, []), undefined)
+})
+
+test('normalizeLinePoints：允许空数组（未下发线路），但坏点列一律拒绝', () => {
+  assert.deepEqual(normalizeLinePoints([]), [])
+  assert.equal(normalizeLinePoints(null), null)
+  assert.equal(normalizeLinePoints('x'), null)
+  assert.equal(normalizeLinePoints([{ latitude: 1 }]), null, '缺点位坐标 ⇒ 拒绝')
+  assert.equal(normalizeLinePoints([{ latitude: '', longitude: 1 }]), null, '空串坐标 ⇒ 拒绝')
+  assert.equal(normalizeLinePoints([{ latitude: '31.9', longitude: '118.78', time: null }])?.length, 1)
 })

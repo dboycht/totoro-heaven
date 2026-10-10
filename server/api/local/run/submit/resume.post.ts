@@ -1,10 +1,12 @@
 /**
  * `POST /api/local/run/submit/resume` —— **继续上次没跑完的提交**（进程级续跑；2026-10-08 用户要求）
  *
- * ## 为什么入参里要带 token / 学号 / 轨迹点
- * 落盘文件**故意不含**这三样（用户 2026-10-08 拍板的落盘边界，见 `utils/mp/runResume.ts`）：
+ * ## 为什么入参里要带 token / 学号 / 轨迹点 / 官方线路点列
+ * 落盘文件**故意不含**这几样（用户 2026-10-08 拍板的落盘边界，见 `utils/mp/runResume.ts`）：
  *   · **token**：项目红线（任何形态不落盘）；
- *   · **轨迹点**：由浏览器 `localStorage` 存（沿用「补交轨迹」那套口径）；
+ *   · **轨迹点**（用户的）：由浏览器 `localStorage` 存（沿用「补交轨迹」那套口径）；
+ *   · **官方线路点列**（🆕 2026-10-10 E76）：`sunrunPathPointList` 逐字取自它，
+ *     而"点列不落盘"同一条边界 ⇒ 同样由浏览器补交（磁盘上只留**点数**用于核验）；
  *   · **学号**：与诊断包"学号打码"同一套口径。
  * ⇒ 恢复这一刻由**浏览器**把它们补交回来（它自己有会话、有 localStorage）。
  *
@@ -23,7 +25,7 @@ import { logInfo, logWarn } from '../../../../utils/logger'
 export default defineEventHandler(async (event) => {
   assertLocalRequest(event)
   const body = (await readBody(event)) as
-    | { token?: unknown; snCode?: unknown; points?: unknown }
+    | { token?: unknown; snCode?: unknown; points?: unknown; linePointList?: unknown }
     | undefined
 
   /**
@@ -40,17 +42,25 @@ export default defineEventHandler(async (event) => {
       )
     : []
 
+  /**
+   * 🆕 2026-10-10（E76）：**官方线路点列**（首发时 `line.pointList` 的原样副本）。
+   * 这里只做"是不是数组"的粗筛，**形状与数量的核验在 `resumeRunSubmitJob()` 里**
+   * （唯一出口 `checkResumeLinePoints()`，纯函数有单测）—— 端点不做第二套判据。
+   */
+  const linePointList = Array.isArray(body?.linePointList) ? body.linePointList : []
+
   const out = resumeRunSubmitJob(
     {
       token: typeof body?.token === 'string' ? body.token : '',
       snCode: typeof body?.snCode === 'string' ? body.snCode : '',
       points: points as { latitude: number; longitude: number }[],
+      linePointList,
     },
     origin,
   )
 
-  /** ⚠️ 只记**动作与原因**，不记 token / 学号 / 轨迹点（点数除外 —— 它不敏感） */
-  const payload = { action: out.action, ok: out.ok, points: points.length }
+  /** ⚠️ 只记**动作与原因**，不记 token / 学号 / 轨迹点 / 线路点列（只记点数 —— 它不敏感） */
+  const payload = { action: out.action, ok: out.ok, points: points.length, linePoints: linePointList.length }
   if (out.ok) logInfo('run', `续跑请求已受理：${out.message}`, payload)
   else logWarn('run', `续跑请求被拒：${out.message}`, payload)
   return out
