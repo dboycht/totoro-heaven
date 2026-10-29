@@ -92,10 +92,22 @@ if (!fs.existsSync(NOTES)) {
   process.exit(1)
 }
 
-/** 附件清单（顺序即上传顺序）；7z 不存在时自动跳过 */
+/**
+ * 🆕 2026-10-29：**停更公告配图也作为 Release 附件上传**。
+ *
+ * 为什么：GitHub 的 Release 正文**不能显示仓库内相对路径的图片**，而 raw 直链在部分网络环境会被拦
+ * （本机实测 `raw.githubusercontent.com` 直接 502）。把图片作为**本 Release 的资产**上传后，
+ * 正文用 `releases/download/<tag>/<文件名>` 引用，图片与版本绑定、不依赖 main 分支、
+ * 也不会因为以后仓库关闭/改名而失效。
+ * 只在本版需要时上传（文件存在才加），老版本行为不变。
+ */
+const NOTICE_IMG = path.resolve(ROOT, 'public', 'notice', 'sports-dept-reply.png')
+
+/** 附件清单（顺序即上传顺序）；7z / 公告图不存在时自动跳过 */
 const ASSETS = [
   { path: ZIP, contentType: 'application/zip' },
   ...(fs.existsSync(SEVEN) ? [{ path: SEVEN, contentType: 'application/x-7z-compressed' }] : []),
+  ...(fs.existsSync(NOTICE_IMG) ? [{ path: NOTICE_IMG, contentType: 'image/png' }] : []),
 ]
 
 /** 正文已在上面强制校验存在（缺正文一律 exit 1，不做"兜底一行"的降级） */

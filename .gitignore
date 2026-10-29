@@ -24,6 +24,11 @@ npm-debug.log*
 # 判据：`git check-ignore -v --no-index -- download/report.txt` 必须命中。
 /download/
 
+# 🆕 2026-10-29：`.tmp/` —— 本项目内的一次性临时产物（解包演练、截图、探针输出）。
+# 判据（AGENTS.md 规则 18）：这类产物只准落在项目内 `.tmp/`，且**绝不进仓库**。
+# 判据命令：`git check-ignore -v --no-index -- .tmp/x` 必须命中。
+.tmp/
+
 # dev docs & reverse-engineering materials (kept in dev copy only)
 DEVELOPMENT.md
 ERROR.md
@@ -76,3 +81,6 @@ private/
 .vscode/
 .idea/
 .DS_Store
+
+# 🆕 2026-10-29：一次性临时产物（解包演练/截图/探针输出）只准落这里，绝不进仓库（AGENTS.md 规则 18）
+.tmp/

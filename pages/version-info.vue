@@ -14,14 +14,15 @@
     </v-alert>
 
     <!-- 版本建议（文字说明保留；用户 2026-09-16 要求：只显示"当前版本"的贺图与文字，且不出现任何文件路径）
-         ⚠️ 2026-09-20：不再显示"预计发布日期"（写死的日期一过期就变成错信息），改为**从版本条目里取当前正式版**。 -->
-    <v-alert type="info" variant="flat" density="comfortable" class="mb-4">
+         ⚠️ 2026-09-20：不再显示"预计发布日期"（写死的日期一过期就变成错信息），改为**从版本条目里取当前正式版**。
+         ⚠️ 2026-10-29：项目永久停更 ⇒ 不再是"建议使用某版本"，改成明确的停更口径（仍然不会过期）。 -->
+    <v-alert type="warning" variant="flat" density="comfortable" class="mb-4">
       <div class="font-weight-bold">
-        <v-icon class="mr-1">mdi-information-outline</v-icon>版本建议
+        <v-icon class="mr-1">mdi-newspaper-remove</v-icon>本项目已永久停更
       </div>
       <div class="text-body-2">
-        建议使用 <b>{{ VERSION_ADVICE.recommended }}</b> 的发行版（当前正式版 <b>{{ stableVersion }}</b>）；
-        此前 <b>{{ VERSION_ADVICE.preview }}</b> 均为<b>预览测试版</b>。
+        最后一个版本是 <b>{{ stableVersion }}</b>（此后不再发布新版本）；下载渠道与相关仓库将陆续关闭。
+        以下为本版公告与历史版本的更新日志，仅供查阅。
       </div>
     </v-alert>
 
@@ -73,7 +74,9 @@
  *   并在卡片上标明「当前运行 vX（开发中）」，避免出现空的"贺图待补充 / 暂无更新日志"；
  * - 贺图按 `/version-art/<版本号>.<ext>` 自动匹配，找不到就显示"待补充"（**不显示任何文件路径**）。
  */
-import { VERSION_ADVICE, VERSION_ENTRIES, channelText } from '~/src/mp/releaseArt'
+// ⚠️ 2026-10-29：本页不再使用 `VERSION_ADVICE`（停更后不再"建议使用某版本"，见上方停更提示），
+//    故从 import 中移除 —— 留着会触发 `noUnusedLocals` 类型检查失败。
+import { VERSION_ENTRIES, channelText } from '~/src/mp/releaseArt'
 import type { VersionEntry } from '~/src/mp/releaseArt'
 import { isNewerVersion } from '~/utils/mp/version'
 

@@ -1,12 +1,21 @@
 # 龙猫天堂 · 阳光跑助手
 
+> ## 🛑 停更公告（2026-10-29）
+>
+> **由于南航学生向南航体育部举报，我方后续将会关闭下载渠道以及相关仓库，十分抱歉。**
+>
+> 本项目**永久停止更新**。以下是南航体育部的回信：
+>
+> <img src="public/notice/sports-dept-reply.png" alt="南航体育部就校园跑相关代码的回信截图" width="640">
+>
+> （同一张图在软件内的「停更公告」弹窗里每次启动都会显示；图片原文件：`public/notice/sports-dept-reply.png`。README 里用仓库内相对路径，Release 正文里用该 Release 的附件地址——两处都不依赖第三方图床。）
+
 [![CI](https://github.com/dboycht/totoro-heaven/actions/workflows/ci.yml/badge.svg)](https://github.com/dboycht/totoro-heaven/actions/workflows/ci.yml)
 
 > ## 📌 版本说明（先看这个）
 >
-> - **建议使用 `1.3.*` 的发行版**（当前正式版：**`1.3.1`**，2026-10-11 发布；最新版本一律以
->   [**Releases**](https://github.com/dboycht/totoro-heaven/releases/latest) 页为准 —— 本行可能滞后于实际最新版）；
-> - 📌 开发版 **`1.3.2`** 目前**尚无已确认的新内容**（留待定版，见下方更新日志）。
+> - **最后一个正式版：`1.3.2`**（2026-10-29 发布，本版起**永久停更**，仅新增停更公告，功能未改动）；
+>   更早的版本见 [**Releases**](https://github.com/dboycht/totoro-heaven/releases) 页；
 > - 📌 上一代正式版 **`1.2.6`**（2026-09-30）；此前 **`1.1.*` 均为预览测试版**；
 >
 > （软件内「**版本信息**」板块会列出各版本的**贺图 + 更新日志**；版本号规则见 `rules/01`。）

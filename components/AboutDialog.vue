@@ -36,6 +36,21 @@
           仅用于教育与研究目的，请遵守所在学校的规章制度，作者不对任何违规使用负责。
         </v-alert>
 
+        <!-- 🚫 停更公告（2026-10-29 用户要求）：关掉启动弹窗后还能在这里回看（含体育部回信截图） -->
+        <v-alert type="error" variant="tonal" density="comfortable" class="mt-3" role="button" @click="openSunset">
+          <div class="d-flex align-center flex-wrap ga-2">
+            <v-icon color="error" size="22">mdi-newspaper-remove</v-icon>
+            <span class="text-body-2">
+              <b>本项目已永久停更</b>，相关下载渠道与仓库将陆续关闭。
+              <br /><span class="text-caption text-medium-emphasis">点这里查看完整公告与南航体育部回信截图</span>
+            </span>
+            <v-spacer />
+            <v-btn size="small" color="error" variant="flat" prepend-icon="mdi-open-in-new" @click.stop="openSunset">
+              查看公告
+            </v-btn>
+          </div>
+        </v-alert>
+
         <!-- 🚫 谢绝公开分享（用户 2026-09-20 要求：软件内也要有这条说明；与 README / 版本信息页同一口径） -->
         <v-alert type="error" variant="tonal" density="comfortable" class="mt-3">
           <div class="font-weight-bold">
@@ -79,6 +94,8 @@
         <v-spacer />
         <v-btn color="primary" variant="tonal" @click="model = false">关闭</v-btn>
       </v-card-actions>
+      <!-- 停更公告（与布局里的启动弹窗是同一个组件、同一个全局状态） -->
+      <SunsetNoticeDialog v-model="sunsetOpen" />
     </v-card>
   </v-dialog>
 </template>
@@ -90,4 +107,14 @@ const appConfig = useAppConfig()
 const version = computed(() => (appConfig.version as string) || 'dev')
 // 仓库地址（与「版本提示」组件同一来源）
 const { repoUrl } = useUpdateCheck()
+
+/**
+ * 停更公告的开关（**本组件内部的局部开关**）。
+ * 为什么不共享布局里那份状态：若两边共用同一个 ref，布局启动时的那一弹会把「关于」里的这份也一起打开，
+ * 于是点一次出现两个叠加的弹窗。各自独立持有开关 ⇒ 从哪进都能看到，互不打架。
+ */
+const sunsetOpen = ref(false)
+const openSunset = () => {
+  sunsetOpen.value = true
+}
 </script>

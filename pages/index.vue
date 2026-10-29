@@ -261,6 +261,17 @@ const doTokenScanAndCloseGuide = () => {
   void doTokenScan()
 }
 
+/**
+ * 🆕 2026-10-29：停更公告优先于首次教程（用户明确选择）。
+ *
+ * 为什么需要：停更公告由布局在每次启动时弹出，而首次教程原先在首页 `onMounted` 自己弹
+ * ⇒ 两者叠在一起，且 Vuetify 按开启顺序分配 z-index ⇒ 后开的教程（2410）把公告（2400）盖住，
+ * 用户实际只看得见教程（实测截图 `.tmp/verify-1.3.2/00-what-you-see.png`）。
+ * 现在：**教程只在停更公告被关掉之后才允许弹**（见下方 `sunsetDismissed`）；同一时刻只有一个弹窗。
+ * ⚠️ 教程本身"只看一次"的机制不变（`GUIDE_KEY`）—— 这里只是**推迟**，不是取消。
+ */
+const SUNSET_CLOSED_EVENT = 'totoro:sunset-notice-closed'
+
 const isRealSession = computed(() => Boolean(session.value?.token) && !session.value?.token?.startsWith('demo-'))
 /** 跑步页当前用的是真实任务还是演示任务 */
 const usingRealTask = computed(() => Boolean(realTask.value))
@@ -272,13 +283,38 @@ const routeGroups = computed(() =>
   groupRoutesByCampus(activeTask.value?.runPointList ?? [], realProfileMasked.value?.campusName),
 )
 
-onMounted(() => {
-  // 首次启动弹教程（用户要求）；已看过则不再自动弹，可用页面上的「查看教程」再打开
+/**
+ * 停服公告的可见状态（全局共享，单一真源 = `layouts/default.vue` 写入的 window 标志）。
+ * 用 provide/inject 无法跨 layout→page 传递（页面是 slot 内容，层级上不是子组件）⇒ 用 window 标志 + 事件。
+ *
+ * ⚠️ 关键教训（2026-10-29 实测）：**首页 `onMounted` 早于布局 `onMounted` 执行** ——
+ * 一开始我让页面在挂载时读取标志决定"是否推迟教程"，结果读到的永远是 `undefined` ⇒ 教程照弹，
+ * 而 Vuetify 按开启顺序分配 z-index，后开的教程（2410）就把停更公告（2400）盖住了。
+ * 现在的做法不依赖挂载顺序：**教程只在"停更公告已明确关闭"之后才允许弹**（初值 false，默认不弹）。
+ */
+const sunsetDismissed = ref(false)
+
+/** 按既有规则决定是否弹教程（只推迟、不改变"每个浏览器只弹一次"的语义） */
+const showGuideIfNeverSeen = () => {
+  if (!sunsetDismissed.value) return
   try {
     if (!localStorage.getItem(GUIDE_KEY)) guideOpen.value = true
   } catch {
     /* 忽略隐私模式等读取失败 */
   }
+}
+
+// 停更公告关闭后（布局派发事件）才允许弹教程
+onMounted(() => {
+  const onSunsetClosed = () => {
+    sunsetDismissed.value = true
+    // 让公告的关闭过渡先走完，避免两层遮罩在视觉上打架
+    window.setTimeout(showGuideIfNeverSeen, 300)
+  }
+  window.addEventListener(SUNSET_CLOSED_EVENT, onSunsetClosed, { once: true })
+  onBeforeUnmount(() => window.removeEventListener(SUNSET_CLOSED_EVENT, onSunsetClosed))
+
+  // 教程**不再**在挂载时自动弹：一定等停更公告关掉（它每次启动都弹，所以每次启动都走这条链）
   // 版本检测由 <UpdateNotice> 组件在挂载时发起（含「立即检测」）
 })
 
