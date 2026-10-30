@@ -38,6 +38,9 @@ useHead({ title: '龙猫天堂' })
       <ChibiRunGame @unlock="onUnlock" />
     </div>
 
+    <!-- 像素风键位图（用户 2026-10-30 要求：画在上半部分）—— 解锁后随遮罩一起被盖住 -->
+    <PixelKeyHint v-if="!unlocked" />
+
     <transition name="fade">
       <div v-if="unlocked" class="play-secret">✨ 你发现了秘密 ✨</div>
     </transition>
