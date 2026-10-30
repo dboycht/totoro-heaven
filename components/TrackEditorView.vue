@@ -210,11 +210,23 @@ onMounted(() => {
   autoRestoreFromCache()
   lib.load()
   const el = mapEl.value
-  if (el) viewport.value = { w: el.clientWidth, h: el.clientHeight }
+  if (el) {
+    viewport.value = { w: el.clientWidth, h: el.clientHeight }
+    /**
+     * 🆕 2026-10-30：滚轮缩放必须**非 passive** 注册（否则 `preventDefault()` 无效、页面会跟着滚）。
+     * 为什么不在模板里写 `@wheel.prevent`：Vue 对 wheel 事件在部分浏览器会按 passive 注册，
+     * 那种情况下 `.prevent` 无效且**不会报错** —— 症状正是"滚轮把整页滚走了"。手动挂最稳。
+     */
+    el.addEventListener('wheel', onWheel, { passive: false })
+  }
   window.addEventListener('resize', onResize)
   loadDraft(lineId.value)
 })
-onBeforeUnmount(() => window.removeEventListener('resize', onResize))
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', onResize)
+  // 🆕 1.3.3：滚轮监听是手动挂的，必须手动解绑（否则切走页面后 mapEl 引用不释放）
+  mapEl.value?.removeEventListener('wheel', onWheel)
+})
 const onResize = () => {
   const el = mapEl.value
   if (el) viewport.value = { w: el.clientWidth, h: el.clientHeight }
@@ -405,6 +417,57 @@ const zoomBy = (d: number) => {
   zoom.value = Math.min(Z_MAX, Math.max(Z_MIN, zoom.value + d))
 }
 
+/**
+ * 🆕 2026-10-30（1.3.3，用户要求）**光标在地图上时滚轮缩放**。
+ *
+ * 三条要点（少一条体验就坏）：
+ *   ① **以光标为锚点**：先记下光标下的经纬度，缩放后把它重新放到同一个屏幕位置 ——
+ *      否则"滚轮放大"会让视野整体跳走，用户得再拖回来（地图类软件的通行做法）。
+ *   ② **必须 `preventDefault`**：不拦的话页面会跟着上下滚，地图反而从光标下面滑走。
+ *      ⚠️ 为此监听必须是 **非 passive**：Vue 的 `@wheel` 模板写法在部分浏览器会注册成 passive，
+ *      所以这里用 `addEventListener('wheel', …, { passive: false })` 手动挂（见 `onMounted`）。
+ *   ③ **节流 + 合并**：触控板一次滑动会连发几十个 wheel 事件 ⇒ 用极小的时间窗合并成一次缩放，
+ *      否则会"一下从 13 跳到 19"。用请求序号而不是定时器：同一帧内只处理最后一次，且**不丢用户意图**。
+ */
+const WHEEL_MIN_INTERVAL_MS = 40
+let lastWheelAt = 0
+const onWheel = (e: WheelEvent) => {
+  const el = mapEl.value
+  if (!el) return
+  // 阻止页面滚动（③ 的前提）
+  e.preventDefault()
+
+  /** ③ 节流：过于密集的事件直接忽略（它们代表同一次滑动） */
+  const now = Date.now()
+  if (now - lastWheelAt < WHEEL_MIN_INTERVAL_MS) return
+  lastWheelAt = now
+
+  /** 在本级缩放下，光标处对应的经纬度 */
+  const rect = el.getBoundingClientRect()
+  const ox = e.clientX - rect.left
+  const oy = e.clientY - rect.top
+  const anchor = toLatLng(ox, oy)
+
+  /** 滚轮向上（deltaY < 0）= 放大 */
+  const step = e.deltaY < 0 ? 1 : -1
+  const next = Math.min(Z_MAX, Math.max(Z_MIN, zoom.value + step))
+  if (next === zoom.value) return
+  zoom.value = next
+
+  /**
+   * ① 重新居中：让 `anchor` 回到光标原有的屏幕位置。
+   * 新缩放下 anchor 的像素坐标 = `anchorPx`；我们希望它出现在 `(ox, oy)`，
+   * 而屏幕位置 = 世界像素 - originPx，且 originPx = centerPx - 视口/2
+   * ⇒ 反解出新的 center。
+   */
+  const anchorPx = { x: lng2x(anchor.longitude, next) * TILE, y: lat2y(anchor.latitude, next) * TILE }
+  const newCenterPx = { x: anchorPx.x - ox + viewport.value.w / 2, y: anchorPx.y - oy + viewport.value.h / 2 }
+  center.value = {
+    longitude: x2lng(newCenterPx.x / TILE, next),
+    latitude: y2lat(newCenterPx.y / TILE, next),
+  }
+}
+
 // ---------- 车道 + 轨迹预览 ----------
 const laneCount = ref(6)
 const laneNo = ref(3) // 默认居中那道（第 1 道=最内道；居中才不会看着"压在内圈上"）
@@ -526,11 +589,23 @@ const startLane = computed<N[]>(() =>
   ).map(num),
 )
 
-/** 最终轨迹：以（已按起跑点变换 + 接上进场段）的几何为参考，叠加"真实抖动"（直道恒定、小颗粒、偶发小凸起） */
+/**
+ * 最终轨迹预览：几何 = **跑道本身**（已按起跑点变换），进场点通过 `leadIn` 传入 ——
+ * 与跑步引擎（`composables/demo/runner.ts`）**完全同一套口径**，保证"所见即所跑"。
+ * ⚠️ 1.3.3 第一版的错法：把进场点拼进几何数组 ⇒ 它被当成跑道的一部分、每圈都绕回进场点
+ *    （用户 2026-10-30 实测指正："现在并不是这个样子的"）。现在几何里**不许**出现进场点。
+ */
 const trajectory = computed<N[]>(() => {
-  const geom = entryPreview.value.points.map(num)
-  if (geom.length < 3) return []
-  const g = generateCorridorRoute(geom, { targetKm: 3.2, stepM: 3, drift: true, seed: seed.value })
+  if (startLane.value.length < 3) return []
+  const ep = draftEntryPoint.value
+  const lead = ep && !entryNotice.value
+  const g = generateCorridorRoute(startLane.value, {
+    targetKm: 3.2,
+    stepM: 3,
+    drift: true,
+    seed: seed.value,
+    ...(lead ? { leadIn: [{ latitude: Number(ep.latitude), longitude: Number(ep.longitude) }] } : {}),
+  })
   return g.points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
 })
 

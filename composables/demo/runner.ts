@@ -83,32 +83,49 @@ function localTrackLines(entries: TrackRouteEntry[], taskId: string): MpRunLine[
  * 并且这一段逻辑有离线单测（`tests/mp/freePathGeometry.test.ts`）。
  */
 /**
- * 把几何解析成"喂给生成器的路径"，并在**同一个出口**接上进场段。
+ * 🆕 2026-10-30（1.3.3）**进场段**：真人在绕圈前从跑道外侧走到跑道上，那一段**只走一次**，
+ * 到起跑点后转入沿跑道循环。用户口径："用户自行设置这一小段"。
  *
- * 🆕 2026-10-30（1.3.3 需求「进场段」）：真人在绕圈前会从跑道外侧走到跑道上，
- * 那一段小直线由用户在地图上点「进场点」指定（用户口径："用户自行设置这一小段"）。
- * ⚠️ **必须在 `applyStartToLoop` 之后拼**：起跑点变换会把几何旋转到"第 0 点 = 起跑点"，
- *    进场段正是要接在**这个第 0 点**前面；拼得太早会被一起旋转走，进场点就跑错地方了。
- * ⚠️ 未设进场点 / 进场段不合法 ⇒ `prependEntrySegment` 原样返回，**与旧版逐点一致**（回归保证）。
+ * ⚠️⚠️ **第一版做错了（用户当日实测指正："现在并不是这个样子的"）**：
+ *    当时把进场点拼成 `[进场点, ...车道线]` 再交给生成器 —— 生成器把整条几何当成"一圈"，
+ *    于是**跑完一圈又回到进场点**，进场段被当成跑道的一部分反复绕。
+ * 正确做法：**几何保持原样**（就是跑道），进场点通过 `leadIn` 传给生成器，
+ *    由它在推进前先走完"进场点 → 几何第 0 点（起跑点）"，再进入循环。
+ *
+ * 判据（三句话）：几何里不许出现进场点；生成器收到 `leadIn`；未设进场点 ⇒ 不传，行为与旧版逐点一致。
+ *
+ * ⚠️ 合法性（3~120 m）仍用同一条 `prependEntrySegment` 判：先拿几何**第 0 点**当基准量距离，
+ *    这样"进场点离起跑点太近/太远"的口径与编辑器完全一致（编辑器里判的就是同一件事）。
  */
-function withEntrySegment(
-  geometry: LatLng[],
+function entryLeadIn(
+  lane: LatLng[],
   entry: TrackRouteEntry['entry'],
-): { geometry: LatLng[]; entryM: number; notice: string } {
-  const r = prependEntrySegment(geometry, entry ?? null)
+): { leadIn?: { latitude: number; longitude: number }[]; entryM: number; notice: string } {
+  const start = lane[0]
+  if (!entry?.point || !start) return { entryM: 0, notice: '' }
+  const r = prependEntrySegment(
+    [
+      { latitude: Number(start.latitude), longitude: Number(start.longitude) },
+      { latitude: Number(lane[1]?.latitude ?? start.latitude), longitude: Number(lane[1]?.longitude ?? start.longitude) },
+      { latitude: Number(lane[2]?.latitude ?? start.latitude), longitude: Number(lane[2]?.longitude ?? start.longitude) },
+    ],
+    entry,
+  )
+  if (r.skipped) return { entryM: r.entryM, notice: r.skipped }
   return {
-    geometry: r.points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) })),
+    leadIn: [{ latitude: Number(entry.point.latitude), longitude: Number(entry.point.longitude) }],
     entryM: r.entryM,
-    notice: r.skipped,
+    notice: '',
   }
 }
 
-function resolveTrackGeometry(entry: TrackRouteEntry): { geometry: LatLng[]; smooth: boolean } | null {
+function resolveTrackGeometry(entry: TrackRouteEntry): { geometry: LatLng[]; smooth: boolean; leadIn?: { latitude: number; longitude: number }[]; entryNotice?: string } | null {
   /** ① 非官方路径（2026-09-22 新功能）：形状是权威几何来源 */
   const shapeGeometry = resolveFreePathGeometry(entry.freeShape, entry.start ?? null)
   if (shapeGeometry) {
-    // 🆕 1.3.3：非官方路径同样支持进场段（接在起跑点之前）
-    return { geometry: withEntrySegment(shapeGeometry.geometry, entry.entry).geometry, smooth: shapeGeometry.smooth }
+    // 🆕 1.3.3：非官方路径同样支持进场段 —— **几何保持原样**，进场段走 `leadIn`
+    const lead = entryLeadIn(shapeGeometry.geometry, entry.entry)
+    return { geometry: shapeGeometry.geometry, smooth: shapeGeometry.smooth, leadIn: lead.leadIn, entryNotice: lead.notice }
   }
   /** ② 老口径（内外双圈）：逐字保持原行为 */
   if (entry.outer.length >= 3 && entry.inner.length >= 3) {
@@ -127,8 +144,9 @@ function resolveTrackGeometry(entry: TrackRouteEntry): { geometry: LatLng[]; smo
       ),
       entry.start ?? null,
     )
-    // 🆕 1.3.3：进场段接在"已旋转到起跑点"的第 0 点之前
-    return { geometry: withEntrySegment(lane, entry.entry).geometry, smooth: true }
+    // 🆕 1.3.3：进场段通过 `leadIn` 传给生成器（**不许**拼进 lane，否则会被当成跑道的一部分反复绕）
+    const lead = entryLeadIn(lane, entry.entry)
+    return { geometry: lane, smooth: true, leadIn: lead.leadIn, entryNotice: lead.notice }
   }
   return null
 }
@@ -320,6 +338,8 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
         drift: true,
         seed: newRunSeed(),
         smoothRoute: smoothRouteForThisRun,
+        // 🆕 1.3.3：进场段（只走一次的前缀）；未设时是 undefined ⇒ 行为与旧版一致
+        ...(resolved?.leadIn ? { leadIn: resolved.leadIn } : {}),
       })
       const actualKm = Number(generated.km)
       run.value = {

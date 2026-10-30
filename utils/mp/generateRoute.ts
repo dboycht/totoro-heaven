@@ -38,6 +38,16 @@ export interface CorridorOptions {
   /** 漂移期参数（给测试用；默认 2~4 次、每次 24~44 点、峰值偏移 14~30 米） */
   driftOptions?: { minCount?: number; maxCount?: number; minLen?: number; maxLen?: number; minM?: number; maxM?: number }
   /**
+   * 🆕 2026-10-30（1.3.3）**进场段（只走一次的前缀）**：
+   * 真人绕圈前会先从跑道外侧走到跑道上 —— 那一段**只走一次**，走完到达几何第 0 点（起跑点）后
+   * 才开始沿跑道循环。**绝不能把它拼进几何数组**：拼进去它就变成"跑道的一部分"，
+   * 跑完一圈会回到进场点（用户 2026-10-30 实测反馈："现在并不是这个样子的"）。
+   *
+   * 给 `[进场点]`（1 个点即可）：生成器先沿"前缀 → 几何第 0 点"走完，再进入正常循环推进。
+   * 缺省/空数组 ⇒ 行为与旧版**逐点一致**（回归保证）。
+   */
+  leadIn?: { latitude: number; longitude: number }[]
+  /**
    * 单点相对路线的**最大允许偏离（米）**，默认 `MAX_OFF_ROUTE_M`（6）。
    * 2026-09-17 新增：无论漂移档位怎么加码，都会把偏移向量**按上限截断** ⇒ 轨迹不会甩出跑道。
    */
@@ -216,6 +226,7 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     maxOffRouteM = MAX_OFF_ROUTE_M,
     smoothRoute = 2,
     arcLockedJitter = true,
+    leadIn,
   } = options
 
   if (!officialRoute || officialRoute.length < 2) {
@@ -530,6 +541,23 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     const k = maxOffRouteM / mag
     return { lat: off.lat * k, lng: off.lng * k }
   }
+  /**
+   * 🆕 2026-10-30（1.3.3）**进场段**：`leadIn` 最后一个点 → 几何第 0 点（起跑点）的一条直线，
+   * **只走一次**，之后进入正常循环推进。`leadM` = 这段的长度（0 = 没有进场段，走旧路径）。
+   * ⚠️ 只用**最后一个点**：多点时把它们视作折线太复杂，而本项目进场点本来就只有一个点。
+   */
+  const leadFrom =
+    Array.isArray(leadIn) && leadIn.length > 0
+      ? {
+          latitude: Number(leadIn[leadIn.length - 1]!.latitude),
+          longitude: Number(leadIn[leadIn.length - 1]!.longitude),
+        }
+      : null
+  const leadM =
+    leadFrom && Number.isFinite(leadFrom.latitude) && Number.isFinite(leadFrom.longitude)
+      ? distanceMeters(leadFrom.latitude, leadFrom.longitude, path[0]!.latitude, path[0]!.longitude)
+      : 0
+
   /** 构建一条轨迹（**同一 seed** → 每次尝试的抖动完全一致，只有偏移档位不同） */
   const buildTrajectory = (zoneCount: number, ampScale: number, lenScale = 1) => {
     const r = createRng(seed)
@@ -549,17 +577,47 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
       return { lat: eLat, lng: eLng }
     }
     // ⚠️ 首点也必须走同一套"抖动 + 偏移"（否则首点与第二点之间会凭空出现一次 15~22m 跳变 —— 实测抓到的）
-    const first = locate(0)
-    const j0 = jitterFor(first.arc)
-    const off0 = clampOffset(
-      driftOn ? offsetAt(first.arc, zoneCount, ampScale, lenScale, lapDriftAt(lapIndexAt(0))) : { lat: 0, lng: 0 },
-    )
-    pts.push({
-      latitude: first.lat + (j0.lat + off0.lat) / M_PER_DEG_LAT,
-      longitude: first.lng + (j0.lng + off0.lng) * degLngPerMeter(first.lat),
-    })
+    // 🆕 1.3.3：有进场段时，**首点就是进场点本身**（人从这里开始跑），不要套跑道偏移
+    if (leadM > 0 && leadFrom) {
+      pts.push({ latitude: leadFrom.latitude, longitude: leadFrom.longitude })
+    } else {
+      const first = locate(0)
+      const j0 = jitterFor(first.arc)
+      const off0 = clampOffset(
+        driftOn ? offsetAt(first.arc, zoneCount, ampScale, lenScale, lapDriftAt(lapIndexAt(0))) : { lat: 0, lng: 0 },
+      )
+      pts.push({
+        latitude: first.lat + (j0.lat + off0.lat) / M_PER_DEG_LAT,
+        longitude: first.lng + (j0.lng + off0.lng) * degLngPerMeter(first.lat),
+      })
+    }
     while (acc < targetM) {
       p += stepM
+
+      /**
+       * 🆕 2026-10-30（1.3.3）**进场段只走一次**：
+       * `p` 为负区间表示"还在进场段上"——从进场点直线走到几何第 0 点（起跑点），
+       * 走完（`p >= 0`）才开始沿跑道循环。这样"从进场点跑到起跑点、再沿跑道跑"才成立，
+       * 而不是把进场点当成跑道上的普通一点反复绕（用户实测反馈的错法）。
+       *
+       * ⚠️ 抖动与车道偏移**只在跑道上施加**：进场段是空地/草地，没有"车道"可言；
+       *    给直线加横向偏移反而会让它看起来像在飘。只保留极小的高频颗粒（GPS 本身的噪声感）。
+       */
+      if (p < 0 && leadM > 0 && leadFrom) {
+        const a = leadFrom
+        const b = path[0]!
+        const total = distanceMeters(a.latitude, a.longitude, b.latitude, b.longitude)
+        /** 已经走过的比例（0 = 进场点，1 = 起跑点） */
+        const k = total > 0 ? Math.min(1, Math.max(0, 1 + p / total)) : 1
+        const g = gauss(r, 0, jitterSigmaM * 0.25)
+        const lat = a.latitude + (b.latitude - a.latitude) * k + g / M_PER_DEG_LAT
+        const lng = a.longitude + (b.longitude - a.longitude) * k + g * degLngPerMeter(a.latitude)
+        const prev0 = pts[pts.length - 1]!
+        acc += distanceMeters(prev0.latitude, prev0.longitude, lat, lng)
+        pts.push({ latitude: lat, longitude: lng })
+        continue
+      }
+
       const here = locate(p)
       const j = jitterFor(here.arc)
       // 第几圈由**累积推进量**决定（闭合=取商；未闭合=每两趟算一圈，见 lapIndexAt）
