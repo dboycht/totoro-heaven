@@ -11,7 +11,7 @@
  */
 import type { LatLng } from '~/utils/mp/routeSimilarity'
 // 🆕 2026-09-22「非官方路径绘制」：本机条目可以存"圈型闭合曲线 / 直线型折返"（可选字段）
-import { parseFreePathShape, type FreePathShape } from '~/utils/mp/pathShape'
+import { parseFreePathShape, type FreePathShape, type TrackEntry } from '~/utils/mp/pathShape'
 import {
   FREE_ROUTE_CHOICE_KEY,
   isValidTrackEntry,
@@ -21,6 +21,7 @@ import {
   TRACK_LIBRARY_KEY,
   TRACK_LIBRARY_KEY_LEGACY,
   normalizeLibrary,
+  normalizeTrackEntry,
   sanitizeLineName,
   withFreeRouteChoice,
   type TrackRouteEntry,
@@ -176,6 +177,8 @@ export function useTrackLibrary() {
     laneCount?: number
     note?: string
     start?: TrackStart | null
+    /** 🆕 1.3.3（2026-10-30）：进场点。`null` = 明确清掉；`undefined` = 保持原样 */
+    entry?: TrackEntry | null
     freeShape?: FreePathShape | null
   }) => {
     /**
@@ -191,6 +194,8 @@ export function useTrackLibrary() {
     const version = String(appVersion.value ?? '未知')
     // `undefined` = 沿用旧值；`null` = 清掉（见上面注释）
     const start = input.start === undefined ? old?.start : (input.start ?? undefined)
+    // 🆕 1.3.3（2026-10-30）进场点：与 start 完全同一口径（`undefined` 沿用 / `null` 清掉）
+    const keptEntry = input.entry === undefined ? old?.entry : (input.entry ? normalizeTrackEntry(input.entry) : undefined)
     // 🆕 非官方形状：同一个"undefined 沿用 / null 清掉"的口径
     const keptFreeShape = freeShape === undefined ? old?.freeShape : (freeShape ?? undefined)
     const laneNo = input.laneNo ?? old?.laneNo
@@ -209,6 +214,7 @@ export function useTrackLibrary() {
       laneNo,
       note: input.note ?? old?.note,
       ...(start ? { start } : {}),
+      ...(keptEntry ? { entry: keptEntry } : {}),
       ...(keptFreeShape ? { freeShape: keptFreeShape } : {}),
       updatedAt: nowIso,
       updatedAppVersion: version,

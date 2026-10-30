@@ -14,6 +14,8 @@ import { calculateRouteSimilarity } from '~/utils/mp/routeSimilarity'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import { applyStartToLoop, laneLoop, laneRatioFor } from '~/utils/mp/trackEditor'
+// 🆕 2026-10-30（1.3.3）：进场段（纯算法，见 utils/mp/pathShape.ts 末尾一节）
+import { prependEntrySegment } from '~/utils/mp/pathShape'
 import { buildRunStats, buildTimeFields } from '~/utils/mp/runData'
 import { buildScoreDetailRequest, buildScoreRequest } from '~/utils/mp/submitPayload'
 import { evaluateRunAgainstTask, type TaskCheckResult } from '~/utils/mp/taskRules'
@@ -80,10 +82,34 @@ function localTrackLines(entries: TrackRouteEntry[], taskId: string): MpRunLine[
  * 现在两处都调 `resolveFreePathGeometry()`（趟数恒为 1、圆角关闭、圈型用**保点旋转**），
  * 并且这一段逻辑有离线单测（`tests/mp/freePathGeometry.test.ts`）。
  */
+/**
+ * 把几何解析成"喂给生成器的路径"，并在**同一个出口**接上进场段。
+ *
+ * 🆕 2026-10-30（1.3.3 需求「进场段」）：真人在绕圈前会从跑道外侧走到跑道上，
+ * 那一段小直线由用户在地图上点「进场点」指定（用户口径："用户自行设置这一小段"）。
+ * ⚠️ **必须在 `applyStartToLoop` 之后拼**：起跑点变换会把几何旋转到"第 0 点 = 起跑点"，
+ *    进场段正是要接在**这个第 0 点**前面；拼得太早会被一起旋转走，进场点就跑错地方了。
+ * ⚠️ 未设进场点 / 进场段不合法 ⇒ `prependEntrySegment` 原样返回，**与旧版逐点一致**（回归保证）。
+ */
+function withEntrySegment(
+  geometry: LatLng[],
+  entry: TrackRouteEntry['entry'],
+): { geometry: LatLng[]; entryM: number; notice: string } {
+  const r = prependEntrySegment(geometry, entry ?? null)
+  return {
+    geometry: r.points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) })),
+    entryM: r.entryM,
+    notice: r.skipped,
+  }
+}
+
 function resolveTrackGeometry(entry: TrackRouteEntry): { geometry: LatLng[]; smooth: boolean } | null {
   /** ① 非官方路径（2026-09-22 新功能）：形状是权威几何来源 */
   const shapeGeometry = resolveFreePathGeometry(entry.freeShape, entry.start ?? null)
-  if (shapeGeometry) return { geometry: shapeGeometry.geometry, smooth: shapeGeometry.smooth }
+  if (shapeGeometry) {
+    // 🆕 1.3.3：非官方路径同样支持进场段（接在起跑点之前）
+    return { geometry: withEntrySegment(shapeGeometry.geometry, entry.entry).geometry, smooth: shapeGeometry.smooth }
+  }
   /** ② 老口径（内外双圈）：逐字保持原行为 */
   if (entry.outer.length >= 3 && entry.inner.length >= 3) {
     // ⚠️ **按这条本地路线里存的"所选道次"**生成 —— 不再随机、不再换道
@@ -93,17 +119,16 @@ function resolveTrackGeometry(entry: TrackRouteEntry): { geometry: LatLng[]; smo
     //    `applyStartToLoop`）—— 生成器永远从几何第 0 点起跑，所以"起跑点"在数据上就是
     //    "按弧长旋转 + 必要时反向"。老数据没有 `start` ⇒ `rotateLoop(loop, 0)` 原样返回，
     //    **逐点与旧版一致**（有单测钉住这条回归保证）。
-    return {
-      geometry: applyStartToLoop(
-        laneLoop(
-          { outer: entry.outer, inner: entry.inner },
-          laneRatioFor(entry.laneNo ?? 3, entry.laneCount ?? 6),
-          240,
-        ),
-        entry.start ?? null,
+    const lane = applyStartToLoop(
+      laneLoop(
+        { outer: entry.outer, inner: entry.inner },
+        laneRatioFor(entry.laneNo ?? 3, entry.laneCount ?? 6),
+        240,
       ),
-      smooth: true,
-    }
+      entry.start ?? null,
+    )
+    // 🆕 1.3.3：进场段接在"已旋转到起跑点"的第 0 点之前
+    return { geometry: withEntrySegment(lane, entry.entry).geometry, smooth: true }
   }
   return null
 }

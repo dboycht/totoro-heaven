@@ -10,6 +10,7 @@
 import type { LatLng } from './routeSimilarity'
 import { laneLoop, laneRatioFor, ringLengthM, startDirectionLabel, type LoopDirection } from './trackEditor'
 import { freePathShapeText, parseFreePathShape, usableFreePathShape, type FreePathShape } from './pathShape'
+import type { TrackEntry } from './pathShape'
 // 「任务到底有没有下发线路」的判据只允许有一个来源（纯函数，见 `utils/mp/taskShape.ts`）
 import { routeRequirementOf } from './taskShape'
 
@@ -75,6 +76,12 @@ export interface TrackRouteEntry {
   note?: string
   /** 🆕 起跑点（2026-09-20，1.1.12 需求②）：缺失 = 未设置（轨迹仍从车道线第 0 点起跑） */
   start?: TrackStart
+  /**
+   * 🆕 **进场点**（2026-10-30，1.3.3 需求）：真人在绕圈前从跑道外侧走到跑道上的那个位置。
+   * 缺失 = 未设置（轨迹直接从起跑点开始，与旧版逐点一致 —— 这是**向后兼容的回归保证**）。
+   * 设置后：轨迹 = `进场点 → 起跑点`（一小段直线）→ 沿跑道绕圈。
+   */
+  entry?: TrackEntry
   /** 🆕 **最近一次保存（编辑）时间**（ISO；旧数据为空串 = 未记录） */
   updatedAt?: string
   /** 🆕 **最近一次保存时的软件版本**（旧数据为空串 = 未记录） */
@@ -370,6 +377,19 @@ export function normalizeTrackStart(raw: unknown): TrackStart | undefined {
   }
 }
 
+/**
+ * 归一化**进场点**（2026-10-30，1.3.3）：坐标必须是一对有限数，否则 `undefined`（= 未设置）。
+ * ⚠️ 与 `normalizeTrackStart` 同口径：坐标统一成 `number` 存储。
+ * ⚠️ **不在这里校验距离**（离起跑点太近/太远由 `prependEntrySegment` 在生成时判并回报原因）——
+ *    数据层只保证"这是个能用的坐标"，避免"存不进去"与"用了会出错"两件事混在一个函数里。
+ */
+export function normalizeTrackEntry(raw: unknown): TrackEntry | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const v = raw as Record<string, unknown>
+  if (!isFinitePoint(v.point)) return undefined
+  return { point: { latitude: Number(v.point.latitude), longitude: Number(v.point.longitude) } }
+}
+
 /** 归一化编辑历史：丢掉不可解析的条目、只留最近 `TRACK_HISTORY_MAX` 条（纯函数） */
 export function normalizeHistory(raw: unknown): TrackEditLog[] {
   if (!Array.isArray(raw)) return []
@@ -412,6 +432,8 @@ export function normalizeLibrary(raw: unknown, fallbackVersion = '未知'): Trac
     // 用户自定义名：归一化后为空（历史数据里可能存过空白）⇒ 归一化成 undefined，一律走 `resolveEntryName` 兜底
     const customName = sanitizeLineName(v.customName)
     const start = normalizeTrackStart(v.start)
+    // 🆕 进场点（1.3.3）：旧数据没有这个字段 ⇒ 不凭空造（保持 `'entry' in e === false`，老条目零变化）
+    const entry = normalizeTrackEntry(v.entry)
     const history = normalizeHistory(v.history)
     const editCount = Number(v.editCount)
     /** 非官方形状：不认识的形状/坏数据一律 undefined（= 退回双圈模式），绝不抛 */
@@ -430,6 +452,7 @@ export function normalizeLibrary(raw: unknown, fallbackVersion = '未知'): Trac
       note: typeof v.note === 'string' ? v.note : undefined,
       // 🆕 起跑点与编辑留痕：旧数据**没有**这些字段 ⇒ 不凭空造（用展开语法，保持 `'start' in e === false`）
       ...(start ? { start } : {}),
+      ...(entry ? { entry } : {}),
       updatedAt: String(v.updatedAt ?? ''),
       updatedAppVersion: String(v.updatedAppVersion ?? ''),
       editCount: Number.isFinite(editCount) && editCount > 0 ? Math.round(editCount) : undefined,

@@ -36,6 +36,8 @@ import {
   startSummaryText,
 } from '~/utils/mp/trackLibrary'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
+// 🆕 1.3.3（2026-10-30）：进场段 —— 与跑步引擎**同一个纯函数**，保证"所见即所跑"
+import { prependEntrySegment } from '~/utils/mp/pathShape'
 // 🆕 2026-09-22（真实用户实测）：从跑步页直达进来时 `?line=<pointId>` 要能**预选**这条线路
 import { lineIdFromQuery } from '~/utils/mp/routeGroups'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
@@ -196,6 +198,8 @@ const loadDraft = (id: string) => {
   draftStartOffsetM.value = Number(e?.start?.offsetM ?? 0)
   draftStartPoint.value = e?.start?.point ? num(e.start.point) : null
   draftStartDirection.value = e?.start?.direction === 'reverse' ? 'reverse' : 'forward'
+  // 🆕 1.3.3：进场点草稿（旧条目没有这个字段 ⇒ null = 未设置，与旧行为一致）
+  draftEntryPoint.value = e?.entry?.point ? num(e.entry.point) : null
 }
 onMounted(() => {
   /**
@@ -222,7 +226,7 @@ const mapEl = ref<HTMLElement | null>(null)
  * 🆕 2026-09-20（1.1.12 需求②）：多出 `'start'` —— 选中它时**地图单击 = 点选起跑点**
  * （不再往圈里加点）。为此下面所有"对当前圈操作"的函数都改走 `ringTarget`（永不为 `'start'`）。
  */
-const editing = ref<'outer' | 'inner' | 'start'>('outer')
+const editing = ref<'outer' | 'inner' | 'start' | 'entry'>('outer')
 /** "当前圈"的收窄版本：只可能是 outer/inner（起跑点模式下不参与圈的编辑） */
 const ringTarget = computed<'outer' | 'inner'>(() => (editing.value === 'inner' ? 'inner' : 'outer'))
 const outer = computed(() => draftOuter.value)
@@ -377,14 +381,20 @@ const onUp = (e: MouseEvent) => {
   pointDragIndex = -1
   if (!wasDragging || moved || idx >= 0) return
   /**
-   * 单击（没拖动、也没抓点）的两种含义（**互斥，顺序即优先级**）：
+   * 单击（没拖动、也没抓点）的三种含义（**互斥，顺序即优先级**）：
    *   ① `editing === 'start'` = 点选起跑点（1.1.12）；
-   *   ② 其余 = 在点击处给"当前圈"（外圈/内圈）加一个点（老行为）。
-   * ⚠️ 2026-09-22：原先这里还有"③ 画非官方路径"这一支 —— 那套 UI 已搬到独立子页
-   *    `components/FreePathView.vue`（`/field/free-path`），本页只剩上述两种含义。
+   *   ② `editing === 'entry'` = 点选**进场点**（1.3.3，2026-10-30）—— 它是跑道外侧的那个点，
+   *      **不吸附车道线**（本来就在跑道外），只校验"别离得太离谱"；
+   *   ③ 其余 = 在点击处给"当前圈"（外圈/内圈）加一个点（老行为）。
+   * ⚠️ 2026-09-22：原先这里还有"画非官方路径"这一支 —— 那套 UI 已搬到独立子页
+   *    `components/FreePathView.vue`（`/field/free-path`），本页只剩上述几种含义。
    */
   if (editing.value === 'start') {
     setStartFromMap(toLatLng(e.offsetX, e.offsetY))
+    return
+  }
+  if (editing.value === 'entry') {
+    setEntryFromMap(toLatLng(e.offsetX, e.offsetY))
     return
   }
   const which = ringTarget.value
@@ -516,12 +526,65 @@ const startLane = computed<N[]>(() =>
   ).map(num),
 )
 
-/** 最终轨迹：以（已按起跑点变换过的）车道线为参考几何，叠加"真实抖动"（直道恒定、小颗粒、偶发小凸起） */
+/** 最终轨迹：以（已按起跑点变换 + 接上进场段）的几何为参考，叠加"真实抖动"（直道恒定、小颗粒、偶发小凸起） */
 const trajectory = computed<N[]>(() => {
-  if (startLane.value.length < 3) return []
-  const g = generateCorridorRoute(startLane.value, { targetKm: 3.2, stepM: 3, drift: true, seed: seed.value })
+  const geom = entryPreview.value.points.map(num)
+  if (geom.length < 3) return []
+  const g = generateCorridorRoute(geom, { targetKm: 3.2, stepM: 3, drift: true, seed: seed.value })
   return g.points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
 })
+
+// ---------------------------------------------------------------- 进场点（1.3.3，2026-10-30）
+
+/**
+ * 🆕 **进场点**：真人绕圈前从跑道外侧走到跑道上，那一段小直线就是"进场段"。
+ * 用户口径（2026-10-30）："**用户自行设置这一小段**" ⇒ 在地图上点哪就是哪，
+ * **不自动算切点、不吸附车道线**（它本来就在跑道外）。
+ *
+ * 数据流与起跑点一致：`draftEntryPoint` 是编辑草稿，保存时写进条目的 `entry` 字段；
+ * 真正的拼接在跑步引擎里（`composables/demo/runner.ts` 的 `withEntrySegment`），
+ * 这里只负责"画给你看"——预览与真实生成走**同一个纯函数** `prependEntrySegment`。
+ */
+const draftEntryPoint = ref<N | null>(null)
+const hasEntry = computed(() => Boolean(draftEntryPoint.value))
+
+/** 进场段预览：车道线（已应用起跑点）+ 进场点拼好；`skipped` 非空时**界面必须显示原因** */
+const entryPreview = computed(() =>
+  prependEntrySegment(startLane.value, hasEntry.value ? { point: draftEntryPoint.value! } : null),
+)
+/** 进场段实际长度（米）；未设置 ⇒ 0 */
+const entryLengthM = computed(() => (hasEntry.value ? entryPreview.value.entryM : 0))
+/** 进场点不合理时的一句话（空串 = 没问题） */
+const entryNotice = computed(() => entryPreview.value.skipped)
+
+/**
+ * 进场段连线在地图上的终点 —— 就是**起跑点**（进场段 = 进场点 → 起跑点）。
+ * 用 `startMarker` 而不是 `draftEntryPoint`：起跑点没设时它是车道线第 0 点，也是轨迹真正起步处。
+ */
+const entryLineEnd = computed<N>(() => {
+  const p = entryPreview.value.points[1]
+  if (p) return { latitude: Number(p.latitude), longitude: Number(p.longitude) }
+  return draftEntryPoint.value ?? { latitude: 0, longitude: 0 }
+})
+
+/** 地图点选进场点（不吸附：它本来就在跑道外侧） */
+const setEntryFromMap = (p: N) => {
+  if (lane.value.length < 3) {
+    showSnackbar('先把内外圈描好（车道线算出来之后）再点选进场点', 'warning')
+    return
+  }
+  draftEntryPoint.value = num(p)
+  if (entryPreview.value.skipped) {
+    showSnackbar(entryPreview.value.skipped, 'warning')
+    return
+  }
+  showSnackbar(`进场点已设在这里（到起跑点约 ${entryPreview.value.entryM.toFixed(1)} m，轨迹会先走这段再进跑道）`)
+}
+/** 取消进场点（回到"直接从起跑点开始"的旧行为） */
+const clearEntry = () => {
+  draftEntryPoint.value = null
+  showSnackbar('已取消进场点（轨迹直接从起跑点开始）')
+}
 
 const pathOf = (pts: P[], close = false) => {
   if (!pts.length) return ''
@@ -577,6 +640,13 @@ const save = () => {
             ? { point: { latitude: Number(draftStartPoint.value.latitude), longitude: Number(draftStartPoint.value.longitude) } }
             : {}),
         }
+      : null,
+    /**
+     * 🆕 进场点（1.3.3，2026-10-30）：同样**永远传明确值** ——
+     * `null` = 明确清掉（用户点了「取消进场点」要能落盘，否则"删了又回来"）。
+     */
+    entry: hasEntry.value
+      ? { point: { latitude: Number(draftEntryPoint.value!.latitude), longitude: Number(draftEntryPoint.value!.longitude) } }
       : null,
     /**
      * 🆕 **明确清掉非官方路径形状**（2026-09-22 审计 B4）。
@@ -813,12 +883,43 @@ const lineOptions = computed(() =>
                     起跑点
                   </text>
                 </g>
+                <!--
+                  🆕 进场点（1.3.3，2026-10-30）：蓝点 + 到起跑点的虚线。
+                  虚线就是"进场段"——用户在跑圈之前从跑道外侧走上跑道的那一小段。
+                  ⚠️ 只在真的会拼进轨迹时才画（`entryNotice` 非空 = 不合法，画了会误导）。
+                -->
+                <g v-if="hasEntry && draftEntryPoint && !entryNotice">
+                  <line
+                    :x1="toPx(draftEntryPoint).x"
+                    :y1="toPx(draftEntryPoint).y"
+                    :x2="toPx(entryLineEnd).x"
+                    :y2="toPx(entryLineEnd).y"
+                    stroke="#22d3ee"
+                    stroke-width="2"
+                    stroke-dasharray="5 4"
+                    opacity="0.95"
+                  />
+                  <circle :cx="toPx(draftEntryPoint).x" :cy="toPx(draftEntryPoint).y" r="6" fill="#0ea5e9" stroke="#fff" stroke-width="2" />
+                  <text
+                    :x="toPx(draftEntryPoint).x + 9"
+                    :y="toPx(draftEntryPoint).y + 16"
+                    fill="#bae6fd"
+                    font-size="12"
+                    font-weight="bold"
+                  >
+                    进场点 {{ entryLengthM.toFixed(0) }} m
+                  </text>
+                </g>
               </svg>
             </div>
           </v-card-text>
           <v-card-text class="text-caption text-medium-emphasis">
             拖动=平移地图　单击=<b>{{
-              editing === 'start' ? '点选起跑点（会自动吸附到车道上）' : '在当前位置加一个点'
+              editing === 'start'
+                ? '点选起跑点（会自动吸附到车道上）'
+                : editing === 'entry'
+                  ? '点选进场点（选在跑道外侧，不会吸附）'
+                  : '在当前位置加一个点'
             }}</b>　按住已有的小圆点拖动=改点　（编辑哪一样见右侧）
           </v-card-text>
         </v-card>
@@ -845,6 +946,7 @@ const lineOptions = computed(() =>
               <v-btn value="outer" size="small">外圈</v-btn>
               <v-btn value="inner" size="small">内圈</v-btn>
               <v-btn value="start" size="small">起跑点</v-btn>
+              <v-btn value="entry" size="small">进场点</v-btn>
             </v-btn-toggle>
             <!-- 快速定位（用户要求）：选中线路后一键把地图移到它那里 -->
             <v-btn
@@ -860,7 +962,7 @@ const lineOptions = computed(() =>
             </v-btn>
 
             <!-- ===== 外圈 / 内圈（描点）===== -->
-            <template v-if="editing !== 'start'">
+            <template v-if="editing !== 'start' && editing !== 'entry'">
               <div class="text-caption text-medium-emphasis mb-2">
                 当前{{ editing === 'outer' ? '外圈' : '内圈' }}：<b>{{ editingPts.length }}</b> 点
                 <span v-if="editingPts.length > 2">· 周长 {{ ringLengthM(editingPts).toFixed(0) }} m</span>
@@ -893,6 +995,38 @@ const lineOptions = computed(() =>
                 按外圈自动生成内圈（向内缩 {{ insetM }} m）
               </v-btn>
               <v-btn block size="small" variant="tonal" color="error" class="mb-2" prepend-icon="mdi-delete-outline" @click="clearRing">清空这一圈</v-btn>
+            </template>
+
+            <!-- ===== 进场点（1.3.3，2026-10-30）===== -->
+            <template v-if="editing === 'entry'">
+              <v-alert type="info" variant="tonal" density="compact" class="mb-2">
+                真人在绕圈之前，通常先从跑道<b>外侧</b>走到跑道上再开跑 —— 这一段小直线就叫「进场段」。
+                在<b>地图上点一下</b>你想进场的位置即可（不会吸附到车道上，因为它本来就在跑道外）。
+              </v-alert>
+              <div class="text-caption text-medium-emphasis mb-2">
+                进场点：<b>{{ hasEntry ? '已设置' : '未设置（轨迹直接从起跑点开始）' }}</b>
+                <template v-if="hasEntry && !entryNotice">
+                  <br />进场段长度 {{ entryLengthM.toFixed(1) }} m（先进场、到起跑点后沿跑道开跑）
+                </template>
+                <template v-if="hasEntry && draftEntryPoint">
+                  <br />坐标 {{ draftEntryPoint.latitude.toFixed(6) }}, {{ draftEntryPoint.longitude.toFixed(6) }}
+                </template>
+              </div>
+              <v-alert v-if="entryNotice" type="warning" variant="tonal" density="compact" class="mb-2">
+                {{ entryNotice }}
+              </v-alert>
+              <v-btn
+                block
+                size="small"
+                variant="tonal"
+                color="error"
+                class="mb-2"
+                prepend-icon="mdi-close-circle-outline"
+                :disabled="!hasEntry"
+                @click="clearEntry"
+              >
+                取消进场点
+              </v-btn>
             </template>
 
             <!-- ===== 起跑点（1.1.12 需求②）===== -->

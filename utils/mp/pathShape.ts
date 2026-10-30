@@ -431,3 +431,82 @@ export function freeShapePlaceholderRing(shape: FreePathShape | null | undefined
   const b = ring[ring.length - 1]!
   return [a, { latitude: (a.latitude + b.latitude) / 2, longitude: (a.longitude + b.longitude) / 2 }, b]
 }
+
+// ---------------------------------------------------------------- 进场段（2026-10-30，1.3.3 需求）
+
+/**
+ * **进场点**：真人在绕圈之前，通常从跑道**外侧**走到跑道上再开跑。
+ * 那一段"走近跑道"的小直线就是进场段。
+ *
+ * ## 用户口径（2026-10-30 确认，别再自行加自动算法）
+ * > "用户自行设置这一小段"
+ *
+ * ⇒ **不做"自动算切点"**（曾经考虑过"进场点 → 与圆相切 → 沿跑道"，被用户否掉）：
+ *   进场点由用户在地图上点选，**点到起跑点的那一小段直线就是轨迹**。
+ *   这样"所见即所跑"，也不会因为圆心/半径估算误差而弄出"擦着跑道又划出去"的怪轨迹。
+ *
+ * ## 三条口径（与 `FreePathShape` 同源，避免后人误改）
+ *   ① **零依赖、纯函数**：只 relative-import 一个 `distanceMeters`，可离线单测；
+ *   ② **只产出"喂给生成器的一条几何"**：官方线路的采样 / 抖动 / 拟合度口径**一个字都不动**
+ *      （拼好点列后仍交给 `generateCorridorRoute`，由后者按弧长推进）；
+ *   ③ **绝进程报废**：任何一项不合法（缺进场点、点在起点上、进场段过长/过短）都**返回"不拼"**，
+ *      由调用方**原样退回**（宁可没有进场段，也不能押上"轨迹跑飞"的风险）。
+ */
+export interface TrackEntry {
+  /** 进场点坐标（用户在地图上点的位置；**不吸附到车道线**——它本来就在跑道外侧） */
+  point: LatLng
+}
+
+/** 进场段长度上限（米）。超过这个值就不是"走近跑道"而是"从别处跑过来"，应按用户点错处理 */
+export const ENTRY_MAX_M = 120
+/**
+ * 进场段长度下限（米）。
+ * 判据：短于这个长度时，真人不会"先停下再开跑"，而 GPS 抖动本身就有几米
+ * ⇒ 硬拼进去只会制造一小段抖动的假轨迹，不如不拼。
+ */
+export const ENTRY_MIN_M = 3
+
+/**
+ * 把**进场段**拼到"已应用起跑点的车道线"前面。
+ *
+ * - 输入 `lane` 必须是**已经过 `applyStartToLoop` 的**车道线（第 0 点 = 起跑点、第 1 点 = 起跑方向）；
+ * - 返回 `[进场点, lane[0], lane[1], …]`：生成器从第 0 点起步 ⇒ 先走完进场段，**在起跑点接上跑道**；
+ * - 返回 `{ points, entryM, skipped }`：`entryM` = 进场段实际长度（米），用于核算"总里程里含进场段"；
+ *   `skipped` 非空 = 没拼，附带人话原因（界面要把它显示出来，绝不能静默）。
+ *
+ * ⚠️ **为什么不再额外插"起跑点"那个点**：`lane[0]` 本身就是起跑点（`applyStartToLoop` 的契约），
+ *    直接在它前面插进场点即可得到两段：`进场点→起跑点`（进场段）、`起跑点→lane[1]`（跑道第一小段）。
+ */
+export function prependEntrySegment(
+  lane: LatLng[],
+  entry: TrackEntry | null | undefined,
+): { points: LatLng[]; entryM: number; skipped: string } {
+  const ring = Array.isArray(lane) ? lane.map(toN) : []
+  const pts = dedupeAdjacent(ring)
+  if (pts.length < 3) return { points: ring, entryM: 0, skipped: '车道线不足（至少 3 点），未拼进场段' }
+
+  const ep = entry?.point
+  if (!ep || !Number.isFinite(Number(ep.latitude)) || !Number.isFinite(Number(ep.longitude))) {
+    return { points: ring, entryM: 0, skipped: '' } // 没设进场点 = 正常情况，不算跳过
+  }
+  const eLat = Number(ep.latitude)
+  const eLng = Number(ep.longitude)
+  const e: N = { latitude: eLat, longitude: eLng }
+  const start = pts[0]!
+  const d = distanceMeters(eLat, eLng, Number(start.latitude), Number(start.longitude))
+
+  if (d < ENTRY_MIN_M) {
+    return { points: ring, entryM: d, skipped: `进场点离起跑点只有 ${d.toFixed(1)} m（不足 ${ENTRY_MIN_M} m），已忽略该进场段` }
+  }
+  if (d > ENTRY_MAX_M) {
+    return { points: ring, entryM: d, skipped: `进场点到起跑点 ${d.toFixed(1)} m，超过上限 ${ENTRY_MAX_M} m，已忽略该进场段（请把进场点设在跑道附近）` }
+  }
+
+  /**
+   * ⚠️ **别让进场点与起跑点重合**（`d === 0` 已在上面被 `ENTRY_MIN_M` 拦下），
+   * 同时也**别让进场点落在车道线上**（那样"进场"其实是"从跑道某个点起跑"，语义重复且会多走一段）
+   * —— 后者无法可靠判定（用户可能就是允许贴着跑道），故**不做**，只在界面提示"建议点在跑道外侧"。
+   */
+  return { points: [e, ...ring], entryM: d, skipped: '' }
+}
+
