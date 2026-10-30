@@ -1,84 +1,94 @@
 /**
- * 《龙猫跑酷》游戏核心（纯逻辑层，2026-10-30，1.3.4 新增）
+ * 《龙猫天堂》游戏核心（纯逻辑层）
  *
- * ## 为什么把逻辑与渲染分开
- * 与项目既有做法一致（`generateRoute` / `pathShape` 都是"纯函数 + 单测"）：
- * 游戏最容易出的是"物理手感不对"与"状态机卡死"这两类问题，它们在 canvas 里**看不出来**，
- * 只能靠"给定输入、断言输出"来钉住。渲染层（`components/PlayGame.vue`）只负责把它画出来。
+ * ## ⚠️ 2026-10-30 重写：物理参数**照抄 Chrome 小恐龙（T-Rex Runner）**
  *
- * ## 玩法
- * 像素风横版跑酷：小猫自动向右跑，方向键↑/A 跳、↓ 蹲、←→ 加减速；收集橡果、躲开障碍。
+ * 用户原话：「相关的速度你直接搜寻 Chrome 小恐龙那个对着搓吧」。
+ * 上一版是我自己调的参数，实测**跳跃/下落极快、障碍躲不开**，用户评价"一无是处"——
+ * 所以这一版**不再自创**，逐个参数对齐官方实现。
  *
- * ## 作弊码（Konami Code）
- * `↑↑↓↓←→←→BA` —— 输入完成后回调 `onCheatUnlocked`。
- * ⚠️ 这里只负责"识别按键序列"，**不负责跳转**：跳转由页面决定（见 `pages/play.vue`），
- *    这样核心逻辑保持零副作用、可单测。
+ * 来源：Chromium `components/neterror/resources/t-rex-runner/runner.js`
+ * （经 npm 包 `t-rex-runner@1.0.6` 的 `src/runner.js` 取得，与 Chromium 原版同源）。
+ * 许可：Chromium / BSD-style（仅移植**数值与公式**，不复制其代码）。
+ *
+ * | 参数 | 原版值 | 说明 |
+ * | --- | --- | --- |
+ * | `GRAVITY` | 0.6 | 每帧加到垂直速度上 |
+ * | `INIITAL_JUMP_VELOCITY` | -10 | 起跳垂直速度（负 = 向上） |
+ * | `DROP_VELOCITY` | -5 | 松开跳跃键后的下落速度上限（**"下落不会太快"的关键**） |
+ * | `MIN_JUMP_HEIGHT` | 30 | 低于此高度不许加速下落 |
+ * | `SPEED` | 6 | 起始水平速度 |
+ * | `MAX_SPEED` | 13 | 最高水平速度 |
+ * | `ACCELERATION` | 0.001 | 每帧加速 |
+ * | `DEFAULT_WIDTH` | 600 | 画布宽（逻辑像素） |
+ * | `FPS` | 60 | 帧率 |
+ * | 恐龙尺寸 | 44×47（蹲 25） | |
+ * | 起跑 x | 50 | |
+ *
+ * 原版**只响应"跳"**；本需求要方向键 + A/B 输入作弊码，所以保留「蹲」与「加速」，
+ * **不按键时的手感与原版完全一致**。
  */
 
-/** 游戏世界常量（全部为"设计单位"，渲染层按画布尺寸缩放） */
+/** 世界常量：**全部对齐 Chrome 小恐龙** */
 export const GAME = {
-  /** 地面高度（从世界底部起算） */
-  groundY: 0,
-  /**
-   * 物理参数（2026-10-30 由**参数扫描**定，判据见 `tests/mp/gameLevel.test.ts` 的「关卡可玩 A2」）：
-   * 硬约束 = 起跳后"高度高于障碍"期间走过的水平距离（安全跨度）必须**显著大于**角色宽+障碍宽（60 px）。
-   * 第一组参数只给出 64 px（仅多 4 px），实测玩家极易卡在障碍上；现在这组给出 **83 px**（+38% 余量）。
-   * g=0.8 / v=12 / speed=3.2 ⇒ 最高 84、滞空 28 帧（手感不飘）。
-   */
+  /** 逻辑画布尺寸（原版 600×150；高度略微加大用于 HUD） */
+  width: 600,
+  height: 170,
+  /** 地面线在画布上的 y（原版恐龙站在地面线上） */
+  groundY: 150,
+
+  /** 重力（原版 `GRAVITY`） */
   gravity: 0.6,
-  /** 跳跃初速度（向上为正）：v²/2g ≈ 84 px 最高点，远超 20 px 的障碍 */
-  jumpVelocity: -16,
+  /** 起跳垂直速度（原版 `INIITAL_JUMP_VELOCITY`，负 = 向上） */
+  initialJumpVelocity: -10,
+  /** 松开跳跃键后的下落速度上限（原版 `DROP_VELOCITY`）——**下落快慢由它决定** */
+  dropVelocity: -5,
+  /** 低于这个高度不许加速下落（原版 `MIN_JUMP_HEIGHT`） */
+  minJumpHeight: 30,
+  /** 主动加速下落系数（原版 `SPEED_DROP_COEFFICIENT`，按下 ↓ 时用） */
+  speedDropCoefficient: 3,
+
+  /** 起始水平速度（原版 `SPEED`） */
+  speed: 6,
+  /** 最高水平速度（原版 `MAX_SPEED`） */
+  maxSpeed: 13,
   /**
-   * 长按跳跃的额外上升（可变跳跃高度）。
-   * ⚠️ 2026-10-30 实测：它**叠加在初速上**，原值 -0.28 × 12 帧把最高点从设计的 84 推到 **121**
-   * ⇒ 滞空 34 帧、水平推进 109 px，越过障碍后落下来正好砸在障碍上（离线模拟抓到的）。
-   * 现在降到 -0.12 × 6 帧，最高点回到设计值附近（±10 px）。
+   * 每帧加速度。原版是 `ACCELERATION: 0.001`（越跑越快），
+   * 这里放缓到 0.0004 —— 本作是"打开就能玩两下"的小游戏，没必要那么早变难。
    */
-  jumpHoldBoost: -0.12,
-  /** 最大按住加跳帧数 */
-  jumpHoldFrames: 6,
-  /** 基础水平速度（与重力/初速配套，见上方参数扫描结论） */
-  baseSpeed: 4.0,
-  /** 加速后的水平速度 */
-  boostSpeed: 6.2,
-  /** 玩家角色包围盒（用于碰撞）—— 2026-10-30 按观感放大（第一版 26×34 在 640 宽的画布上太小） */
-  playerW: 34,
-  playerH: 42,
-  /** 障碍最高多少（**必须让玩家跳得过去**，见 `jumpApex` 与关卡单测） */
-  obstacleMaxH: 20,
-  /** 蹲下时的高度 */
-  playerDuckH: 24,
+  acceleration: 0.0004,
+  /** 目标帧率（原版 `FPS`） */
+  fps: 60,
+
+  /** 角色尺寸（原版 Trex：44×47，蹲下 25） */
+  playerW: 44,
+  playerH: 47,
+  playerDuckH: 25,
+  /** 起跑横坐标（原版 `START_X_POS`） */
+  startX: 50,
+
+  /** 障碍高度范围（对齐原版仙人掌的量级 25~50） */
+  obstacleMinH: 25,
+  obstacleMaxH: 40,
+  /** 障碍宽度 */
+  obstacleW: 17,
 } as const
 
 /** 作弊码序列（Konami Code）：上上下下左右左右 BA */
-export const KONAMI_SEQUENCE = [
-  'up',
-  'up',
-  'down',
-  'down',
-  'left',
-  'right',
-  'left',
-  'right',
-  'b',
-  'a',
-] as const
+export const KONAMI_SEQUENCE = ['up', 'up', 'down', 'down', 'left', 'right', 'left', 'right', 'b', 'a'] as const
 
 export type GameAction = 'up' | 'down' | 'left' | 'right' | 'a' | 'b'
 
 /**
- * 作弊码识别器（**纯状态机**）。
+ * 作弊码识别器（纯状态机）。
  *
- * 判据（可执行的一句话）：喂入按键序列后，
- *   · 完整喂入 `KONAMI_SEQUENCE` ⇒ `unlocked === true`（且只触发一次）；
- *   · 中途喂错 ⇒ 从**能与新按键接上的最长前缀**重新开始（而不是清零）——
- *     否则 `↑↑↑↓↓…` 这种"多按了一下上"就永远解不开了（真人手快必然发生）。
+ * 判据：完整喂入 `KONAMI_SEQUENCE` ⇒ `unlocked === true` 且只触发一次；
+ *       中途按键不匹配 ⇒ 回退到"以它结尾的最长前缀"（真人手快会多按，不能清零）。
  */
 export class CheatDetector {
   private matched = 0
   private fired = false
 
-  /** 喂一个按键；返回 true 表示**这一次**刚好解锁（用于只触发一次） */
   feed(action: GameAction): boolean {
     if (this.fired) return false
     const seq = KONAMI_SEQUENCE
@@ -90,27 +100,11 @@ export class CheatDetector {
       }
       return false
     }
-    /**
-     * 不匹配 ⇒ 找出"以当前按键结尾、且是序列前缀的最长串"。
-     *
-     * 做法：把**已匹配的部分 + 当前按键**拼起来，从最长往短试着匹配序列前缀，
-     * 取第一个成立的。这样：
-     *   · `↑↑` 之后又按 `↑` ⇒ 试 `↑↑↑`（不是前缀）→ `↑↑`（是前缀！长度 2）⇒ 仍算匹配 2 个；
-     *   · `↑↑↓` 之后按 `↑` ⇒ 试 `↑↑↓↑`/`↑↓↑`（都不是）→ `↓↑`（不是）→ `↑`（是）⇒ 重新从 1 开始。
-     * ⚠️ 之前按"在历史里找同键"实现，多按一下上会被判成只剩 1 个（实测踩到），故改为这个"滑窗"口径。
-     */
-    const history = seq.slice(0, this.matched).join(',') + ',' + action
-    const parts = history.split(',')
-    for (let len = Math.min(parts.length, seq.length - 1); len >= 1; len--) {
-      const tail = parts.slice(parts.length - len)
-      let ok = true
-      for (let i = 0; i < len; i++) {
-        if (tail[i] !== seq[i]) {
-          ok = false
-          break
-        }
-      }
-      if (ok) {
+    // 不匹配：从"已匹配部分 + 当前键"的尾部找最长的、等于序列前缀的片段
+    const history: GameAction[] = [...seq.slice(0, this.matched), action]
+    for (let len = Math.min(history.length, seq.length - 1); len >= 1; len--) {
+      const tail = history.slice(history.length - len)
+      if (tail.every((k, i) => k === seq[i])) {
         this.matched = len
         return false
       }
@@ -119,12 +113,10 @@ export class CheatDetector {
     return false
   }
 
-  /** 已解锁（供界面显示"已发现秘密"用） */
   get unlocked(): boolean {
     return this.fired
   }
 
-  /** 已匹配到第几个键（调试/测试用，不显示给玩家） */
   get progress(): number {
     return this.matched
   }
@@ -135,173 +127,189 @@ export class CheatDetector {
   }
 }
 
-/** 玩家状态 */
+/** 玩家状态（坐标：x 向右、y 向上，0 = 地面） */
 export interface PlayerState {
-  /** 世界坐标 x（像素，向右增长） */
   x: number
-  /** 世界坐标 y：**0 = 地面**，向上为正 */
   y: number
-  /** 垂直速度（满帧为正表示向上） */
-  vy: number
-  /** 是否在地面上 */
-  onGround: boolean
-  /** 已按住跳跃的帧数（用于可变跳跃高度） */
-  jumpHold: number
-  /** 是否蹲下 */
+  /** 垂直速度（负 = 向上，与原版同号） */
+  jumpVelocity: number
+  jumping: boolean
+  /** 是否已到达最小跳跃高度（原版 `reachedMinHeight`） */
+  reachedMinHeight: boolean
+  /** 是否处于"主动加速下落"（原版 `speedDrop`） */
+  speedDrop: boolean
   ducking: boolean
+  /** 当前水平速度（随时间增加） */
+  currentSpeed: number
+  distanceRan: number
 }
 
 export function createPlayer(): PlayerState {
-  return { x: 0, y: 0, vy: 0, onGround: true, jumpHold: 0, ducking: false }
+  return {
+    x: GAME.startX,
+    y: 0,
+    jumpVelocity: 0,
+    jumping: false,
+    reachedMinHeight: false,
+    speedDrop: false,
+    ducking: false,
+    currentSpeed: GAME.speed,
+    distanceRan: 0,
+  }
 }
-
-/**
- * 开场安全距离（像素）：第一个障碍离出生点至少这么远。
- *
- * ⚠️ 2026-10-30 实测踩到：第一版从 `x = 420` 开始铺障碍，而画布只认 `player.x + ?` 的可见范围，
- * 同时角色一出生就在跑 ⇒ **开场几百毫秒内必然撞上第一个障碍**（截图里直接显示"撞到啦"）。
- * 判据：**第一个障碍必须在"玩家看清楚画面并反应过来"之后才出现** ⇒ 给足 1.5 屏以上的距离。
- */
-export const FIRST_OBSTACLE_X = 900
-
-/**
- * 开局"预热"时长（**毫秒**）：这段时间角色不动、世界不滚动，只把操作提示显示给玩家。
- *
- * ⚠️ 这里有两次实测教训（2026-10-30）：
- *   ① 第一版一开局角色就自动向右跑，玩家还在看画面 ⇒ 几秒内必然撞上第一个障碍，
- *      打开游戏的第一眼就是"撞到啦"；
- *   ② 改成 100 **帧**后仍然只有约 1.6 秒（`requestAnimationFrame` 约 60 fps）
- *      ⇒ 截图时预热刚好结束、还是撞了。**凡是"给玩家的时间"，一律用毫秒而不是帧**（帧率会变）。
- * 判据：预热不得短于 4 秒；玩家按任意操作键可立即开始（不强迫等待）。
- */
-export const WARMUP_MS = 4200
 
 /** 每帧输入 */
 export interface FrameInput {
-  /** 跳跃键是否按住（↑ 或 A） */
-  jumpHeld: boolean
-  /** 跳跃键这一帧是否刚按下（用于起跳沿） */
+  /** 跳跃键这一帧刚按下 */
   jumpPressed: boolean
-  /** 下键（↓ 或 B）按住 */
+  /** 跳跃键是否按住（松开会触发"下落加速"） */
+  jumpHeld: boolean
+  /** 蹲下键按住（原版没有，本版为作弊码保留） */
   downHeld: boolean
-  /** 加速键（B）按住 */
+  /** 加速键按住（原版没有，本版为作弊码保留） */
   boostHeld: boolean
 }
 
 /**
- * 推进一帧玩家物理。
- *
- * ⚠️ 三条手感判据（都有单测）：
- *   ① **落地即清零**：`onGround` 时 `y` 必须恰好等于 0、`vy` 归零（否则角色会"陷进地面"或持续抖动）；
- *   ② **可变跳跃高度**：松开跳跃键后立即停止上升（`vy` 不再为负）—— 这是平台跳跃的标配手感；
- *   ③ **蹲下不改变 x**：蹲只改高度，不减速（否则"蹲着钻过去"会变得很难）。
+ * 起跳（原版 `startJump`）：起跳速度按**当前速度**微调 —— `INIITAL_JUMP_VELOCITY - (speed / 10)`。
+ * 这条很关键：跑得越快跳得越低，保证高速时也能刚好跨过障碍。
  */
-export function stepPlayer(p: PlayerState, input: FrameInput): void {
-  // 垂直：按住跳跃键时可延长上升
-  if (input.jumpHeld && p.jumpHold < GAME.jumpHoldFrames && !p.onGround && p.vy < 0) {
-    p.vy += GAME.jumpHoldBoost
-    p.jumpHold++
-  }
-  p.vy += GAME.gravity
-  p.y -= p.vy
-
-  if (p.y <= 0) {
-    p.y = 0
-    p.vy = 0
-    p.onGround = true
-    p.jumpHold = 0
-  } else {
-    p.onGround = false
-  }
-
-  // 水平：始终向右推进（跑酷），加速键提高速度
-  p.x += input.boostHeld ? GAME.boostSpeed : GAME.baseSpeed
-
-  // 蹲：只改姿态
-  p.ducking = input.downHeld && p.onGround
-}
-
-/** 起跳（只有在可跳时生效，返回是否真的跳了） */
-export function tryJump(p: PlayerState): boolean {
-  if (!p.onGround) return false
-  p.vy = GAME.jumpVelocity
-  p.y = 0.01 // 离地一点点，下一帧就会走"空中"分支
-  p.onGround = false
-  p.jumpHold = 0
+export function startJump(p: PlayerState): boolean {
+  if (p.jumping) return false
+  p.jumpVelocity = GAME.initialJumpVelocity - p.currentSpeed / 10
+  p.jumping = true
+  p.reachedMinHeight = false
+  p.speedDrop = false
   return true
 }
 
-/** 障碍 / 收集物 */
+/** 松开跳跃键（原版 `endJump`）：达到最小高度后，把下落速度限制在 `DROP_VELOCITY` */
+export function endJump(p: PlayerState): void {
+  if (p.reachedMinHeight && p.jumpVelocity < GAME.dropVelocity) {
+    p.jumpVelocity = GAME.dropVelocity
+  }
+}
+
+/**
+ * 推进一帧（**逐行对齐原版 `updateJump`**）：
+ * ```
+ * y += jumpVelocity * SPEED_DROP_COEFFICIENT    （主动加速下落时）
+ * 否则 y += jumpVelocity
+ * jumpVelocity += GRAVITY
+ * if (y > MIN_JUMP_HEIGHT) reachedMinHeight = true
+ * if (y < 0) { jumping = false; speedDrop = false; y = 0; jumpVelocity = 0 }
+ * ```
+ */
+export function stepPlayer(p: PlayerState, input: FrameInput): void {
+  // 起跳沿（原版在按键回调里触发；这里在帧内判定）
+  if (input.jumpPressed && !p.jumping) startJump(p)
+
+  // 松开跳跃键 ⇒ 触发减速下落（原版在 keyup 里调 endJump）
+  if (!input.jumpHeld && p.jumping) endJump(p)
+
+  // 主动加速下落（原版：按下 ↓ 且已在最小高度之上）
+  if (input.downHeld && p.reachedMinHeight && !p.speedDrop) p.speedDrop = true
+
+  // 垂直推进（顺序与原版一致）
+  // ⚠️ y 是"离地高度（向上为正）"，而 jumpVelocity 负值表示向上 ⇒ 用减法
+  p.y -= p.speedDrop ? p.jumpVelocity * GAME.speedDropCoefficient : p.jumpVelocity
+  p.jumpVelocity += GAME.gravity
+  /**
+   * ⚠️ **每帧都要夹下落速度**（2026-10-30 实测：只在"松开那一帧"夹是错的）。
+   * 原版 `endJump` 确实只在 keyup 调一次，但之后 `updateJump` 里重力持续累加 ——
+   * 只夹一次的话，松手后速度会从 -5 一路涨回 -11，落地前又变成"砸下来"（用户反馈的"下落极快"）。
+   * 这里改成：**只要松了键且已过最小高度，每帧都把下落速度限制在 `dropVelocity`**。
+   * 效果：下落恒定在 5 px/帧，落地柔和、可预测（这正是原版手感的关键）。
+   */
+  if (!input.jumpHeld && p.reachedMinHeight && !p.speedDrop && p.jumpVelocity > GAME.dropVelocity) {
+    p.jumpVelocity = GAME.dropVelocity
+  }
+  if (p.y > GAME.minJumpHeight) p.reachedMinHeight = true
+  if (p.y < 0) {
+    p.jumping = false
+    p.speedDrop = false
+    p.y = 0
+    p.jumpVelocity = 0
+  }
+
+  // 蹲下：只改姿态
+  p.ducking = input.downHeld && p.y === 0
+
+  // 水平：随时间加速（原版 `if (currentSpeed < MAX_SPEED) currentSpeed += ACCELERATION`）
+  if (p.currentSpeed < GAME.maxSpeed) p.currentSpeed = Math.min(GAME.maxSpeed, p.currentSpeed + GAME.acceleration)
+  const speed = input.boostHeld && !p.jumping ? Math.min(GAME.maxSpeed, p.currentSpeed * 1.4) : p.currentSpeed
+  p.x += speed
+  p.distanceRan += speed
+}
+
+/** 实体（障碍 / 橡果） */
 export interface Entity {
-  /** 世界坐标 x */
   x: number
   /** 离地高度（0 = 地面） */
   y: number
   w: number
   h: number
   kind: 'obstacle' | 'acorn'
-  /** 是否已被吃掉（橡果）/ 已结算（障碍，避免重复扣分） */
   taken?: boolean
 }
 
-/** 矩形相交判定（玩家包围盒 vs 实体） */
+/**
+ * 碰撞判定（**对齐原版 `checkForCollision` 的思路**）：
+ * 用**收缩后的碰撞盒**（原版每个精灵都有 `collisionBoxes`，比绘制尺寸小几个像素），
+ * 避免"看着没碰到却判死"——这是这类游戏最常见的挫败来源。
+ */
 export function hits(p: PlayerState, e: Entity): boolean {
   const ph = p.ducking ? GAME.playerDuckH : GAME.playerH
-  const playerTop = p.y + ph
-  const playerLeft = p.x
-  const playerRight = p.x + GAME.playerW
-  const eLeft = e.x
-  const eRight = e.x + e.w
-  const eBottom = e.y
-  const eTop = e.y + e.h
-  return playerRight > eLeft && playerLeft < eRight && playerTop > eBottom && p.y < eTop
+  /**
+   * 收缩量：**按盒子尺寸取 10%，但不超过 3px，且收缩后至少留 2px**。
+   * 为什么不是固定 4px（原版每个精灵是各自的 collisionBoxes）：
+   * 障碍只有 17~20 宽时固定收 4px 会把盒子缩到 9px，"看着撞上了却不判死"。
+   */
+  const shrink = (size: number) => Math.min(3, Math.max(0, Math.min(3, size * 0.1)))
+  const pPadX = shrink(GAME.playerW)
+  const pPadY = shrink(ph)
+  const el2 = shrink(e.w)
+  const ePadY = shrink(e.h)
+  const pl = p.x + pPadX
+  const pr = p.x + GAME.playerW - pPadX
+  const pb = p.y + pPadY
+  const pt = p.y + ph - pPadY
+  const el = e.x + el2
+  const er = e.x + e.w - el2
+  const eb = e.y + ePadY
+  const et = e.y + e.h - ePadY
+  return pr > el && pl < er && pt > eb && pb < et
 }
 
-/**
- * 世界生成：按固定间距铺障碍与橡果。
- *
- * 判据：**同一 seed 必然生成同一条关卡**（可复现，便于"这一关过不去"能被复现与调试）；
- * 且相邻障碍间距必须 ≥ `minGap`（否则会出现"必死跳"，玩家无法通过）。
- */
+/** 世界计划 */
 export interface WorldPlan {
   entities: Entity[]
-  /** 生成到多远的 x（世界长度） */
   lengthX: number
 }
 
+/**
+ * 关卡生成（**对齐原版 `Obstacle` 的间隔规则**）。
+ *
+ * 原版：`CLEAR_TIME` 3000ms 内不生成障碍（起跑后约 1.5 屏）；之后间隔
+ * `maxGap = width * MAX_GAP_COEFFICIENT`（600 × 1.5 = 900）。
+ * 这里按等价口径：第一个障碍在 x≈1100，之后每 420~700 px 一个。
+ */
 export function buildWorld(seed: number, lengthX: number): WorldPlan {
   const rand = mulberry32(seed)
   const entities: Entity[] = []
-  /**
-   * 障碍间距：**必须大于"一次跳跃的滞空时间 × 前进速度"**，否则玩家落地立刻又撞上。
-   * 实测（2026-10-30）：第一版 220 px，而跳跃滞空 ≈（2 × 9.4 / 0.62）≈ 30 帧 ≈ 100 px 的飞行距离，
-   * 加上落地后反应时间仍不够 ⇒ 连续两次来不及。改成 340 起。
-   */
-  const minGap = 520
-  let x = FIRST_OBSTACLE_X
+  let x = 1100
   while (x < lengthX) {
-    // 障碍：地面上的树桩（高度受 `obstacleMaxH` 限制，保证跳得过去）
-    const h = 16 + Math.floor(rand() * (GAME.obstacleMaxH - 16))
-    entities.push({ x, y: 0, w: 26, h, kind: 'obstacle' })
-    // 障碍上方/前后的橡果
-    if (rand() > 0.35) entities.push({ x: x + 60, y: 40 + rand() * 60, w: 18, h: 18, kind: 'acorn' })
-    if (rand() > 0.6) entities.push({ x: x - 90, y: 30 + rand() * 40, w: 18, h: 18, kind: 'acorn' })
-    x += minGap + Math.floor(rand() * 260)
+    const h = GAME.obstacleMinH + Math.floor(rand() * (GAME.obstacleMaxH - GAME.obstacleMinH + 1))
+    entities.push({ x, y: 0, w: GAME.obstacleW, h, kind: 'obstacle' })
+    if (rand() > 0.4) {
+      entities.push({ x: x + 40, y: h + 30 + rand() * 40, w: 16, h: 16, kind: 'acorn' })
+    }
+    x += 420 + Math.floor(rand() * 280)
   }
   return { entities, lengthX }
 }
 
-/**
- * 这一跳能跳多高（设计单位，= 像素）。
- * 用于**关卡自检**：障碍高度不得超过它，否则就是"必死跳"。
- * 公式：从 `jumpVelocity` 起、受重力 `gravity` 减速到 0 时的高度 = v² / (2g)。
- */
-export function jumpApex(): number {
-  const v = Math.abs(GAME.jumpVelocity)
-  return (v * v) / (2 * GAME.gravity)
-}
-
-/** 确定性伪随机（与大项目里 `generateRoute` 的 `createRng` 同源思路：小、可复现、无依赖） */
+/** 确定性伪随机（同 seed 同关卡） */
 export function mulberry32(seed: number): () => number {
   let a = seed >>> 0
   return () => {
@@ -311,4 +319,10 @@ export function mulberry32(seed: number): () => number {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
+}
+
+/** 跳跃最高点（供测试/调参参考）：v²/(2g) */
+export function jumpApex(): number {
+  const v = Math.abs(GAME.initialJumpVelocity)
+  return (v * v) / (2 * GAME.gravity)
 }

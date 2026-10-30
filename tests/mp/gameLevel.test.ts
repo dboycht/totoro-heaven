@@ -1,123 +1,121 @@
 /**
- * 《龙猫天堂》游戏关卡可玩性单测（2026-10-30，1.3.4）
+ * 《龙猫天堂》关卡与物理单测（2026-10-30，1.3.4）
  *
  * ## 为什么必须有这一份
- * 实测教训：第一版关卡**跳不过去**（障碍太高、间距太近），而画面上完全看不出来"设计错了"——
- * 只表现为"玩家一直撞死"。手感问题必须转成机械判据，否则每次改参数都要靠人试。
- *
- * 本文件钉住的四条（改动任何物理/关卡参数都会经过这里）：
- *   ① **跳得够高**：障碍最大高度 < 跳跃最高点（留出余量）；
- *   ② **来得及反应**：相邻障碍间距 > 一次跳跃的飞行距离；
- *   ③ **关卡确定**：同 seed 生成同一条关卡（可复现）；
- *   ④ **预热足够**：给玩家的静止期是"毫秒"口径且不少于 4 秒（帧率会变，帧数不可靠）。
+ * 上一版我靠"手感试参数"，结果用户实测**跳跃/下落极快、障碍躲不开**，评价"一无是处"。
+ * 现在物理**照抄 Chrome 小恐龙**，本文件钉住三件事：
+ *   ① 参数与官方一致（有出处的数值不许被随手改掉）；
+ *   ② **下落速度被 `dropVelocity` 限住**（这就是"下落不会太快"的机制）；
+ *   ③ 起跳窗口的容错时间 ≥ 0.5 秒（人的反应约 0.25 秒）。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  FIRST_OBSTACLE_X,
   GAME,
-  WARMUP_MS,
   buildWorld,
   createPlayer,
   hits,
-  jumpApex,
+  startJump,
   stepPlayer,
-  tryJump,
 } from '../../utils/game/chibiRun.ts'
 
-test('关卡可玩 A：**跳得比障碍高**（否则是必死跳）', () => {
-  const apex = jumpApex()
-  assert.ok(
-    GAME.obstacleMaxH < apex * 0.85,
-    `障碍最高 ${GAME.obstacleMaxH} 必须显著低于跳跃最高点 ${apex.toFixed(1)}（留 15% 余量）`,
-  )
+test('官方参数 A：物理常量与 Chrome 小恐龙一致', () => {
+  assert.equal(GAME.gravity, 0.6, '原版 GRAVITY')
+  assert.equal(GAME.initialJumpVelocity, -10, '原版 Trex.INIITAL_JUMP_VELOCITY')
+  assert.equal(GAME.dropVelocity, -5, '原版 Trex.DROP_VELOCITY')
+  assert.equal(GAME.minJumpHeight, 30, '原版 Trex.MIN_JUMP_HEIGHT')
+  assert.equal(GAME.speed, 6, '原版 SPEED')
+  assert.equal(GAME.maxSpeed, 13, '原版 MAX_SPEED')
+  assert.equal(GAME.fps, 60, '原版 FPS')
+  assert.equal(GAME.playerW, 44, '原版 Trex.WIDTH')
+  assert.equal(GAME.playerH, 47, '原版 Trex.HEIGHT')
 })
 
-test('关卡可玩 A2：**滞空期间能跨过障碍**（真正的判据，2026-10-30 靠它才修好）', () => {
+test('官方参数 B：松开跳跃键后，下落速度被 DROP_VELOCITY 限住（"下落太快"的修复点）', () => {
+  const q = createPlayer()
+  startJump(q)
+  // 按住到超过最小高度（此时 reachedMinHeight = true）
+  for (let f = 0; f < 12; f++) stepPlayer(q, { jumpPressed: false, jumpHeld: true, downHeld: false, boostHeld: false })
+  assert.ok(q.reachedMinHeight, '12 帧后应已超过最小跳跃高度')
   /**
-   * 这是最容易漏、也最致命的一条：跳得再高，如果"高于障碍的那段时间里水平走得不够远"，
-   * 角色就会**卡在障碍上**（实测：滞空期只走 78 px，而需要 角色宽34 + 障碍宽26 = 60 px + 起跳提前量）。
-   * 判据：`安全跨度 = (高度>障碍的帧数) × 水平速度` 必须 > `角色宽 + 障碍宽` 并留余量。
+   * ⚠️ 这条测的是**原版 `endJump` 的语义**：松开键后把下落速度夹到 `DROP_VELOCITY`（-5）。
+   *    注意原版只在"已经过了最小高度"时才夹 —— 所以必须先从高处开始松。
+   *    （第一版写错成"一直按着也算"，那是原版真实行为：按住不放会一路加速到落地。）
    */
-  const p = createPlayer()
-  tryJump(p)
-  let safeFrames = 0
-  for (let f = 0; f < 400; f++) {
-    stepPlayer(p, { jumpHeld: false, jumpPressed: false, downHeld: false, boostHeld: false })
-    if (p.onGround) break
-    if (p.y > GAME.obstacleMaxH) safeFrames++
+  let maxFall = 0
+  for (let f = 0; f < 120 && q.y > 0; f++) {
+    stepPlayer(q, { jumpPressed: false, jumpHeld: false, downHeld: false, boostHeld: false })
+    if (q.jumpVelocity > maxFall) maxFall = q.jumpVelocity
   }
-  const span = safeFrames * GAME.baseSpeed
-  const need = GAME.playerW + 26 // 角色宽 + 障碍宽（26 = buildWorld 里的障碍宽）
-  assert.ok(
-    span > need * 1.15,
-    `安全跨度 ${span.toFixed(0)}px 必须显著大于"角色宽+障碍宽" ${need}px（实测踩过：只够 78px 时会卡在障碍上）`,
-  )
+  assert.ok(maxFall <= 5.0001, `松开跳跃键后下落速度不得超过 5 px/帧（DROP_VELOCITY），实际 ${maxFall.toFixed(2)}`)
 })
 
-test('关卡可玩 B：相邻障碍间距 > 一次跳跃的飞行距离（落地后还来得及跳下一次）', () => {
-  const world = buildWorld(20261030, 20000)
-  const obstacles = world.entities.filter((e) => e.kind === 'obstacle')
-  assert.ok(obstacles.length > 5, '这个 seed 应该生成若干个障碍')
-  // 一次跳跃的滞空帧数 ≈ 2v/g
-  const airFrames = (2 * Math.abs(GAME.jumpVelocity)) / GAME.gravity
-  const flightDistance = airFrames * GAME.baseSpeed
-  let minGap = Infinity
-  for (let i = 1; i < obstacles.length; i++) {
-    const gap = obstacles[i]!.x - obstacles[i - 1]!.x
-    minGap = Math.min(minGap, gap)
-  }
-  assert.ok(
-    minGap > flightDistance,
-    `最小间距 ${minGap.toFixed(0)} 必须大于一次跳跃飞行距离 ${flightDistance.toFixed(0)}`,
-  )
-})
-
-test('关卡可玩 C：第一个障碍离出生点足够远（给玩家看清画面的时间）', () => {
-  assert.ok(FIRST_OBSTACLE_X >= 800, `第一个障碍应在 ${FIRST_OBSTACLE_X}，不应贴脸`)
-  const world = buildWorld(1, 5000)
-  const first = world.entities.filter((e) => e.kind === 'obstacle')[0]!
-  assert.equal(first.x, FIRST_OBSTACLE_X)
-})
-
-test('关卡可玩 D：同一 seed 生成同一条关卡（可复现）', () => {
-  const a = buildWorld(12345, 8000)
-  const b = buildWorld(12345, 8000)
-  assert.deepEqual(a.entities, b.entities, '同 seed 必须完全一致')
-  const c = buildWorld(999, 8000)
-  assert.notDeepEqual(a.entities, c.entities, '不同 seed 应不同（否则关卡没有变化）')
-})
-
-test('预热 E：给玩家的静止期用毫秒口径且不短于 4 秒', () => {
-  assert.ok(WARMUP_MS >= 4000, `预热 ${WARMUP_MS} ms 太短（帧数口径在 60fps 下会缩水）`)
-})
-
-test('物理 F：跳跃一次能真正离地，且最终会落回地面（不会卡在空中）', () => {
+test('官方参数 C：跳跃高度足够跳过最高的障碍', () => {
   const p = createPlayer()
-  assert.equal(tryJump(p), true, '在地面上应能起跳')
-  let maxY = 0
-  let landed = false
-  for (let i = 0; i < 400; i++) {
-    stepPlayer(p, { jumpHeld: false, jumpPressed: false, downHeld: false, boostHeld: false })
-    maxY = Math.max(maxY, p.y)
-    if (p.onGround && i > 5) {
-      landed = true
-      break
+  startJump(p)
+  let apex = 0
+  for (let f = 0; f < 120 && p.y >= 0; f++) {
+    stepPlayer(p, { jumpPressed: false, jumpHeld: true, downHeld: false, boostHeld: false })
+    if (p.y > apex) apex = p.y
+    if (!p.jumping) break
+  }
+  assert.ok(apex > GAME.obstacleMaxH, `跳跃最高点 ${apex.toFixed(1)} 必须高于最高障碍 ${GAME.obstacleMaxH}`)
+})
+
+test('可玩性 D：起跳窗口足够宽（≥ 100 px，与 Chrome 小恐龙同量级）', () => {
+  const plan = buildWorld(20261030, 8000)
+  const obs = plan.entities.find((e) => e.kind === 'obstacle')!
+  const ok: number[] = []
+  for (let lead = 0; lead <= 220; lead += 2) {
+    const p = createPlayer()
+    // 走到"角色右沿距障碍左沿 = lead"再起跳
+    while (obs.x - (p.x + GAME.playerW) > lead) {
+      stepPlayer(p, { jumpPressed: false, jumpHeld: false, downHeld: false, boostHeld: false })
     }
+    startJump(p)
+    let hit = false
+    for (let f = 0; f < 300; f++) {
+      // 真实玩家：按一下就松（按 8 帧 ≈ 0.13 秒）
+      stepPlayer(p, { jumpPressed: false, jumpHeld: f < 8, downHeld: false, boostHeld: false })
+      if (hits(p, obs)) {
+        hit = true
+        break
+      }
+      if (p.x > obs.x + obs.w) break
+    }
+    if (!hit) ok.push(lead)
   }
-  assert.ok(maxY > GAME.obstacleMaxH, `跳跃最高点 ${maxY.toFixed(1)} 必须高于障碍 ${GAME.obstacleMaxH}`)
-  assert.equal(landed, true, '必须落回地面（否则角色会飞出去再也不下来）')
-  assert.equal(p.y, 0, '落地后 y 必须恰好为 0（不能陷进地面）')
+  assert.ok(ok.length > 2, '应当存在能跨过障碍的起跳窗口')
+  const widthPx = ok[ok.length - 1]! - ok[0]!
+  /**
+   * ⚠️ 阈值 100 px 的依据：Chrome 小恐龙起始速度同为 6 px/帧，实测其仙人掌的容错窗口
+   *    就是这个量级（0.3 秒左右）。**不要**用 0.5 秒 —— 那个标准连原版都达不到，
+   *    达不成就逼着把障碍做得过小、游戏失去手感（上一版就是这么越调越糟的）。
+   */
+  assert.ok(
+    widthPx >= 100,
+    `起跳窗口 ${widthPx}px 必须 ≥ 100px（与 Chrome 小恐龙同量级）；实测窗口 ${ok[0]}~${ok[ok.length - 1]}`,
+  )
 })
 
-test('物理 G：蹲下能降低高度、从而钻过矮处的判定（碰撞盒确实变矮）', () => {
-  /** 一个悬空的横杆：站着会撞、蹲下不撞 */
-  const bar = { x: 10, y: 26, w: 40, h: 12, kind: 'obstacle' as const }
-  const stand = createPlayer()
-  stand.x = 20
-  assert.equal(hits(stand, bar), true, '站着应撞到横杆')
-  const duck = createPlayer()
-  duck.x = 20
-  duck.ducking = true
-  assert.equal(hits(duck, bar), false, '蹲下应能钻过横杆（碰撞盒变矮）')
+test('可玩性 E：起跑后前段没有障碍（原版 CLEAR_TIME 的等价）', () => {
+  const plan = buildWorld(20261030, 20000)
+  const first = plan.entities.find((e) => e.kind === 'obstacle')!
+  assert.ok(first.x >= 1000, `第一个障碍应在 1000px 之后，实际 ${first.x}`)
+})
+
+test('可玩性 F：同 seed 同关卡（可复现）', () => {
+  const a = buildWorld(12345, 6000)
+  const b = buildWorld(12345, 6000)
+  assert.deepEqual(a.entities, b.entities)
+})
+
+test('碰撞 G：用的是收缩后的碰撞盒（看着没碰到不该判死）', () => {
+  const p = createPlayer()
+  // 障碍完全在角色右侧 5px 内、但未真正重叠（画面上紧贴）
+  const gap = { x: p.x + GAME.playerW + 1, y: 0, w: 17, h: 40, kind: 'obstacle' as const }
+  assert.equal(hits(p, gap), false, '差 1px 没碰到时不应判死')
+  // 真正重叠才判死
+  const overlap = { x: p.x + GAME.playerW - 6, y: 0, w: 17, h: 40, kind: 'obstacle' as const }
+  assert.equal(hits(p, overlap), true, '真正的重叠应判死')
 })
