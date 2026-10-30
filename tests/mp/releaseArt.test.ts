@@ -63,9 +63,39 @@ test('releaseArt：贺图路径与渠道文案是"单一来源"，改口径只�
 })
 
 /**
- * 🆕 2026-10-30 用户要求「取消停更公告」+「更新版本页信息」。
- * 这条断言盯的是**单一来源里别再残留停更口径**（版本页、关于页、README 都从这里取）。
+ * 🆕 2026-10-30 实测踩到：1.3.4 条目写了 `planned: true` ⇒ `pages/version-info.vue` 只认"非 planned"的条目，
+ * 于是页面**跳过 1.3.4、回退显示 1.3.2**（那张卡还是"永久停更公告"），同时页面又写着"当前运行 v1.3.4（开发中）"。
+ * 判据：**运行中的版本必须能在版本页上找到属于自己的条目**（否则就是回退/占位）。
+ *
+ * ⚠️ 取版本号的姿势：测试由 `run-mp-tests.mjs` 拷进 `.mp-test-build/` 运行，
+ *    `../../package.json` 在副本里**不存在**（第一版就这么红的：ENOENT .mp-test-build/package.json）。
+ *    按 `captureStore.test.ts` 的既有做法从 `import.meta.url` **向上找仓库根**（package.json + src/mp/releaseArt.ts
+ *    同时在场才算），找不到就 skip —— 判据：**测试里读仓库文件一律向上探根，不许假设相对位置**。
  */
+test('releaseArt：当前运行的版本条目存在且不是 planned（否则版本页会回退显示旧版本）', async (t) => {
+  const { readFileSync, existsSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  let dir = join(fileURLToPath(import.meta.url), '..')
+  let pkg: { version: string } | undefined
+  for (let i = 0; i < 6; i++) {
+    const parent = join(dir, '..')
+    if (existsSync(join(parent, 'package.json')) && existsSync(join(parent, 'src', 'mp', 'releaseArt.ts'))) {
+      pkg = JSON.parse(readFileSync(join(parent, 'package.json'), 'utf8')) as { version: string }
+      break
+    }
+    dir = parent
+  }
+  if (!pkg) {
+    t.skip('找不到项目根（package.json + src/mp/releaseArt.ts）—— 不在仓库内运行；本守卫跳过')
+    return
+  }
+  const e = VERSION_ENTRIES.find((x) => x.version === pkg!.version)
+  assert.ok(e, `缺少 ${pkg!.version} 的版本条目 —— 版本页会回退显示上一个版本`)
+  assert.notEqual(e!.planned, true, `${pkg!.version} 被标成 planned ⇒ 版本页会跳过它`)
+  assert.ok((e!.highlights?.length ?? 0) >= 4, `${pkg!.version} 的更新日志太短，像是占位条目`)
+})
+
 test('releaseArt：停更口径已取消（建议区、1.3.4 条目都不再出现"停更"）', () => {
   assert.doesNotMatch(VERSION_ADVICE.recommendedEta, /停更|不再有后续版本/, '建议区仍写着停更')
   const latest = VERSION_ENTRIES[0]!

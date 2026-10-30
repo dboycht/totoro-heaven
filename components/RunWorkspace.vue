@@ -653,7 +653,7 @@
           ⚠️ pre3 采数据模式：<b>没读到任务也允许提交</b>（报文可能缺任务号，是否有效由服务端决定）
         </div>
         <div>
-          还没读到任务：回<NuxtLink to="/">工作台</NuxtLink>粘贴 token → 点「读取真实账号与任务」；
+          还没读到任务：回<NuxtLink to="/app">工作台</NuxtLink>粘贴 token → 点「读取真实账号与任务」；
           或点上方「载入演示数据」只试界面与报文（不发请求）。
         </div>
         <!-- 🆕 2026-09-22：挂载时已先试过 `autoRestoreFromCache()`（不联网）。走到这条说明
@@ -813,7 +813,7 @@
 
       <!-- 未读到真实任务时的提示（演示模式不算——它本来就不是真实数据） -->
       <v-alert v-if="!realReady && !demoMode" type="info" variant="tonal" density="compact">
-        尚未读取真实数据：先在<NuxtLink to="/">工作台</NuxtLink>粘贴 token 并点「读取真实账号与任务」。
+        尚未读取真实数据：先在<NuxtLink to="/app">工作台</NuxtLink>粘贴 token 并点「读取真实账号与任务」。
         演示数据只能用于试界面与报文预览，<b>不会</b>真实提交。
       </v-alert>
       <!-- ⛔ 开跑前门禁：三个否决项任一开启（或状态未知）→ 从源头阻止创建场次 -->

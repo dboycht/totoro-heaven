@@ -21,7 +21,7 @@
         <v-icon class="mr-1">mdi-check-decagram-outline</v-icon>建议使用 {{ recommended }}
       </div>
       <div class="text-body-2">
-        当前运行的版本是 <b>v{{ currentVersion }}</b>；对外发布的最新版本是 <b>{{ stableVersion }}</b>。
+        当前运行的版本是 <b>v{{ currentVersion }}</b>。
         以下是各版本的更新日志，按版本从新到旧排列。
       </div>
     </v-alert>
@@ -107,12 +107,12 @@ const entry = computed<VersionEntry>(() => {
 const isCurrentEntry = computed(() => entry.value.version === currentVersion.value)
 
 /**
- * 当前**已发布的正式版**：取条目里第一个"非 planned 的 stable 版本"。
- * ⚠️ 2026-09-20：原先这里显示 `VERSION_ADVICE.recommendedEta`（"预计 X.X 发布"）——
- * 那是个**写死的日期**，一旦过期就变成错误信息（1.2.0 那次就是这样）。
- * 现在改成从版本列表里**推导**，不会再过期。
+ * ⚠️ 2026-10-30：「对外发布的最新版本是 X」这句**整句撤掉**（连同原 `stableVersion` 计算属性）——
+ * 本项目已改为"代码自己继续维护，但不对外发布 Release"（用户 2026-10-30 口径），
+ * "对外发布"从此**没有可推导的事实来源**；实测把 1.3.4 去掉 planned 后，这句曾变成
+ * "对外发布的最新版本是 1.3.4"，与下方卡片自己写的"本版为内部维护版本，不对外发布 Release"自相矛盾。
+ * 判据：页面上不得出现任何**从当前数据推导不出来**的发布状态陈述；发布相关口径只写在各版本条目自己的文案里。
  */
-const stableVersion = computed(() => VERSION_ENTRIES.find((e) => e.channel === 'stable' && !e.planned)?.version ?? '—')
 
 useHead({ title: '版本信息 · 龙猫天堂' })
 </script>

@@ -17,7 +17,7 @@
     </v-alert>
 
     <v-alert v-if="!isLoggedIn" type="warning" variant="tonal" density="comfortable" class="mb-4">
-      未建立会话 —— 回到 <NuxtLink to="/">工作台</NuxtLink> 填 token 并点「读取真实账号与任务」。
+      未建立会话 —— 回到 <NuxtLink to="/app">工作台</NuxtLink> 填 token 并点「读取真实账号与任务」。
     </v-alert>
   </div>
 </template>

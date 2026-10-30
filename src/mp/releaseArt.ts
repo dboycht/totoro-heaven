@@ -67,7 +67,11 @@ export const VERSION_ENTRIES: VersionEntry[] = [
     date: '2026-10-30',
     channel: 'stable',
     title: '《龙猫天堂》像素跑酷小游戏 + 入口拦截 + 取消停更公告',
-    planned: true,
+    /**
+     * ⚠️ **不能标 `planned`**（2026-10-30 实测踩到）：`pages/version-info.vue` 只认"非 planned"的条目，
+     *    标了 planned ⇒ 版本页会**跳过它**、回退显示 1.3.2（那张卡片还是"永久停更公告"），
+     *    而页面上又写着"当前运行 v1.3.4（开发中，暂无独立更新日志）"—— 与"更新版本页"的要求正好相反。
+     */
     highlights: [
       '本版为内部维护版本，不对外发布 Release。',
       '★ 打开软件默认进入《龙猫天堂》小游戏：主角是像素龙猫，画面按屏幕等比铺满、像素清晰。',
