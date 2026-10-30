@@ -22,6 +22,9 @@ const onUnlock = () => {
   if (unlocked.value) return
   unlocked.value = true
   unlock()
+  // 通知本地服务（§71）：打包版里 launcher 与服务同进程，收到后终端才打出完整横幅
+  // （「阳光跑助手 · 本地 Web 服务」）。尽力而为：dev 下无 launcher、失败也不影响解锁。
+  void $fetch('/api/local/unlock-notify', { method: 'POST', keepalive: true }).catch(() => {})
   window.setTimeout(() => {
     void navigateTo('/app')
   }, 600)
