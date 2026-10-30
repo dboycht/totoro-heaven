@@ -34,7 +34,9 @@ useHead({ title: '龙猫天堂' })
       <h1 class="play-title">龙猫天堂</h1>
     </header>
 
-    <ChibiRunGame @unlock="onUnlock" />
+    <div class="play-stage">
+      <ChibiRunGame @unlock="onUnlock" />
+    </div>
 
     <transition name="fade">
       <div v-if="unlocked" class="play-secret">✨ 你发现了秘密 ✨</div>
@@ -44,29 +46,48 @@ useHead({ title: '龙猫天堂' })
 
 <style scoped>
 .play-page {
-  min-height: 100vh;
+  position: fixed;
+  inset: 0;
   width: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 8px 0 10px;
-  box-sizing: border-box;
-  background: #12101c;
+  height: 100vh;
+  display: block;
+  overflow: hidden;
+  background: #f7f7f7;
 }
 .play-head {
-  flex: 0 0 auto;
+  position: absolute;
+  top: 10px;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  pointer-events: none;
+  text-align: center;
 }
 .play-title {
+  display: inline-block;
   font-size: 20px;
   font-weight: 800;
   letter-spacing: 0.18em;
   margin: 0;
-  background: linear-gradient(90deg, #ffd6e8, #cbb6ff, #a9e5ff);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  padding: 2px 14px;
+  border-radius: 999px;
+  background: rgba(18, 16, 28, 0.82);
+  color: #ffe9f3;
+}
+/**
+ * 舞台：画布上下若够不到屏幕边（4:1 的等比画面放不出满高），
+ * 用伪元素把上下补成**同一颜色**（与原版画布底色一致 = 视觉上一整块全屏）。
+ * 颜色取固定值：夜间模式切换时原版会给画布整体反色，这里不跟 —— 留白本身就是浅色界面。
+ */
+.play-stage {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
 .play-secret {
   position: fixed;
