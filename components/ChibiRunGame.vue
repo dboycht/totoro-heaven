@@ -10,26 +10,27 @@
  *   · `public/trex/resources.html` —— 原版精灵图与音效（**全部内嵌 base64，完全离线**）
  *   · `public/trex/style.css`      —— 原版样式
  *
- * ## 我们只动"外围"，绝不动原版逻辑（2026-10-30 实测逐个定位后敲定）
+ * ## 我们只动"外围"（2026-10-30 逐个实测定位，原版逻辑一行未改）
  *
  * ① **准备原版需要的 DOM**（精灵图 + 容器）。
  *
  * ② **高分屏上把 `devicePixelRatio` 抬到 2**：原版用 `IS_HIDPI` 选 1x / 2x 精灵图
- *    （`resources.html` 里两张都有），而普通笔记本屏 `devicePixelRatio` 可能正好是 1
- *    ⇒ 一直用 1x 精灵再被 CSS 放大，**边缘发虚**。原版在脚本加载时就吃死了这个值，必须提前改。
- *    ⚠️ 副作用：原版 `updateCanvasScaling` 会因 `dpr ≠ backingStore` 把**画布缓冲**放大 ×2，
- *    同时把 `canvas.style.width/height` 写成逻辑尺寸 —— 正好是我们要的效果。
+ *    （`resources.html` 里两张都有），而普通屏可能正好是 1 ⇒ 一直用 1x 精灵再被 CSS 放大，
+ *    **边缘发虚**。原版在脚本加载时就吃死了这个值，必须提前改。
  *
- * ③ **画面铺满整屏**：原版按 600×150 的"状态栏尺寸"素描（恐龙 44×47），但我们不改这个逻辑尺寸，
- *    而是**调大内层容器与画布的 CSS 宽高**，让原版的等比缩放机制把整幅画面放大 `s = 宽 / 600` 倍。
- *    原版每帧按"画布宽高"做碰撞与绘制，所以**碰撞盒、速度（`WIDTH ≥ 600` 时恒为标准 6）、障碍间距全部等比**，
- *    手感与原版一致、只是看得更清楚。恐龙起始位置 `xPos`、分拣器 `calcXPos` 按画布像素坐标同步。
- *    同时接管 `clearCanvas`：原版只按初始 600×150 清屏，改大后会残留旧帧（实测：恐龙身后一串虚影）。
+ * ③ **画面铺满整屏**：原版按 600×150 的"状态栏尺寸"素描（恐龙 44×47）。我们**不改这个逻辑尺寸**，
+ *    而是调大内层容器与画布的 **CSS 宽高**，让原版的等比缩放机制把整幅画面放大 `s = 宽 / 600` 倍。
+ *    原版每帧按"画布宽高"做碰撞与绘制 ⇒ 碰撞盒、速度（`WIDTH ≥ 600` 时恒为标准 6）、障碍间距**全部等比**。
+ *    恐龙起始 `xPos`、分拣器 `calcXPos` 按画布像素坐标同步。
  *
- * ④ **不补遮罩、不留边缝**：画布按 4:1 等比铺满视口后居中，上下余量本就是底色（`#f7f7f7`）
- *    ⇒ 整块就是"全屏游戏"，没有第二种颜色打架（上一版留了黑边，用户看到的就是"不是全屏"）。
+ * ④ **接管两处"按初始尺寸写死"的地方**：
+ *    - `clearCanvas` 只按 600×150 清屏 ⇒ 放大后右侧/下侧残留旧帧；换成清整块画布。
+ *    - 待机画面的"双恐龙"：原版 init 先在 `xPos = 0` 画一只；只在**初始化那一次**把恐龙挪到 50·s 并重绘。
+ *      ⚠️ 重绘**绝不能**用 `horizon.update(0, 0, true)` —— 那等于"以速度 0 重新摆一遍分拣器/地平线/云"，
+ *      会把它们的旧像素画在初始位置，叠在正常帧下面 ⇒ 看起来**障碍永远停在屏幕右边、云不动**（曾整轮踩坑）。
+ *      正确做法是清整块画布后只重画恐龙。
  *
- * ⑤ **监听作弊码** `↑↑↓↓←→←→BA`（原版自己处理按键，我们只搭顺风车）；
+ * ⑤ **监听作弊码** `↑↑↓↓←→←→BA`（原版自己处理按键，我们只搭顺风车），
  *    并把方向键 / 空格**在游戏页里拦掉默认滚动**，否则按方向键输作弊码时页面会滚走、恐龙被按得看不见。
  */
 const emit = defineEmits<{
@@ -43,7 +44,7 @@ interface TrexRunner {
   canvas?: HTMLCanvasElement
   canvasCtx?: CanvasRenderingContext2D
   distanceMeter?: { calcXPos: (width: number) => void }
-  tRex?: { xPos: number; update?: (deltaTime: number, status?: string) => void }
+  tRex?: { xPos: number; yPos: number; jumping?: boolean; update?: (deltaTime: number, status?: string) => void }
   /** 原版清屏（只按初始逻辑尺寸）—— 我们要换成清整块画布 */
   clearCanvas?: () => void
 }
@@ -117,7 +118,7 @@ async function ensureResources(): Promise<void> {
  *
  * ⚠️ 原版把尺寸写死成 600px 宽、150px 高（`.interstitial-wrapper{max-width:600px}`、
  *    `.runner-container{max-width:600px;width:44px}`）—— 那是给 Chrome 错误页内嵌用的。
- *    这里让外容器铺满，内层容器交给 `applyGameScale` 按倍率给尺寸。
+ *    这里只**放开上限**，实际尺寸交给 `applyGameScale`。
  */
 function ensureStyle(): void {
   if (!document.querySelector('link[data-trex-style]')) {
@@ -131,7 +132,6 @@ function ensureStyle(): void {
   const style = document.createElement('style')
   style.id = 'trex-override'
   style.textContent = `
-    /* 原版写死的 600px 上限 / 44px 起始宽全部放开，尺寸由 applyGameScale 决定 */
     /* ⚠️ 不要在这里写 width / height —— JS 用 setProperty(...,'important') 设尺寸，
        与内联 !important 同优先级时会按"后者胜"互相压住（实测踩到：布局函数算了尺寸却被 CSS 压回 100%）。 */
     .game-host.interstitial-wrapper {
@@ -143,10 +143,11 @@ function ensureStyle(): void {
     .game-host .runner-container {
       max-width: none !important;
       overflow: visible !important;
-      /* 开始后原版会塞 -webkit-animation: intro（把 inner 从 44px 撑到全宽）；
-         我们不用它 —— 尺寸保持恒定，免得一上来闪一下 */
-      animation: none !important;
-      -webkit-animation: none !important;
+      /* ⚠️ 这里绝不能禁掉 intro 动画（曾经写过 animation:none，结果整局跑不动）：
+         原版靠它的 webkitAnimationEnd 事件进入 startGame；playIntro 会停下主循环，事件不来 ⇒
+         主循环永不恢复、update 的 deltaTime 恒为 0 ⇒ 分拣器/云/障碍全不动、撞不死、跑不完。
+         实测症状：分数一直涨，但仙人掌钉在屏幕右边。
+         开场那一下的宽度动画由 applyGameScale 在运行时单独关掉（只关动画副作用，不动事件链路）。*/
     }
     .game-host canvas.runner-canvas {
       position: absolute;
@@ -168,12 +169,11 @@ const BASE_PAD = 50
 /**
  * 按原版自己的等比缩放机制把画面铺满视口（见文件头 ③④）。
  *
- * 尺寸算法：**画布按 4:1 等比铺满整个视口**（取宽、高两个方向里能放下的那个），
- * 再把画布居中 —— 这样没有上下黑边/白边（4:1 的画面在 16:9 屏幕上必然留白，
- * 与其补色不如把留白也算进画面，地平线随之下移到画面下方 1/4 处）。
+ * 尺寸算法：**画布按 4:1 等比铺满整个视口**（取宽、高两个方向里能放下的那个），居中显示
+ * （4:1 的画面在 16:9 屏幕上必然上下留白，留白就是原版底色，不另补色）。
  *
  * @param host 外容器（原版 `outerContainerEl`，里面由原版建了 `.runner-container` 与画布）
- * @param runner 原版实例（用于按画布像素坐标重新居中分拣器 / 恐龙，并接管清屏范围）
+ * @param runner 原版实例（用于按画布像素坐标同步分拣器 / 恐龙，并接管清屏范围）
  * @returns 解除监听的函数
  */
 function applyGameScale(host: HTMLElement, runner: TrexRunner): () => void {
@@ -195,15 +195,16 @@ function applyGameScale(host: HTMLElement, runner: TrexRunner): () => void {
     }
   }
 
-  // 初始化时原版先在 xPos = 0 画了一只恐龙，再靠 intro 动画挪到 50 ⇒ 改坐标前画面上会
-  
-  // 同时出现两只（实测截到）。这里清一次屏并按原版方式重画待机画面。
-  const redrawIdle = () => {
-    const r = runner as TrexRunner & { horizon?: { update: (...a: unknown[]) => void } }
+  /**
+   * 初始化那一次：把恐龙从 `xPos = 0` 挪到 `50·s` 并重画。
+   * ⚠️ 只清屏 + 只重画恐龙；**不要**调 `horizon.update(0, 0, true)`（见文件头 ④）。
+   */
+  const placeTrex = (targetX: number) => {
+    const trex = runner.tRex
+    if (!trex) return
+    trex.xPos = targetX
     clearAll()
-    r.horizon?.update(0, 0, true)
-    // 原版 init 里就是 `update(0, Trex.status.WAITING)` 画出待机恐龙；不传状态时它不会重画
-    r.tRex?.update?.(0, 'WAITING')
+    trex.update?.(0, 'WAITING')
   }
 
   const layout = () => {
@@ -213,11 +214,15 @@ function applyGameScale(host: HTMLElement, runner: TrexRunner): () => void {
     const w = Math.min(vw, Math.round(vh * (BASE_W / BASE_H)))
     const h = Math.round(w * (BASE_H / BASE_W))
     const s = w / BASE_W
-    const letterbox = Math.max(0, Math.round((vh - h) / 2))
 
-    const key = `${w}x${h}@${letterbox}`
+    const key = `${w}x${h}`
     if (key === appliedKey) return
     appliedKey = key
+
+    // 开场动画会把内层容器从 44px 撑到全宽（原版只为 600px 场景准备），与我们要的恒定尺寸打架 ⇒
+    // 只抹掉动画带来的宽度变化，但不要禁掉整条动画链路（见 ensureStyle 里的警告）。
+    const animTarget = host.querySelector<HTMLElement>('.runner-container')
+    animTarget?.style.setProperty('animation-duration', '0.001s', 'important')
 
     host.style.setProperty('width', `${w}px`, 'important')
     host.style.setProperty('height', `${h}px`, 'important')
@@ -238,9 +243,7 @@ function applyGameScale(host: HTMLElement, runner: TrexRunner): () => void {
     // 原版按画布逻辑尺寸算距离表 / 用户 x 坐标：缩放后按画布像素坐标同步（否则贴左缘、分拣器挤在 60px 处）
     if (runner.dimensions) runner.dimensions.WIDTH = w
     runner.distanceMeter?.calcXPos(w)
-    if (runner.tRex) runner.tRex.xPos = Math.round(BASE_PAD * s)
-    redrawIdle()
-    return letterbox
+    placeTrex(Math.round(BASE_PAD * s))
   }
 
   const schedule = () => {
@@ -311,7 +314,7 @@ async function boot(): Promise<void> {
     // eslint-disable-next-line @typescript-eslint/no-new
     const runner = new (RunnerCtor as unknown as new (el: Element) => unknown)(host) as TrexRunner
 
-    // ③ 画面放大 / 留白 / 居中（见文件头 ③④）
+    // ③ 画面放大 / 铺满 / 居中（见文件头 ③④）
     const detachScale = applyGameScale(host, runner)
 
     // ⑤ 游戏页里拦掉方向键 / 空格的默认滚动 —— 否则按方向键输作弊码时页面滚走、恐龙被按得看不见
