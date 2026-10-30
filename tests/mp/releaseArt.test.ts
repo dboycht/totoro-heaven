@@ -61,3 +61,17 @@ test('releaseArt：贺图路径与渠道文案是"单一来源"，改口径只�
   assert.equal(channelText('stable'), '建议使用（正式版）')
   assert.match(VERSION_ADVICE.recommended, /^\d+\.\d+\.\*$/)
 })
+
+/**
+ * 🆕 2026-10-30 用户要求「取消停更公告」+「更新版本页信息」。
+ * 这条断言盯的是**单一来源里别再残留停更口径**（版本页、关于页、README 都从这里取）。
+ */
+test('releaseArt：停更口径已取消（建议区、1.3.4 条目都不再出现"停更"）', () => {
+  assert.doesNotMatch(VERSION_ADVICE.recommendedEta, /停更|不再有后续版本/, '建议区仍写着停更')
+  const latest = VERSION_ENTRIES[0]!
+  const text = [latest.title, latest.note ?? '', ...latest.highlights].join(' ')
+  assert.doesNotMatch(text.split('取消')[1] ?? '', /永久停更|停止更新/, '1.3.4 条目正文仍在宣称停更（只允许出现在"取消停更公告"这句里）')
+  // 1.3.4 必须有真实内容，不能是"暂无条目"的占位（版本页会显示成空白卡片）
+  assert.ok(latest.highlights.length >= 4, '1.3.4 更新日志太短，像是占位条目')
+})
+

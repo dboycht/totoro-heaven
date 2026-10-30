@@ -13,16 +13,16 @@
       <div class="text-caption mt-1">本项目完全免费、无任何收费或推广；若在别处看到有人收费售卖，与本项目无关。</div>
     </v-alert>
 
-    <!-- 版本建议（文字说明保留；用户 2026-09-16 要求：只显示"当前版本"的贺图与文字，且不出现任何文件路径）
+    <!-- 当前版本建议（文字说明保留；用户 2026-09-16 要求：只显示"当前版本"的贺图与文字，且不出现任何文件路径）
          ⚠️ 2026-09-20：不再显示"预计发布日期"（写死的日期一过期就变成错信息），改为**从版本条目里取当前正式版**。
-         ⚠️ 2026-10-29：项目永久停更 ⇒ 不再是"建议使用某版本"，改成明确的停更口径（仍然不会过期）。 -->
-    <v-alert type="warning" variant="flat" density="comfortable" class="mb-4">
+         ⚠️ 2026-10-30 用户要求取消停更公告 ⇒ 恢复为正常的版本建议。 -->
+    <v-alert type="info" variant="tonal" density="comfortable" class="mb-4">
       <div class="font-weight-bold">
-        <v-icon class="mr-1">mdi-newspaper-remove</v-icon>本项目已永久停更
+        <v-icon class="mr-1">mdi-check-decagram-outline</v-icon>建议使用 {{ recommended }}
       </div>
       <div class="text-body-2">
-        最后一个版本是 <b>{{ stableVersion }}</b>（此后不再发布新版本）；下载渠道与相关仓库将陆续关闭。
-        以下为本版公告与历史版本的更新日志，仅供查阅。
+        当前运行的版本是 <b>v{{ currentVersion }}</b>；对外发布的最新版本是 <b>{{ stableVersion }}</b>。
+        以下是各版本的更新日志，按版本从新到旧排列。
       </div>
     </v-alert>
 
@@ -74,14 +74,16 @@
  *   并在卡片上标明「当前运行 vX（开发中）」，避免出现空的"贺图待补充 / 暂无更新日志"；
  * - 贺图按 `/version-art/<版本号>.<ext>` 自动匹配，找不到就显示"待补充"（**不显示任何文件路径**）。
  */
-// ⚠️ 2026-10-29：本页不再使用 `VERSION_ADVICE`（停更后不再"建议使用某版本"，见上方停更提示），
-//    故从 import 中移除 —— 留着会触发 `noUnusedLocals` 类型检查失败。
-import { VERSION_ENTRIES, channelText } from '~/src/mp/releaseArt'
+// ⚠️ 2026-10-30：停更口径已取消 ⇒ 这里恢复使用 `VERSION_ADVICE.recommended`（页面顶部"建议使用 X"）。
+import { VERSION_ADVICE, VERSION_ENTRIES, channelText } from '~/src/mp/releaseArt'
 import type { VersionEntry } from '~/src/mp/releaseArt'
 import { isNewerVersion } from '~/utils/mp/version'
 
 const appConfig = useAppConfig()
 const currentVersion = computed(() => String(appConfig.version || 'dev'))
+
+/** 版本建议（来自 `releaseArt.ts` 的单一来源；不在这里写死任何版本号） */
+const recommended = computed(() => VERSION_ADVICE.recommended)
 
 const entry = computed<VersionEntry>(() => {
   const v = currentVersion.value

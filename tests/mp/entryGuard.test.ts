@@ -40,7 +40,9 @@ test('入口拦截 A：未解锁访问根路径 ⇒ 进游戏页（默认打开�
 })
 
 test('入口拦截 B：**所有**工具页在未解锁时都被拦（默认全拦，新页面天然安全）', () => {
-  const leaked = TOOL_PATHS.filter((p) => decideRoute(p, false) !== 'blank')
+  // ⚠️ `/app` 例外：它是"打开软件"的入口（根路径重定向到它）⇒ 未解锁时进游戏页，判据见测试 I
+  const toolPaths = TOOL_PATHS.filter((p) => p !== '/app')
+  const leaked = toolPaths.filter((p) => decideRoute(p, false) !== 'blank')
   assert.deepEqual(leaked, [], `这些工具页没被拦住（会直接暴露）：${leaked.join(', ')}`)
 })
 
@@ -61,6 +63,48 @@ test('入口拦截 E：解锁标记是**会话级**键名（关浏览器即忘�
   assert.equal(UNLOCK_KEY, 'totoro_play_unlocked')
   // 键名固定即可；真正"是 sessionStorage 而不是 localStorage"由实现保证（见 entryGate.ts 注释）
 })
+
+/**
+ * 🆕 2026-10-30 用户判定（原话）：
+ *   「在一次启动过程中，如果用户输入了作弊码，那么在不关闭软件的情况下，
+ *     都是跳过游戏界面直接进入到工作台」
+ * 这条是**硬需求**：打包 EXE 里"刷新页面"不等于"关软件"，所以不能只靠 sessionStorage。
+ */
+test('入口拦截 F：解锁后**根路径直接放行**（不再先回游戏页 —— 刷新也不许退回游戏）', () => {
+  assert.equal(decideRoute('/', true), 'allow', '已解锁时打开/刷新根路径必须直接进工作台')
+})
+
+test('入口拦截 G：解锁标记用"会话级 + 进程级"两道存储，且标注了刷新语义', () => {
+  // 键名不变（老版本写下的会话标记仍要认，避免升级后突然要求重输）
+  assert.equal(UNLOCK_KEY, 'totoro_play_unlocked')
+  // 进程级标记：打包 EXE 刷新页面时 sessionStorage 会被清空，靠它兜住；退出软件即忘
+  assert.match(UNLOCK_KEY, /^totoro_/)
+})
+
+test('入口拦截 H：`/app` 就是工作台本身（不能反过来被拦成空白页）', () => {
+  // ⚠️ 2026-10-30 修正：`/app` 现在是"打开软件"的入口（根路径重定向到它），
+  // 未解锁时应**进游戏页**（与 `/` 一致），不是空白页 —— 详见下面的 I。
+  assert.equal(decideRoute('/app', false), 'game')
+  assert.equal(decideRoute('/app', true), 'allow')
+  assert.equal(decideRoute('/app/', true), 'allow', '带斜杠结尾也要放行（Nuxt 可能规范化成这种形式）')
+})
+
+/**
+ * 🆕 2026-10-30 实测事故：工作台迁到 `/app`、根路径 `redirect: '/app'` 之后，
+ * Nuxt 会在重定向后**再按新地址判一次** ⇒ 未解锁时 `/app` 走"其余地址"分支被送去 `/blank`，
+ * 连"打开软件看游戏"都做不到（实测 `/` 的最终地址是 `/blank`）。
+ * 判据：**重定向目标必须与来源地址得到同一个判定**。
+ */
+test('入口拦截 I：`/` 与 `/app` 判定一致（重定向目标不能被拦成空白页）', () => {
+  assert.equal(decideRoute('/', false), 'game')
+  assert.equal(decideRoute('/app', false), decideRoute('/', false), '未解锁时 / 与 /app 必须同判定')
+  assert.equal(decideRoute('/app/', false), decideRoute('/', false), '带斜杠结尾也一样')
+  // 反过来：不能因为放宽 `/app` 而把别的工具页也放进了游戏分支
+  for (const p of TOOL_PATHS.filter((x) => x !== '/app')) {
+    assert.equal(decideRoute(p, false), 'blank', `${p} 仍应被拦成空白页`)
+  }
+})
+
 
 test('作弊码 A：完整输入 Konami 序列 ⇒ 解锁，且只触发一次', () => {
   const d = new CheatDetector()

@@ -7,7 +7,7 @@
         <span class="text-caption text-medium-emphasis">Totoro Heaven · 阳光跑助手</span>
       </v-app-bar-title>
 
-      <v-btn to="/" variant="text" prepend-icon="mdi-home-outline" class="text-none">工作台</v-btn>
+      <v-btn to="/app" variant="text" prepend-icon="mdi-home-outline" class="text-none">工作台</v-btn>
       <!-- 2026-09-20（用户要求）：阳光跑 / 自由跑 合并成一个「跑步」分组，
            组内两个小标签各有独立 URL（`/runs/sunrun`、`/runs/freerun`），
            旧地址 `/run`、`/freerun` 保留为跳转 ⇒ 旧书签不失效。 -->
@@ -50,12 +50,11 @@
     </v-main>
 
     <!--
-      停更公告（用户 2026-10-29 要求：每次启动都弹）：
-      · 挂在全局布局而不是 app.vue —— 布局只在应用挂载时创建一次，`onMounted` 天然等于"每次启动"；
-        页面内路由切换不会重建布局 ⇒ 不会每换一页就再弹一次。
-      · 关闭后可在「关于」里再次打开（见 `AboutDialog`），所以不需要记住"已读"。
+      停更公告已取消（用户 2026-10-30 明确要求）：
+      · 原 `SunsetNoticeDialog` 组件已删除（启动弹窗 + 关于页入口一并移除）；
+      · 这里不要再把弹窗挂回来 —— 用户的判定是"继续正常使用"，公告与会话/教程之间的联动
+        已一并拆掉（`pages/app.vue` 的首次教程改为挂载即判断，不再等公告关闭）。
     -->
-    <SunsetNoticeDialog v-model="sunsetOpen" @closed="onSunsetClosed" />
   </v-layout>
 </template>
 
@@ -92,23 +91,9 @@ const doLogout = () => {
 const aboutOpen = ref(false)
 
 /**
- * 停更公告：**每次启动都弹**（用户 2026-10-29 明确选择，不写 localStorage、不做"已读"记忆）。
- * 用 `onMounted` 而不是初始值直接 `true`：确保 Vuetify 应用已就绪（与 v-app/v-layout 同一帧之后），
- * 否则首帧就可能出现遮罩没挂上的闪烁。
- *
- * 🆕 与首页「首次启动教程」的先后（用户 2026-10-29 选择"停更公告优先"）：
- *   · 挂载时同步写 `window.__totoroSunsetNoticeOpen__ = true`（页面 `onMounted` 读这个标记决定是否推迟教程）；
- *   · 用户关掉公告时派发 `totoro:sunset-notice-closed`，首页收到后再弹教程。
- * 用 window 标记 + 事件而不是 Pinia/useState：两者都是"跨布局与页面的一次性握手"，
- * 不需要持久化，也不需要响应式追踪（页面只关心"我挂载这一瞬间它开没开"）。
+ * 停更公告（2026-10-29 新增）已于 **2026-10-30 按用户要求取消**：
+ * 启动弹窗、关于页入口、以及"公告关闭后才弹首次教程"的握手（window 标记 + 自定义事件）全部移除。
+ * ⚠️ 留下的教训：这类"跨布局与页面的一次性握手"一旦上游取消，下游那个"等它"的开关就永远不会被打开，
+ * 表现为**静默失效**（教程再也不弹）—— 所以拆弹窗时必须同时拆握手，不能只删弹窗组件。
  */
-const sunsetOpen = ref(false)
-onMounted(() => {
-  ;(window as unknown as { __totoroSunsetNoticeOpen__?: boolean }).__totoroSunsetNoticeOpen__ = true
-  sunsetOpen.value = true
-})
-const onSunsetClosed = () => {
-  ;(window as unknown as { __totoroSunsetNoticeOpen__?: boolean }).__totoroSunsetNoticeOpen__ = false
-  window.dispatchEvent(new CustomEvent('totoro:sunset-notice-closed'))
-}
 </script>

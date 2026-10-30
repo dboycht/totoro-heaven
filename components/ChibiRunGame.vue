@@ -65,6 +65,10 @@ const KEYMAP: Record<string, Key> = {
 let matched = 0
 let fired = false
 
+/**
+ * 作弊码检测：只在 keydown 推进（见 `onCapture` 里的说明）。
+ * 匹配规则：能接上就前进；接不上就回退到"以当前键结尾的最长前缀"（真人手快必然多按，不能清零）。
+ */
 function feedKey(e: KeyboardEvent): void {
   if (fired) return
   const k = KEYMAP[e.code]
@@ -354,11 +358,51 @@ async function boot(): Promise<void> {
     const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'PageUp', 'PageDown'])
     const onKey = (e: KeyboardEvent) => {
       if (SCROLL_KEYS.has(e.code)) e.preventDefault()
-      feedKey(e)
+      // ⚠️ 作弊码统一在下面的 document 捕获阶段喂（那里还能同时处理 A/B 的蹲下映射）
     }
     window.addEventListener('keydown', onKey, true)
+    // ⑥ 补键位映射（用户 2026-10-30 要求）：↑ / ← / → 都能跳，↓ / A / B 都能蹲。
+    //    做法与"尺寸接管"同一个思路：**不改原版逻辑**，在捕获阶段先记下"这一次按键要做什么"，
+    //    喂给原版（用 ↑/↓ 的 keyCode 与 key）之后原版就会按它自己的规则起跳/蹲下。
+    const remap = (e: KeyboardEvent) => {
+      const code = e.code
+      if (code === 'ArrowLeft' || code === 'ArrowRight') return { key: 'ArrowUp', keyCode: 38 }
+      if (code === 'KeyA' || code === 'KeyB') return { key: 'ArrowDown', keyCode: 40 }
+      return null
+    }
+    const synthetic = new WeakSet<Event>()
+    const onCapture = (e: KeyboardEvent) => {
+      if (synthetic.has(e)) return
+      // ⚠️ 只在 **keydown** 推进作弊码检测器：keyup 也是键盘事件，不区分的话一次按键会被算两遍，
+      //    序列永远错位（2026-10-30 实测：↑↑↓ 之后就卡在 m=0）。A/B 两件事都做（蹲下 + 参与隐藏序列）。
+      if (e.type === 'keydown') feedKey(e)
+      const mapped = remap(e)
+      if (!mapped) return
+      // 原事件不再往下传（否则它自己的 keyCode 会把动作又改一遍，比如 ↓ 的 keyup 会让 A 的蹲下被取消）
+      e.stopImmediatePropagation()
+      e.preventDefault()
+      const ev = new KeyboardEvent(e.type, {
+        key: mapped.key,
+        bubbles: true,
+        cancelable: true,
+        repeat: e.repeat,
+      })
+      // ⚠️ 实测（Chrome）：`KeyboardEvent` 构造器**不接受** `code` / `keyCode`（传了也读不到，`code` 恒为空串），
+      //    而原版看 `keyCode`、别的监听者看 `code` ⇒ 必须在派发前把这几个属性补上。
+      //    改用"可写副本"而不是 defineProperty：更直白，也便于以后排查。
+      Object.defineProperty(ev, 'code', { value: String(e.code), configurable: true })
+      Object.defineProperty(ev, 'keyCode', { value: mapped.keyCode, configurable: true })
+      Object.defineProperty(ev, 'which', { value: mapped.keyCode, configurable: true })
+      synthetic.add(ev)
+      document.dispatchEvent(ev)
+    }
+    // 原版把 keydown/keyup 挂在 document 上（见 runner.js 的 startListening）
+    document.addEventListener('keydown', onCapture, true)
+    document.addEventListener('keyup', onCapture, true)
     cleanup = () => {
       window.removeEventListener('keydown', onKey, true)
+      document.removeEventListener('keydown', onCapture, true)
+      document.removeEventListener('keyup', onCapture, true)
       detachScale()
     }
   } catch (err) {
