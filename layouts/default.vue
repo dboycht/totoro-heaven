@@ -85,7 +85,7 @@ const isRealSession = computed(() => Boolean(session.value?.token) && !session.v
  */
 const doLogout = () => {
   logoutAndClearSession()
-  showSnackbar('已退出登录（本机 token 与缓存已一并清除）', 'info', { cloud: true })
+  showSnackbar('已退出登录（本机 token 与缓存已一并清除）', 'info')
 }
 
 const aboutOpen = ref(false)

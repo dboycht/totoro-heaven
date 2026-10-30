@@ -323,9 +323,9 @@ const doLoadReal = async () => {
   if (ok) {
     // loadRealData() 内部已 applyToRunner()（定选线 + 退出演示 + 触发摄像头杆开关读取），此处不再重复注入
     const t = realTask.value!
-    showSnackbar(`真实数据已读取：${t.paperName}（${t.runPointList?.length ?? 0} 条线路）`, 'success', { cloud: true })
+    showSnackbar(`真实数据已读取：${t.paperName}（${t.runPointList?.length ?? 0} 条线路）`, 'success')
   } else {
-    showSnackbar(realError.value || '读取失败', 'error', { cloud: true })
+    showSnackbar(realError.value || '读取失败', 'error')
   }
 }
 
@@ -333,15 +333,15 @@ const doLogout = () => {
   // ⚠️ 2026-09-18 审计 S1：改用 `logoutAndClearSession()` —— 之前只 `logout()`（清会话），
   //    缓存里那份完整 token 还留在本机，点「恢复」就能一键登回去。
   logoutAndClearSession()
-  showSnackbar('已退出登录（本机 token 与缓存已一并清除）', 'info', { cloud: true })
+  showSnackbar('已退出登录（本机 token 与缓存已一并清除）', 'info')
 }
 
 /** 恢复"上次读取的任务"（刷新后默认不自动恢复，这是显式入口） */
 const doRestoreCached = () => {
   // 从本机缓存恢复任务也属于「读取数据」⇒ 云式提示（1.1.9 需求①）
   // 2026-09-18：恢复 = **拿本机 token 重新读取一遍**（账号/任务/线路/开关全部刷新，并沿用上次选线）
-  if (restoreCachedTask()) showSnackbar('正在用本机 token 重新读取…', 'info', { cloud: true })
-  else showSnackbar(realError.value || '本机没有可用 token：请先点「一键获取 token」', 'warning', { cloud: true })
+  if (restoreCachedTask()) showSnackbar('正在用本机 token 重新读取…', 'info')
+  else showSnackbar(realError.value || '本机没有可用 token：请先点「一键获取 token」', 'warning')
 }
 
 /** 一键清空本机数据（会话 + 任务缓存 + 记录） */
@@ -382,7 +382,7 @@ const doTokenScan = async () => {
   tokenScanState.phase = 'scanning'
   tokenScanState.message = '正在启动扫描器…'
   // 云式顶部提示：这是"读取数据"的入口，用户 2026-09-17 要求用云提示（点一下可关）
-  showSnackbar('正在从微信小程序进程读取登录凭据…', 'info', { cloud: true })
+  showSnackbar('正在从微信小程序进程读取登录凭据…', 'info')
   logInfo('token', '点击「一键获取 token」')
   try {
     const started = await $fetch<{ ok: boolean; nonce?: string; message?: string }>('/api/local/token-scan/start', {
@@ -443,7 +443,7 @@ const doTokenScan = async () => {
               fingerprint: st.fingerprint,
               candidates: st.candidates,
             })
-            showSnackbar(`已获取 token（${st.masked}），正在读取真实数据…`, 'success', { cloud: true })
+            showSnackbar(`已获取 token（${st.masked}），正在读取真实数据…`, 'success')
             // 卸载后不再"替用户"建会话并读取真实数据（2026-09-20 审计修复）
             if (scanDisposed) return
             await doLoadReal()
@@ -453,7 +453,7 @@ const doTokenScan = async () => {
             logWarn('token', `取 token 失败：${st.message ?? ''}`, { phase: st.phase })
             /** 🆕 同时记进诊断时间线（见 `reportScanFailure` 的说明） */
             reportScanFailure(st.message || '（没有原因文本）', { phase: st.phase, where: 'status' })
-            showSnackbar(st.message || '取 token 失败：请确认电脑版微信已登录小程序后重试', 'error', { cloud: true })
+            showSnackbar(st.message || '取 token 失败：请确认电脑版微信已登录小程序后重试', 'error')
           } else if (Date.now() - startedAt > 70_000) {
             stopScanPolling()
             tokenScanState.phase = 'error'
@@ -462,7 +462,7 @@ const doTokenScan = async () => {
             logWarn('token', '取 token 超时（70 秒）')
             /** 🆕 超时也记进时间线（它同样是"一次没成功的复现"） */
             reportScanFailure(tokenScanState.message, { phase: 'error', where: 'timeout' })
-            showSnackbar(tokenScanState.message, 'error', { cloud: true })
+            showSnackbar(tokenScanState.message, 'error')
           }
         } catch (err) {
           /**
@@ -479,7 +479,7 @@ const doTokenScan = async () => {
             tokenScanState.phase = 'error'
             tokenScanState.message = '读取扫描状态失败（本机端点连续 5 次无响应）——请重试，或改用「抓包粘贴 token」路线'
             tokenScanState.running = false
-            showSnackbar(tokenScanState.message, 'error', { cloud: true })
+            showSnackbar(tokenScanState.message, 'error')
           }
         }
       })()
@@ -489,7 +489,7 @@ const doTokenScan = async () => {
     tokenScanState.message = err instanceof Error ? err.message : '启动扫描失败'
     tokenScanState.running = false
     logError('token', '启动扫描失败', { message: tokenScanState.message })
-    showSnackbar(`取 token 失败：${tokenScanState.message}`, 'error', { cloud: true })
+    showSnackbar(`取 token 失败：${tokenScanState.message}`, 'error')
   }
 }
 </script>

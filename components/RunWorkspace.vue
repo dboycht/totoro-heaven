@@ -1485,8 +1485,8 @@ const doEnableDemo = () => {
 const doRestoreCached = () => {
   // 这也是"读取数据"（从本机缓存里恢复任务）⇒ 用云式顶部提示（1.1.9 需求①）
   // 2026-09-18：恢复 = **拿本机 token 重新读取一遍**（与工作台同一套语义）
-  if (restoreCachedTask()) showSnackbar('正在用本机 token 重新读取…', 'info', { cloud: true })
-  else showSnackbar(realError.value || '本机没有可用 token：请回「工作台」点「一键获取 token」', 'warning', { cloud: true })
+  if (restoreCachedTask()) showSnackbar('正在用本机 token 重新读取…', 'info')
+  else showSnackbar(realError.value || '本机没有可用 token：请回「工作台」点「一键获取 token」', 'warning')
 }
 
 /**

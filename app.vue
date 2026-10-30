@@ -48,11 +48,10 @@ import { NOTICE_KEY, type NoticeOptions } from '~/composables/useNotice'
  * 签名（**未变**，调用方无需改动）：
  *   showNotice(text, color?)                                 // 默认 3 秒后自动消失
  *   showNotice(text, color, { timeout: 0 })                   // 不自动消失，等用户点掉
- *   showNotice(text, color, { cloud: true })                  // ⚠️ 兼容参数，**现在与普通提示完全一样**
  *
  * 📌 2026-09-18：用户看过一版"流体云式"浮层后**明确否掉**（要求换成正常矩形、可点击关闭），
- *    所以云朵组件（`components/CloudNotice.vue`）已**删除**；`cloud` 这个字段保留但**不再有形态含义**，
- *    仅为不改动 7 处调用方而存在（后续轮次可安全清理）。
+ *    云朵组件（`components/CloudNotice.vue`）已**删除**；兼容参数 `cloud`/`clickable`
+ *    已于 2026-10-31 从调用方与类型里一并清理（15 处 + 类型定义）。
  */
 const notice = useState('globalSnackbar', () => ({
   show: false,
