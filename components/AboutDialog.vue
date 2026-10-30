@@ -27,7 +27,7 @@
               </a>
             </template>
           </v-list-item>
-          <v-list-item prepend-icon="mdi-scale-balance" title="许可" subtitle="MIT License" />
+          <v-list-item prepend-icon="mdi-scale-balance" title="许可" subtitle="CC BY-NC 4.0（非商业）" />
         </v-list>
 
         <UpdateNotice compact />

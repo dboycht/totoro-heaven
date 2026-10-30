@@ -30,8 +30,10 @@
 
 ## 许可
 
-MIT License，详见 [LICENSE](LICENSE)。
-游戏部分基于 Chromium 的离线小恐龙跑酷（BSD 风格许可，版权归 The Chromium Authors；出处与改动说明见 `public/trex/runner.js` 文件头）。
+本作品以 **CC BY-NC 4.0（署名-非商业性使用 4.0 国际）** 许可协议发布，详见 [LICENSE](LICENSE)：
+可自由使用、修改与分发，但**不得用于任何商业目的**（出售、收费代做、广告变现、集成到商业产品等），使用时请注明原作者与本项目地址。
+
+第三方组件不受上述许可约束、仍按其自身许可执行：游戏部分基于 Chromium 的离线小恐龙跑酷（BSD 风格许可，版权归 The Chromium Authors；出处与改动说明见 `public/trex/runner.js` 文件头）。
 
 ## 更新日志
 
