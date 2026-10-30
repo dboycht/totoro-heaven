@@ -49,6 +49,13 @@ function copyTree(srcDir, destDir) {
 fs.rmSync(tmp, { recursive: true, force: true })
 const copied =
   copyTree(path.join(root, 'utils', 'mp'), path.join(tmp, 'utils', 'mp')) +
+  /**
+   * 🆕 2026-10-30：`utils/game`（《龙猫天堂》小游戏的纯逻辑层）也要拷 ——
+   * 本脚本按**目录清单**复制，不在清单里的目录一律缺失 ⇒ 第一次跑
+   * `entryGuard.test.ts` 时报 `ERR_MODULE_NOT_FOUND: .../utils/game/chibiRun.ts`。
+   * 判据：**新增 `utils/<子目录>` 放纯逻辑时，必须同步加进这份清单**。
+   */
+  copyTree(path.join(root, 'utils', 'game'), path.join(tmp, 'utils', 'game')) +
   copyTree(path.join(root, 'src', 'mp'), path.join(tmp, 'src', 'mp')) +
   copyTree(path.join(root, 'src', 'wrappers'), path.join(tmp, 'src', 'wrappers')) +
   /**

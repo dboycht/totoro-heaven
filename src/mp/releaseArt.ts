@@ -56,6 +56,26 @@ export const VERSION_ADVICE = {
 /** 版本列表（最新在前） */
 export const VERSION_ENTRIES: VersionEntry[] = [
   {
+    version: '1.3.4',
+    /**
+     * ⚠️ 日期口径（规则 12）：定版那天先跑 Get-Date 读本机日期，发布后再用 published_at 复核（有脚本核对）。
+     * 本条开发日 = 2026-10-30（本机实读）。
+     *
+     * 📌 与 1.3.3 同一口径：**内部维护，不对外发布 Release** ⇒ 保留 `planned: true`。
+     */
+    date: '2026-10-30',
+    channel: 'stable',
+    title: '（内部维护）新增《龙猫天堂》小游戏作为启动页 + 入口拦截',
+    planned: true,
+    highlights: [
+      '本版为内部维护版本，不对外发布；对外最后一个正式版仍是 1.3.2。',
+      '打开软件默认进入《龙猫天堂》小游戏（天堂主题像素跑酷，方向键 + A/B 操作）。',
+      '未在游戏中完成内置指令时，其余页面显示空白页。',
+      '更新日志已独立到 CHANGELOG.md，README 只描述小游戏。',
+    ],
+    note: '内部维护条目，不对外发布，也不在版本页作为正式版展示。',
+  },
+  {
     version: '1.3.3',
     /**
      * ⚠️ 日期口径（规则 12）：定版那天先跑 Get-Date 读本机日期，发布后再用 published_at 复核（有脚本核对）。
