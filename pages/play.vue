@@ -74,20 +74,10 @@ useHead({ title: '龙猫天堂' })
   background: rgba(18, 16, 28, 0.82);
   color: #ffe9f3;
 }
-/**
- * 舞台：画布上下若够不到屏幕边（4:1 的等比画面放不出满高），
- * 用伪元素把上下补成**同一颜色**（与原版画布底色一致 = 视觉上一整块全屏）。
- * 颜色取固定值：夜间模式切换时原版会给画布整体反色，这里不跟 —— 留白本身就是浅色界面。
- */
+/* 舞台铺满整屏；画布（由组件按视口算高度）钉在舞台底部 ⇒ 地面贴着屏幕下缘，上方是天空留白 */
 .play-stage {
   position: absolute;
-  left: 0;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  justify-content: center;
-  align-items: center;
+  inset: 0;
 }
 .play-secret {
   position: fixed;

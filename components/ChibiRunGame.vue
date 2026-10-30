@@ -18,10 +18,10 @@
  *    （`resources.html` 里两张都有），而普通屏可能正好是 1 ⇒ 一直用 1x 精灵再被 CSS 放大，
  *    **边缘发虚**。原版在脚本加载时就吃死了这个值，必须提前改。
  *
- * ③ **画面铺满整屏**：原版按 600×150 的"状态栏尺寸"素描（恐龙 44×47）。我们**不改这个逻辑尺寸**，
- *    而是调大内层容器与画布的 **CSS 宽高**，让原版的等比缩放机制把整幅画面放大 `s = 宽 / 600` 倍。
- *    原版每帧按"画布宽高"做碰撞与绘制 ⇒ 碰撞盒、速度（`WIDTH ≥ 600` 时恒为标准 6）、障碍间距**全部等比**。
- *    恐龙起始 `xPos`、分拣器 `calcXPos` 按画布像素坐标同步。
+ * ③ **画面铺满整屏**：原版按 600×150 的"状态栏尺寸"素描（恐龙 44×47；速度在 `WIDTH ≥ 600` 时恒为标准 6）。
+ *    我们**不放大素材**：逻辑高固定 150（CSS 高 = 视口高，1:1 最清晰），只把**画布宽**改成视口宽，
+ *    并同步 `dimensions.WIDTH`（障碍出生点）、地平线段宽、分拣器 x —— 于是恐龙离左边缘恒为 50px、
+ *    地平线铺满整屏、障碍从屏幕最右端生成。
  *
  * ④ **接管两处"按初始尺寸写死"的地方**：
  *    - `clearCanvas` 只按 600×150 清屏 ⇒ 放大后右侧/下侧残留旧帧；换成清整块画布。
@@ -149,10 +149,10 @@ function ensureStyle(): void {
          实测症状：分数一直涨，但仙人掌钉在屏幕右边。
          开场那一下的宽度动画由 applyGameScale 在运行时单独关掉（只关动画副作用，不动事件链路）。*/
     }
+    /* 画布满视口，内容由 JS 等比缩放后底部居中绘制（见 applyGameScale） */
     .game-host canvas.runner-canvas {
       position: absolute;
-      top: 0;
-      left: 0;
+      inset: 0;
       max-width: none !important;
       display: block;
     }
@@ -161,31 +161,47 @@ function ensureStyle(): void {
   document.head.appendChild(style)
 }
 
-/** 原版 `Runner.defaultDimensions = { WIDTH: 600, HEIGHT: 150 }`；恐龙起始 `x = 50`（`Trex.config.START_X_POS`） */
+/**
+ * 原版的逻辑尺寸是 600×150（`Runner.defaultDimensions`），恐龙 44×47、起始 `x = 50`。
+ *
+ * ## 缩放策略（2026-10-30，用户两轮反馈"太窄/偏左/太小"之后定稿）
+ * 把**整幅原版画面**等比放大 `Kx` 倍（`Kx = min(视口宽/600, 视口高/150)`），在画布内**底部居中**绘制：
+ *   - 画布 = 视口尺寸，缓冲与 CSS 同尺寸 ⇒ 不拉伸、不模糊；
+ *   - 绘制用 `ctx.setTransform(Kx, 0, 0, Kx, offX, offY)` ⇒ 素材比例不变、整体清晰；
+ *   - 画布 CSS 在**整块视口**上再放一个"逻辑换算"：`translate((1−Kx)/2, (150−视口高/Kx))`，
+ *     让原版按 600×150 的逻辑坐标绘制时正好落在上面那块区域里；
+ *   - 恐龙按 **CSS 像素**定位（离左边缘恒为 `TREX_LEFT_PX`），不随倍率越推越远；
+ *   - 地平线段宽恒为 600 逻辑像素，横向铺满（`drawImage` 在 transform 下自动平铺）。
+ *
+ * ⚠️ 反面教训（都踩过）：把倍率乘在 50 / 600 上 ⇒ "离左边缘多远/地平线断在哪"全被放大（偏左）；
+ *    只拉 CSS 不改缓冲 ⇒ 糊；改画布高度后仍按原逻辑算 y ⇒ 内容缩在顶上一条带里。
+ */
 const BASE_W = 600
 const BASE_H = 150
-const BASE_PAD = 50
+/** 恐龙离左边缘的距离（CSS 像素，不随倍率变化） */
+const TREX_LEFT_PX = 50
+/** 分拣器距右边缘的距离（逻辑像素；原版 `DEST_WIDTH × (位数+1)` ≈ 66） */
+const METER_RIGHT_PX = 66
 
-/**
- * 按原版自己的等比缩放机制把画面铺满视口（见文件头 ③④）。
- *
- * 尺寸算法：**画布按 4:1 等比铺满整个视口**（取宽、高两个方向里能放下的那个），居中显示
- * （4:1 的画面在 16:9 屏幕上必然上下留白，留白就是原版底色，不另补色）。
- *
- * @param host 外容器（原版 `outerContainerEl`，里面由原版建了 `.runner-container` 与画布）
- * @param runner 原版实例（用于按画布像素坐标同步分拣器 / 恐龙，并接管清屏范围）
- * @returns 解除监听的函数
- */
+/** 原版实例里我们额外要用到的字段 */
+interface TrexHorizon {
+  obstacles: { xPos: number; width: number }[]
+  horizonLine?: { dimensions: { WIDTH: number } }
+}
+
 function applyGameScale(host: HTMLElement, runner: TrexRunner): () => void {
   let raf = 0
   let appliedKey = ''
 
-  /** 清整块画布：原版只按初始逻辑尺寸（600×150）清屏，改大之后右侧/下侧会残留旧帧 */
+  /** 清整块画布（缓冲像素）：加宽之后右侧会残留旧帧 */
   const clearAll = () => {
     const c = runner.canvas
     const ctx = runner.canvasCtx
     if (!c || !ctx) return
+    ctx.save()
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.clearRect(0, 0, c.width, c.height)
+    ctx.restore()
   }
   const nativeClear = runner.clearCanvas?.bind(runner)
   if (nativeClear) {
@@ -195,55 +211,71 @@ function applyGameScale(host: HTMLElement, runner: TrexRunner): () => void {
     }
   }
 
-  /**
-   * 初始化那一次：把恐龙从 `xPos = 0` 挪到 `50·s` 并重画。
-   * ⚠️ 只清屏 + 只重画恐龙；**不要**调 `horizon.update(0, 0, true)`（见文件头 ④）。
-   */
-  const placeTrex = (targetX: number) => {
+  /** 恐龙归位并重画待机画面（⚠️ 不要调 horizon.update(0,0,true)，见文件头 ④） */
+  const placeTrex = () => {
     const trex = runner.tRex
     if (!trex) return
-    trex.xPos = targetX
+    trex.xPos = trexXLogical()
     clearAll()
     trex.update?.(0, 'WAITING')
   }
 
+  /** 绘制倍率（画布逻辑坐标 → CSS 像素）；地平线段宽等也用它换算 */
+  let Kx = 1
+  /** 恐龙 x（逻辑坐标）：视觉位置恒为 TREX_LEFT_PX 个 CSS 像素 ⇒ 除以倍率换算回逻辑坐标 */
+  const trexXLogical = () => Math.round(TREX_LEFT_PX / Kx)
+
   const layout = () => {
     const vw = window.innerWidth
     const vh = window.innerHeight
-    // 画布 4:1 等比铺满视口
-    const w = Math.min(vw, Math.round(vh * (BASE_W / BASE_H)))
-    const h = Math.round(w * (BASE_H / BASE_W))
-    const s = w / BASE_W
+    // 等比放大：宽度铺满；若放大后"地面"会顶出屏幕上缘，则改由高度定倍率（画面整体缩小、上下居中）
+    const kxByW = vw / BASE_W
+    Kx = Math.min(kxByW, vh / BASE_H)
+    // 左右居中：多出来的宽度（或高度）平均分到两边
+    const drawW = BASE_W * Kx
+    const drawH = BASE_H * Kx
+    const offX = (vw - drawW) / 2
+    const offY = vh - drawH
 
-    const key = `${w}x${h}`
+    const key = `${vw}x${vh}`
     if (key === appliedKey) return
     appliedKey = key
 
-    // 开场动画会把内层容器从 44px 撑到全宽（原版只为 600px 场景准备），与我们要的恒定尺寸打架 ⇒
-    // 只抹掉动画带来的宽度变化，但不要禁掉整条动画链路（见 ensureStyle 里的警告）。
-    const animTarget = host.querySelector<HTMLElement>('.runner-container')
-    animTarget?.style.setProperty('animation-duration', '0.001s', 'important')
-
-    host.style.setProperty('width', `${w}px`, 'important')
-    host.style.setProperty('height', `${h}px`, 'important')
+    host.style.setProperty('width', `${vw}px`, 'important')
+    host.style.setProperty('height', `${vh}px`, 'important')
     host.style.setProperty('position', 'relative', 'important')
 
     const container = host.querySelector<HTMLElement>('.runner-container')
     if (container) {
-      container.style.setProperty('width', `${w}px`, 'important')
-      container.style.setProperty('height', `${h}px`, 'important')
-    }
-    const canvas = host.querySelector<HTMLCanvasElement>('canvas.runner-canvas')
-    if (canvas) {
-      // 原版只把缓冲按 dpr 放大，CSS 尺寸仍写着逻辑像素 ⇒ 换成与容器一致的尺寸
-      canvas.style.setProperty('width', `${w}px`, 'important')
-      canvas.style.setProperty('height', `${h}px`, 'important')
+      // 开场动画会把内层容器从 44px 撑到全宽（与恒定尺寸打架）⇒ 压到瞬时；
+      // ⚠️ 但**不能**禁掉动画本身：原版靠它的 animationend 才进入 startGame（见 ensureStyle 的警告）。
+      container.style.setProperty('animation-duration', '0.001s', 'important')
     }
 
-    // 原版按画布逻辑尺寸算距离表 / 用户 x 坐标：缩放后按画布像素坐标同步（否则贴左缘、分拣器挤在 60px 处）
-    if (runner.dimensions) runner.dimensions.WIDTH = w
-    runner.distanceMeter?.calcXPos(w)
-    placeTrex(Math.round(BASE_PAD * s))
+    const canvas = runner.canvas
+    const ctx = runner.canvasCtx
+    if (canvas) {
+      // 缓冲 = CSS 尺寸（不拉伸）；再按 K 缩放绘制 + 水平居中原点
+      canvas.width = vw
+      canvas.height = vh
+      canvas.style.setProperty('width', `${vw}px`, 'important')
+      canvas.style.setProperty('height', `${vh}px`, 'important')
+    }
+    if (ctx) {
+      ctx.setTransform(Kx, 0, 0, Kx, offX, offY)
+    }
+
+    // 原版按"画布逻辑尺寸"决定障碍出生点 / 地平线折返 / 地面高度：
+    // 逻辑宽恒为 600；逻辑高 = 视口高 / Kx（这样地面正好落在屏幕底部）
+    const logicalH = vh / Kx
+    if (runner.dimensions) runner.dimensions.WIDTH = BASE_W
+    if (runner.dimensions) runner.dimensions.HEIGHT = logicalH
+    const horizon = (runner as TrexRunner & { horizon?: TrexHorizon }).horizon
+    if (horizon?.horizonLine?.dimensions) horizon.horizonLine.dimensions.WIDTH = BASE_W
+    // 分拣器：贴右边缘（逻辑坐标 = 视口宽/K − 66/K）
+    const meter = runner.distanceMeter as { calcXPos: (w: number) => void } | undefined
+    if (meter) meter.calcXPos(Math.round(BASE_W - METER_RIGHT_PX / Kx))
+    if (runner.tRex) runner.tRex.xPos = trexXLogical()
   }
 
   const schedule = () => {
@@ -255,6 +287,7 @@ function applyGameScale(host: HTMLElement, runner: TrexRunner): () => void {
   }
 
   layout()
+  placeTrex()
   window.addEventListener('resize', schedule)
   return () => {
     window.removeEventListener('resize', schedule)
