@@ -18,10 +18,13 @@
  * ⚠️ 本项目 `ssr: false`（纯 SPA，见 `nuxt.config.ts`）⇒ 中间件只在浏览器端跑、
  *    `sessionStorage` 可读，不存在"服务端先吐工具页再被前端替换"的泄漏窗口。
  */
-import { decideRoute, isUnlocked } from '~/utils/game/entryGate'
+import { decideRoute } from '~/utils/game/entryGate'
 
-export default defineNuxtRouteMiddleware((to) => {
-  const verdict = decideRoute(to.path, isUnlocked())
+export default defineNuxtRouteMiddleware(async (to) => {
+  // §72：解锁真源在服务端（EXE 进程生命周期）；页面上下文新建后的第一跳先问一次。
+  // 异步中间件是必须的 —— 浏览器侧缓存活不过"关网页"，而状态真身不在浏览器里。
+  const unlocked = await ensureUnlockState()
+  const verdict = decideRoute(to.path, unlocked)
   if (verdict === 'allow') return
   // ⚠️ `replace: true`：不要在被拦的地址上留下历史记录（回退键一按就露馅）
   if (verdict === 'game') return navigateTo('/play', { replace: true })

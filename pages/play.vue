@@ -4,7 +4,8 @@
  *
  * 软件对外的**唯一表面**：未解锁时打开软件（`/`）会被送到这里。
  *
- * 作弊码 `↑↑↓↓←→←→BA` 输入完成后：写**本次启动内**的解锁标记 → 跳工作台（`/app`）。
+ * 作弊码 `↑↑↓↓←→←→BA` 输入完成后：通知服务端置位（§72，**EXE 进程生命周期**内有效 ——
+ * 关网页/刷新/换浏览器都不丢，重启软件才归零）→ 跳工作台（`/app`）。
  * ⚠️ 直接去 `/app`（2026-10-31）：工作台正文已迁到 `/app`，`/` 只是把手转过去的重定向页
  *    —— 直达省一跳，也免得"解锁后落点"依赖重定向链（`entryGate.ts` 对 `/` 与 `/app` 同判定）。
  *
@@ -12,8 +13,6 @@
  *    会把"这里有个跑步工具"直接写在脸上（实测被探针抓到过）。
  * ⚠️ 页面**铺满整屏**：游戏是这个软件的第一印象，不该缩在一个小方框里。
  */
-import { unlock } from '~/utils/game/entryGate'
-
 definePageMeta({ layout: false })
 
 const unlocked = ref(false)
@@ -21,9 +20,9 @@ const unlocked = ref(false)
 const onUnlock = () => {
   if (unlocked.value) return
   unlocked.value = true
-  unlock()
-  // 通知本地服务（§71）：打包版里 launcher 与服务同进程，收到后终端才打出完整横幅
-  // （「阳光跑助手 · 本地 Web 服务」）。尽力而为：dev 下无 launcher、失败也不影响解锁。
+  // §72：解锁真源在服务端（EXE 进程生命周期）。本地缓存立即置真（紧接着的 /app 跳转
+  // 不用等网络往返），同时通知服务端置位 + 打横幅（幂等；失败不影响解锁）。
+  markUnlockedLocal()
   void $fetch('/api/local/unlock-notify', { method: 'POST', keepalive: true }).catch(() => {})
   window.setTimeout(() => {
     void navigateTo('/app')

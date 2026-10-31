@@ -1,15 +1,18 @@
 /**
- * 入口拦截单测（2026-10-30，1.3.4）
+ * 入口拦截单测（2026-10-30，1.3.4；2026-10-31 §72 重构状态归属）
  *
  * 用户方案：默认拦截校园跑相关链接（输入后"什么也没有"），
  * 在游戏页输入作弊码 `↑↑↓↓←→←→BA` 后跳转真实页面，此后拦截关闭、与正常软件一致。
+ * §72 口径明确：**"一次运行"= EXE 进程生命周期** —— 触发一次后，关网页/刷新/换浏览器
+ * 都保持解锁，重启软件才归零 ⇒ 状态真源在服务端（`server/utils/unlockState.ts`），
+ * 浏览器侧只是缓存（`composables/useUnlockGate.ts`）。
  *
  * ⚠️ 本文件**直接调用生产代码**（`utils/game/entryGate.ts` 的 `decideRoute`），
  *    不自己复算一份规则 —— 复算等于"测我自己写的副本"，改了生产代码也不会红。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { decideRoute, UNLOCK_KEY } from '../../utils/game/entryGate.ts'
+import { decideRoute } from '../../utils/game/entryGate.ts'
 import { CheatDetector, KONAMI_SEQUENCE } from '../../utils/game/chibiRun.ts'
 
 /** 每一个工具页（**必须全部被拦**）：覆盖现有全部路由前缀 */
@@ -59,9 +62,14 @@ test('入口拦截 D：解锁后一切放行（与正常软件一致）', () => 
   }
 })
 
-test('入口拦截 E：解锁标记是**会话级**键名（关浏览器即忘，不会永久露馅）', () => {
-  assert.equal(UNLOCK_KEY, 'totoro_play_unlocked')
-  // 键名固定即可；真正"是 sessionStorage 而不是 localStorage"由实现保证（见 entryGate.ts 注释）
+test('入口拦截 E：解锁状态的**真源在服务端**（初始未触发；置位后本运行内保持）', async () => {
+  const { isUnlockedThisRun, markUnlockedThisRun } = await import('../../server/utils/unlockState.ts')
+  // 🔒 服务端标记：纯内存、进程退出即忘 —— 绝不能是持久化的（否则"永久解锁"露馅）
+  assert.equal(isUnlockedThisRun(), false, '运行开始时应当是未触发')
+  markUnlockedThisRun()
+  assert.equal(isUnlockedThisRun(), true, '置位后本次运行内保持（幂等源）')
+  markUnlockedThisRun()
+  assert.equal(isUnlockedThisRun(), true, '重复置位幂等')
 })
 
 /**
@@ -74,11 +82,27 @@ test('入口拦截 F：解锁后**根路径直接放行**（不再先回游戏�
   assert.equal(decideRoute('/', true), 'allow', '已解锁时打开/刷新根路径必须直接进工作台')
 })
 
-test('入口拦截 G：解锁标记用"会话级 + 进程级"两道存储，且标注了刷新语义', () => {
-  // 键名不变（老版本写下的会话标记仍要认，避免升级后突然要求重输）
-  assert.equal(UNLOCK_KEY, 'totoro_play_unlocked')
-  // 进程级标记：打包 EXE 刷新页面时 sessionStorage 会被清空，靠它兜住；退出软件即忘
-  assert.match(UNLOCK_KEY, /^totoro_/)
+test('入口拦截 G：接线源码级守卫 —— 通知端点必须同时置**服务端**标记，状态查询必须读同一真源', async () => {
+  // §72 重构的接线契约：横幅钩子与解锁置位在同一个端点里；守卫读的也是这份真源。
+  // 任何一边漂移（比如只打横幅不置位 / 守卫去读浏览器标记）都会让"关网页再开"场景复发。
+  const { readFileSync, existsSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  let dir = dirname(fileURLToPath(import.meta.url))
+  let root = ''
+  for (let i = 0; i < 6; i++) {
+    dir = dirname(dir)
+    if (existsSync(join(dir, 'package.json'))) { root = dir; break }
+  }
+  assert.ok(root, '找不到仓库根')
+  const notify = readFileSync(join(root, 'server', 'api', 'local', 'unlock-notify.post.ts'), 'utf8')
+  assert.match(notify, /markUnlockedThisRun\(\)/, 'unlock-notify 必须置服务端标记（否则横幅打了、状态没记，关页即丢）')
+  const stateRoute = readFileSync(join(root, 'server', 'api', 'local', 'unlock-state.get.ts'), 'utf8')
+  assert.match(stateRoute, /isUnlockedThisRun\(\)/, 'unlock-state 必须读服务端真源')
+  const guard = readFileSync(join(root, 'middleware', 'guard.global.ts'), 'utf8')
+  assert.match(guard, /ensureUnlockState/, '路由守卫必须问服务端真源（不许再读浏览器标记）')
+  const play = readFileSync(join(root, 'pages', 'play.vue'), 'utf8')
+  assert.match(play, /markUnlockedLocal/, '作弊码命中时浏览器缓存要立即置真（不等网络往返）')
 })
 
 test('入口拦截 H：`/app` 就是工作台本身（不能反过来被拦成空白页）', () => {
