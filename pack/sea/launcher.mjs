@@ -157,7 +157,8 @@ async function acquireStartupLock() {
       } catch {
         /* 锁刚被释放 ⇒ 下轮重试创建 */
       }
-      if (holder && !pidAlive(holder)) {
+      // holder 为 NaN/0（锁文件被截断/损坏，§73）视同陈旧锁：清掉照常启动，不许因此卡死启动
+      if (!holder || !pidAlive(holder)) {
         // 持锁进程已死（如上一次被强杀）⇒ 陈旧锁，清掉后照常启动
         fs.rmSync(LOCK_FILE, { force: true })
         continue

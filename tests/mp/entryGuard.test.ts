@@ -97,6 +97,9 @@ test('入口拦截 G：接线源码级守卫 —— 通知端点必须同时置*
   assert.ok(root, '找不到仓库根')
   const notify = readFileSync(join(root, 'server', 'api', 'local', 'unlock-notify.post.ts'), 'utf8')
   assert.match(notify, /markUnlockedThisRun\(\)/, 'unlock-notify 必须置服务端标记（否则横幅打了、状态没记，关页即丢）')
+  // §73 加固：浏览器里路过网页的 no-cors POST 不能静默解锁（伪装完整性）
+  assert.match(notify, /cross-site/, 'unlock-notify 必须拒绝跨站驱动（Sec-Fetch-Site: cross-site ⇒ 403）')
+  assert.match(notify, /403/, '跨站驱动必须以 403 拒绝')
   const stateRoute = readFileSync(join(root, 'server', 'api', 'local', 'unlock-state.get.ts'), 'utf8')
   assert.match(stateRoute, /isUnlockedThisRun\(\)/, 'unlock-state 必须读服务端真源')
   const guard = readFileSync(join(root, 'middleware', 'guard.global.ts'), 'utf8')

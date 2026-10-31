@@ -26,7 +26,10 @@ let cache: UnlockGateCache | null = null
 export async function ensureUnlockState(): Promise<boolean> {
   if (cache) return cache.unlocked
   try {
-    const r = await $fetch<{ unlocked: boolean }>('/api/local/unlock-state')
+    // 3s 超时（§73）：服务假死时守卫不能把页面卡死 —— 超时按未解锁（安全默认）
+    const r = await $fetch<{ unlocked: boolean }>('/api/local/unlock-state', {
+      signal: AbortSignal.timeout(3000),
+    })
     cache = { loaded: true, unlocked: !!r.unlocked }
   } catch {
     // 服务不可达（理论上页面本身就是它服务的）⇒ 安全默认：未解锁。绝不让异常逃出守卫。
