@@ -227,9 +227,11 @@ $srcLauncher = Join-Path $PSScriptRoot 'launcher.mjs'
 $tmpLauncher = Join-Path $distSea 'launcher.tmp.mjs'
 $content = (Get-Content $srcLauncher -Raw -Encoding UTF8) -replace "__APP_VERSION__", $ver
 [System.IO.File]::WriteAllText($tmpLauncher, $content, (New-Object System.Text.UTF8Encoding($false)))
-# [1/7] 2026-10-31（§71）：launcher 拆出了 ./banner.mjs（横幅单一来源），而捆绑发生在 **dist/sea 的副本**上
-# ⇒ 相对导入在副本目录里解析不到原文件，必须把 banner.mjs 一并复制到 dist/sea 再 bundle。
-# 判据：往 SEA 入口新增**本地 import** 时，这里必须同步复制对应文件（否则 esbuild "Could not resolve"）。
+# [1/7] 2026-10-31 (sec.71): launcher now imports ./banner.mjs (single banner source), but esbuild
+# bundles the COPY in dist/sea, so the relative import must resolve there.
+# Rule: whenever the SEA entry gains a local import, copy that file here too (else esbuild fails
+# with "Could not resolve"). Keep this file ASCII-only: it ships without BOM and PS 5.1 reads it
+# as ANSI (see wiring guard R13 / E14).
 Copy-Item (Join-Path $PSScriptRoot 'banner.mjs') (Join-Path $distSea 'banner.mjs') -Force
 $bundleArgs = @($tmpLauncher, '--bundle', '--platform=node', '--format=cjs', '--target=node22', "--outfile=$distSea/launcher.bundle.cjs")
 & $esbuild @bundleArgs
