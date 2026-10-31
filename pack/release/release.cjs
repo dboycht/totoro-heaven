@@ -103,15 +103,24 @@ if (!fs.existsSync(NOTES)) {
  */
 const NOTICE_IMG = path.resolve(ROOT, 'public', 'notice', 'sports-dept-reply.png')
 
+/** 正文已在上面强制校验存在（缺正文一律 exit 1，不做"兜底一行"的降级） */
+const body = fs.readFileSync(NOTES, 'utf8')
+
+/**
+ * 🆕 2026-10-31（§73）：公告图**只在正文真的引用它时**才上传 ——
+ * 旧逻辑"文件存在就带"是停更时代的遗留：1.3.4 恢复更新后正文不再引用回信图，
+ * 却仍被自动附上（一张与"例行更新"无关的图挂在 Release 上，且语义矛盾）。
+ * 判据：正文里有 `releases/download/<tag>/sports-dept-reply.png` 引用 ⇔ 才随附件上传。
+ */
+const wantNoticeImg = body.includes(`releases/download/${TAG}/sports-dept-reply.png`)
+
 /** 附件清单（顺序即上传顺序）；7z / 公告图不存在时自动跳过 */
 const ASSETS = [
   { path: ZIP, contentType: 'application/zip' },
   ...(fs.existsSync(SEVEN) ? [{ path: SEVEN, contentType: 'application/x-7z-compressed' }] : []),
-  ...(fs.existsSync(NOTICE_IMG) ? [{ path: NOTICE_IMG, contentType: 'image/png' }] : []),
+  ...(wantNoticeImg && fs.existsSync(NOTICE_IMG) ? [{ path: NOTICE_IMG, contentType: 'image/png' }] : []),
 ]
 
-/** 正文已在上面强制校验存在（缺正文一律 exit 1，不做"兜底一行"的降级） */
-const body = fs.readFileSync(NOTES, 'utf8')
 /**
  * ⚠️ 2026-09-21 审计修复（B6）：**只判"文件存在"不够，还要判"内容非空"**。
  * 若生成脚本写出 0 字节（或只有空白/一个换行），空 body 会被 PATCH 上去，
