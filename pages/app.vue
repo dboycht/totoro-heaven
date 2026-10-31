@@ -254,7 +254,9 @@ const confirmClearOpen = ref(false)
 const { appVersion, releasesUrl } = useUpdateCheck()
 
 // ---------- 首次启动教程（用户要求：第一次启动弹教程） ----------
-const GUIDE_KEY = 'totoro_guide_seen_v1'
+// 键版本 v1 → v2（2026-10-31）：教程内容随 1.3.4 大改（小游戏入口、工作台迁 /app、取消停更公告）
+// ⇒ 按惯例 bump 键版本让所有用户重看一次；以后教程内容大改也照此 bump，**不要**删键或改判定逻辑。
+const GUIDE_KEY = 'totoro_guide_seen_v2'
 const guideOpen = ref(false)
 const closeGuide = () => {
   guideOpen.value = false
