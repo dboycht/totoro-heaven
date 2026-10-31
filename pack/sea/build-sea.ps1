@@ -227,6 +227,10 @@ $srcLauncher = Join-Path $PSScriptRoot 'launcher.mjs'
 $tmpLauncher = Join-Path $distSea 'launcher.tmp.mjs'
 $content = (Get-Content $srcLauncher -Raw -Encoding UTF8) -replace "__APP_VERSION__", $ver
 [System.IO.File]::WriteAllText($tmpLauncher, $content, (New-Object System.Text.UTF8Encoding($false)))
+# [1/7] 2026-10-31（§71）：launcher 拆出了 ./banner.mjs（横幅单一来源），而捆绑发生在 **dist/sea 的副本**上
+# ⇒ 相对导入在副本目录里解析不到原文件，必须把 banner.mjs 一并复制到 dist/sea 再 bundle。
+# 判据：往 SEA 入口新增**本地 import** 时，这里必须同步复制对应文件（否则 esbuild "Could not resolve"）。
+Copy-Item (Join-Path $PSScriptRoot 'banner.mjs') (Join-Path $distSea 'banner.mjs') -Force
 $bundleArgs = @($tmpLauncher, '--bundle', '--platform=node', '--format=cjs', '--target=node22', "--outfile=$distSea/launcher.bundle.cjs")
 & $esbuild @bundleArgs
 if ($LASTEXITCODE -ne 0) { throw 'esbuild failed' }
