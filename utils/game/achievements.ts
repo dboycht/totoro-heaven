@@ -84,6 +84,7 @@ export const ACHIEVEMENTS: GameAchievement[] = [
     hint: '单局达到 67 分',
     threshold: 67,
     caption: '6——7——',
+    icon: '/game/achievements/six-seven.png',
   },
   {
     id: 'study-325',
@@ -91,6 +92,7 @@ export const ACHIEVEMENTS: GameAchievement[] = [
     hint: '单局达到 325 分',
     threshold: 325,
     caption: '今天的 325 大学习已经完成。',
+    icon: '/game/achievements/study-325.png',
   },
   {
     id: 'the-end-question',
@@ -98,18 +100,21 @@ export const ACHIEVEMENTS: GameAchievement[] = [
     hint: '完成通关（350 分）',
     threshold: 350,
     caption: '真正的探索从这里开始：GitHub 讨论区见。',
+    icon: '/game/achievements/the-end-question.png',
   },
   {
     id: 'snap-in-dark',
     title: '黑暗中的响指',
     hint: '输入过那段隐藏指令',
     caption: '另一扇门，开了。',
+    icon: '/game/achievements/snap-in-dark.png',
   },
   {
     id: 'kskblzdjd',
     title: 'kskblzdjd',
     hint: '？？？',
     caption: '你把名字留对了。',
+    icon: '/game/achievements/kskblzdjd.png',
   },
 ]
 

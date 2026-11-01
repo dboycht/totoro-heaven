@@ -108,3 +108,12 @@ test('隐藏式成就不变量：每枚都有 title 与 hint（解锁后面板�
     assert.ok(a.hint.length > 0, `${a.id} 缺 hint`)
   }
 })
+
+test('成就图标：路径必须是 /game/achievements/<id>.png（id 与文件名一致，换 logo 同名覆盖即可）', () => {
+  // ⚠️ 文件**存在性**不在单测查：test:mp 在 .mp-test-build 沙箱跑、public/ 不随拷（E64 隔离机制），
+  //    真实加载由 e2e verify_game_guide.mjs 的 naturalWidth 断言兜住。
+  for (const a of ACHIEVEMENTS) {
+    assert.ok(a.icon, `${a.id} 缺 icon 字段`)
+    assert.equal(a.icon, `/game/achievements/${a.id}.png`, `${a.id} 的 icon 必须按 id 命名：${a.icon}`)
+  }
+})
