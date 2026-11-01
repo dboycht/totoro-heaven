@@ -66,7 +66,7 @@ export interface GameAchievement {
   /** toast 引导语（可选；显示在成就名下方） */
   caption?: string
   /**
-   * 图标路径（`public/` 下相对路径；**1:1 正方形**，建议 64×64 PNG 透明底）。
+   * 图标路径（`public/` 下相对路径；**1:1 正方形**，建议 128×128 PNG 透明底）。
    * 2026-11-01 用户自制 logo，做好后按成就 id 命名放入 `public/game/achievements/`，
    * 把路径填到这里；缺省时组件回退显示 🏆。
    */
