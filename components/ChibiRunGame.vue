@@ -33,15 +33,18 @@
  * ⑤ **监听作弊码** `↑↑↓↓←→←→BA`（原版自己处理按键，我们只搭顺风车），
  *    并把方向键 / 空格**在游戏页里拦掉默认滚动**，否则按方向键输作弊码时页面会滚走、恐龙被按得看不见。
  *
- * ⑥ **通关监听（1.3.5）**：逐帧读原版 `distanceRan` 换算 HUD 分数，达到 300 立即 `stop()`
- *    定格并 `emit('win')`（换算与阈值收口在 `utils/game/achievements.ts`，有单测）；
- *    遮罩与成就 toast 由 `pages/play.vue` 渲染，「再来一局」走 `restart()`（见 defineExpose）。
+ * ⑥ **分数监听（1.3.5 第二批）**：逐帧读原版 `distanceRan` 换算 HUD 分数 —— 里程碑成就
+ *    （67 / 325 / 350）跨阈值发 `emit('achieve')`，350 定格通关发 `emit('win')`
+ *    （换算与阈值收口在 `utils/game/achievements.ts`，有单测）；toast 由 `app.vue` 全局渲染，
+ *    面板开合走 `pause()` / `resume()`（原版 `stop()` / `play()`）。
  */
-import { isWinScore, scoreFromDistance } from '~/utils/game/achievements'
+import { isWinScore, scoreFromDistance, THRESHOLD_ACHIEVEMENTS } from '~/utils/game/achievements'
 const emit = defineEmits<{
-  /** 作弊码输入完成 */
+  /** 作弊码输入完成（解锁真实功能 + 成就「黑暗中的响指」的触发点） */
   (e: 'unlock'): void
-  /** 达到通关分数（300）；payload 是定格时的 HUD 分数 */
+  /** 分数里程碑成就跨过阈值（payload 是成就 id；同一局同一枚只发一次） */
+  (e: 'achieve', id: string): void
+  /** 达到通关分数（350）；payload 是定格时的 HUD 分数 */
   (e: 'win', score: number): void
 }>()
 
@@ -60,26 +63,38 @@ interface TrexRunner {
   stop?: () => void
   /** 原版整局重开（重置 distanceRan、回到待机；原版 game over 后复活走的就是它） */
   restart?: () => void
+  /** 原版原地恢复（`play()`：撤销 `stop()` 的暂停态并续跑，不重置任何进度） */
+  play?: () => void
 }
 
 const hostEl = ref<HTMLElement | null>(null)
 let cleanup: (() => void) | null = null
 
-// ── 通关监听状态（1.3.5）──
+// ── 分数监听状态（1.3.5 第二批：里程碑成就 + 通关）──
 let currentRunner: TrexRunner | null = null
 let winFired = false
 let winRaf = 0
+/** 本局已发过 `achieve` 的成就 id（restart 复位；是否"新解锁"由 play.vue 的持久状态判） */
+const firedAch = new Set<string>()
 
 /**
- * 逐帧读原版 `distanceRan` 换算 HUD 分数，达到 `WIN_SCORE`（300）立即 `stop()` 定格并上报。
- * rAF 每帧检查 ⇒ 超调不超过一帧（约 0.15 分），HUD 显示定格在 300，不会涨过头。
- * ⚠️ 原版逻辑一行未改：分数读取走我们自己的换算（`utils/game/achievements.ts`），
- * 只读 `distanceRan` 与调用 `stop`/`restart` 这三个原版公开成员。
+ * 逐帧读原版 `distanceRan` 换算 HUD 分数：
+ *   ① 先检查里程碑成就（67 / 325 / 350，`THRESHOLD_ACHIEVEMENTS`）——跨过阈值就 `emit('achieve')`，
+ *      同一局同一枚只发一次（是否弹 toast 由 play.vue 的持久解锁状态决定）；
+ *   ② 达到 `WIN_SCORE`（350）当帧调原版 `stop()` 定格并 `emit('win')`。
+ * rAF 每帧检查 ⇒ 超调不超过一帧（约 0.15 分），HUD 定格在 350，不会涨过头。
+ * ⚠️ 原版逻辑一行未改：只读 `distanceRan` 与调用 `stop`/`restart`/`play` 这四个原版公开成员。
  */
-const watchWin = () => {
-  winRaf = requestAnimationFrame(watchWin)
-  if (winFired || !currentRunner) return
+const watchScore = () => {
+  winRaf = requestAnimationFrame(watchScore)
+  if (!currentRunner || winFired) return
   const score = scoreFromDistance(currentRunner.distanceRan ?? 0)
+  for (const a of THRESHOLD_ACHIEVEMENTS) {
+    if (!firedAch.has(a.id) && score >= a.threshold) {
+      firedAch.add(a.id)
+      emit('achieve', a.id)
+    }
+  }
   if (!isWinScore(score)) return
   winFired = true
   cancelAnimationFrame(winRaf)
@@ -88,26 +103,40 @@ const watchWin = () => {
   emit('win', score)
 }
 
-const startWatchWin = () => {
+const startWatchScore = () => {
   if (winRaf) return
-  winRaf = requestAnimationFrame(watchWin)
+  winRaf = requestAnimationFrame(watchScore)
 }
 
-/** 通关结算后的「再来一局」：复位 win 状态并让原版整局重开 */
+/** 通关结算后的「再来一局」：复位 win/里程碑状态并让原版整局重开 */
 function restartGame(): void {
   if (!currentRunner) return
   winFired = false
+  firedAch.clear()
   if (winRaf) {
     cancelAnimationFrame(winRaf)
     winRaf = 0
   }
   currentRunner.restart?.()
-  startWatchWin()
+  startWatchScore()
+}
+
+/** 成就面板打开时暂停（原版 `stop()` 定格）；面板关闭恢复（原版 `play()` 原地续跑、不重置） */
+function pauseGame(): void {
+  currentRunner?.stop?.()
+}
+
+function resumeGame(): void {
+  // 通关定格（winFired）后不许"恢复"——那一局的画面就该停在结算上
+  if (!winFired) currentRunner?.play?.()
 }
 
 defineExpose({
   /** 通关遮罩的「再来一局」按钮调用（play.vue） */
   restart: restartGame,
+  /** 成就面板打开时暂停 / 关闭时恢复（play.vue） */
+  pause: pauseGame,
+  resume: resumeGame,
 })
 
 const KONAMI = ['up', 'up', 'down', 'down', 'left', 'right', 'left', 'right', 'b', 'a'] as const
@@ -412,16 +441,27 @@ async function boot(): Promise<void> {
     // ③ 画面放大 / 铺满 / 居中（见文件头 ③④）
     const detachScale = applyGameScale(host, runner)
 
-    // ⑥ 通关监听（1.3.5）：见文件头 ⑥ 与 watchWin 的注释
+    // ⑥ 分数监听（1.3.5 第二批）：里程碑成就 + 通关定格，见文件头 ⑥ 与 watchScore 的注释
     currentRunner = runner
-    startWatchWin()
+    startWatchScore()
     // 仅用于端到端验证（`_mp-analyze/scratch/verify_game_guide.mjs` 注入 distanceRan
     // 直接触发通关，省去真跑 300 分的一分多钟）；不承载敏感信息、不影响外观。
     ;(window as unknown as { __totoroGame?: unknown }).__totoroGame = runner
 
     // ⑤ 游戏页里拦掉方向键 / 空格的默认滚动 —— 否则按方向键输作弊码时页面滚走、恐龙被按得看不见
+    // ⚠️ 例外（1.3.5 第二批）：焦点在**文本输入框**里时全部放行 —— 通关遮罩有「名字」输入框，
+    //    空格要能打进名字、拼音打字（含 a/b 键）不能推进作弊码检测器。
+    const isTypingTarget = (e: Event): boolean => {
+      const t = e.target
+      return (
+        t instanceof HTMLInputElement ||
+        t instanceof HTMLTextAreaElement ||
+        (t instanceof HTMLElement && t.isContentEditable)
+      )
+    }
     const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'PageUp', 'PageDown'])
     const onKey = (e: KeyboardEvent) => {
+      if (isTypingTarget(e)) return
       if (SCROLL_KEYS.has(e.code)) e.preventDefault()
       // ⚠️ 作弊码统一在下面的 document 捕获阶段喂（那里还能同时处理 A/B 的蹲下映射）
     }
@@ -438,6 +478,7 @@ async function boot(): Promise<void> {
     const synthetic = new WeakSet<Event>()
     const onCapture = (e: KeyboardEvent) => {
       if (synthetic.has(e)) return
+      if (isTypingTarget(e)) return
       // ⚠️ 只在 **keydown** 推进作弊码检测器：keyup 也是键盘事件，不区分的话一次按键会被算两遍，
       //    序列永远错位（2026-10-30 实测：↑↑↓ 之后就卡在 m=0）。A/B 两件事都做（蹲下 + 参与隐藏序列）。
       if (e.type === 'keydown') feedKey(e)

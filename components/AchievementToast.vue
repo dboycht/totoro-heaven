@@ -1,24 +1,26 @@
 <script setup lang="ts">
 /**
- * Minecraft 风格成就 toast（左下角，2026-11-01，1.3.5）
+ * Minecraft 风格成就 toast（左下角，2026-11-01，1.3.5 第二批）
  *
- * 显示时机由父组件控制（首次通关置 true，数秒后收起；同一页面生命周期只弹一次，
- * 防止「再来一局」又通关时重复打扰）。文案收口在 `utils/game/achievements.ts`
- * 的 `ACHIEVEMENT_WIN`（成就名 = 用户指定「结束了？」，单测盯着）。
+ * **自驱动**：队列状态来自 `useAchievementToasts()`（模块级单例），本组件挂在
+ * `app.vue` 全局层 —— 任何页面都能弹（作弊码成就在解锁跳转工作台的瞬间也不丢）。
+ * 图标：成就带 `icon`（用户自制 logo，1:1 PNG）就显示图，否则回退 🏆。
+ * 文案收口在 `utils/game/achievements.ts`（成就名 = 用户指定，单测盯着）。
  */
-import { ACHIEVEMENT_WIN } from '~/utils/game/achievements'
+import { ACHIEVEMENT_HEADER } from '~/utils/game/achievements'
 
-defineProps<{ show: boolean }>()
+const { current, visible } = useAchievementToasts()
 </script>
 
 <template>
   <transition name="ach-slide">
-    <div v-if="show" class="ach-toast" role="status">
-      <div class="ach-icon">🏆</div>
+    <div v-if="visible && current" class="ach-toast" role="status">
+      <img v-if="current.icon" class="ach-img" :src="current.icon" alt="" />
+      <div v-else class="ach-icon">🏆</div>
       <div class="ach-text">
-        <div class="ach-header">{{ ACHIEVEMENT_WIN.header }}</div>
-        <div class="ach-title">{{ ACHIEVEMENT_WIN.title }}</div>
-        <div class="ach-caption">{{ ACHIEVEMENT_WIN.caption }}</div>
+        <div class="ach-header">{{ ACHIEVEMENT_HEADER }}</div>
+        <div class="ach-title">{{ current.title }}</div>
+        <div v-if="current.caption" class="ach-caption">{{ current.caption }}</div>
       </div>
     </div>
   </transition>
@@ -41,6 +43,13 @@ defineProps<{ show: boolean }>()
   border-radius: 8px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
   padding: 12px 18px 12px 14px;
+}
+/* 用户自制 logo（1:1 PNG）：pixelated 保证像素图放大不糊 */
+.ach-img {
+  width: 34px;
+  height: 34px;
+  image-rendering: pixelated;
+  object-fit: contain;
 }
 .ach-icon {
   font-size: 30px;

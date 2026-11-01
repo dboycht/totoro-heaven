@@ -1,12 +1,11 @@
 <script setup lang="ts">
 /**
- * 开场公告弹窗（2026-11-01，1.3.5）
+ * 开场公告弹窗（2026-11-01，1.3.5 第二批）
  *
  * 用户口径：「打开游戏直接弹窗」—— 每次进入游戏页都弹，点「我已知晓」关闭这一次
- * （不做永久记忆，引导强度优先；玩家若形成印象，正是本弹窗的目的）。
- *
- * 文案收口在 `utils/game/achievements.ts` 的 `GUIDE_MODAL`（逐字 = 用户指定原话，
- * 有单测盯着），本组件只渲染；「GitHub讨论区」五个字是可点击链接（新标签打开讨论区）。
+ * （不做永久记忆，引导强度优先）。
+ * 文案收口在 `utils/game/achievements.ts` 的 `GUIDE_MODAL`（两行 = 用户指定原话，
+ * 有单测盯着），本组件只渲染；第二行的「GitHub讨论区」是可点击链接（新标签打开讨论区）。
  */
 import { GUIDE_MODAL } from '~/utils/game/achievements'
 
@@ -24,13 +23,14 @@ const onAck = () => {
     <div v-if="!known" class="guide-mask">
       <div class="guide-card" role="dialog" aria-modal="true" :aria-label="GUIDE_MODAL.title">
         <div class="guide-title">{{ GUIDE_MODAL.title }}</div>
+        <p class="guide-body">{{ GUIDE_MODAL.line1 }}</p>
         <p class="guide-body">
-          {{ GUIDE_MODAL.bodyBefore }}<a
+          {{ GUIDE_MODAL.line2Before }}<a
             class="guide-link"
             :href="GUIDE_MODAL.discussionsUrl"
             target="_blank"
             rel="noopener noreferrer"
-          >{{ GUIDE_MODAL.linkText }}</a>{{ GUIDE_MODAL.bodyAfter }}
+          >{{ GUIDE_MODAL.linkText }}</a>{{ GUIDE_MODAL.line2After }}
         </p>
         <button type="button" class="guide-btn" @click="onAck">{{ GUIDE_MODAL.button }}</button>
       </div>
@@ -72,10 +72,13 @@ const onAck = () => {
   margin-bottom: 14px;
 }
 .guide-body {
-  margin: 0 0 18px;
+  margin: 0 0 10px;
   font-size: 15px;
   line-height: 1.9;
   color: #f3eef8;
+}
+.guide-body:last-of-type {
+  margin-bottom: 18px;
 }
 .guide-link {
   color: #7ad7ff;
