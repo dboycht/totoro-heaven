@@ -29,6 +29,45 @@ const onUnlock = () => {
   }, 600)
 }
 
+// ── 通关结算（1.3.5，2026-11-01）──
+const gameRef = ref<{ restart: () => void } | null>(null)
+const won = ref(false)
+const finalScore = ref(0)
+const achievementShow = ref(false)
+let achievementFired = false
+let achievementTimer: ReturnType<typeof setTimeout> | undefined
+
+const onWin = (score: number) => {
+  won.value = true
+  finalScore.value = score
+  // 首次通关弹成就「结束了？」（同一页面生命周期只弹一次；6 秒后自动收起）
+  if (achievementFired) return
+  achievementFired = true
+  achievementShow.value = true
+  achievementTimer = setTimeout(() => {
+    achievementShow.value = false
+  }, 6000)
+}
+
+const onRestart = () => {
+  won.value = false
+  gameRef.value?.restart()
+}
+
+// 通关遮罩显示时按空格 / ↑ 再来一局（与原版 game over 后按键复活的手感一致）
+const onWinKey = (e: KeyboardEvent) => {
+  if (!won.value) return
+  if (e.code === 'Space' || e.code === 'ArrowUp') {
+    e.preventDefault()
+    onRestart()
+  }
+}
+onMounted(() => window.addEventListener('keydown', onWinKey))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onWinKey)
+  if (achievementTimer) clearTimeout(achievementTimer)
+})
+
 useHead({ title: '龙猫天堂' })
 </script>
 
@@ -39,7 +78,7 @@ useHead({ title: '龙猫天堂' })
     </header>
 
     <div class="play-stage">
-      <ChibiRunGame @unlock="onUnlock" />
+      <ChibiRunGame ref="gameRef" @unlock="onUnlock" @win="onWin" />
     </div>
 
     <!-- 像素风键位图（用户 2026-10-30 要求：画在上半部分）—— 解锁后随遮罩一起被盖住 -->
@@ -48,6 +87,23 @@ useHead({ title: '龙猫天堂' })
     <transition name="fade">
       <div v-if="unlocked" class="play-secret">✨ 你发现了秘密 ✨</div>
     </transition>
+
+    <!-- 通关结算遮罩（1.3.5）：定格成绩 + 恭喜 + 再来一局（按钮或空格/↑） -->
+    <transition name="fade">
+      <div v-if="won" class="play-win">
+        <div class="play-win-card">
+          <div class="play-win-title">🎉 恭喜你已经通关</div>
+          <div class="play-win-score">最终得分 {{ finalScore }}</div>
+          <button type="button" class="play-win-btn" @click="onRestart">再来一局</button>
+        </div>
+      </div>
+    </transition>
+
+    <!-- 开场公告（1.3.5）：每次进入游戏页都弹，见 GameGuideModal -->
+    <GameGuideModal />
+
+    <!-- 首通成就 toast（左下角，Minecraft 风）：见 AchievementToast -->
+    <AchievementToast :show="achievementShow" />
   </div>
 </template>
 
@@ -98,6 +154,56 @@ useHead({ title: '龙猫天堂' })
   background: rgba(24, 12, 36, 0.72);
   letter-spacing: 0.1em;
   pointer-events: none;
+}
+/* 通关结算遮罩（1.3.5）：要接按钮点击，不能像 play-secret 那样禁用指针 */
+.play-win {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(18, 14, 30, 0.66);
+}
+.play-win-card {
+  text-align: center;
+  background: #16141f;
+  border: 3px solid #3a3650;
+  border-radius: 10px;
+  box-shadow: 0 8px 0 rgba(0, 0, 0, 0.35);
+  padding: 26px 40px;
+}
+.play-win-title {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #ffe9f3;
+}
+.play-win-score {
+  margin-top: 10px;
+  font-size: 15px;
+  color: #ffd54a;
+  letter-spacing: 0.1em;
+}
+.play-win-btn {
+  appearance: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  margin-top: 18px;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  text-indent: 0.2em;
+  color: #221c08;
+  background: #ffd54a;
+  padding: 9px 30px;
+  border-radius: 8px;
+  box-shadow: 0 4px 0 #b8961f;
+}
+.play-win-btn:active {
+  transform: translateY(3px);
+  box-shadow: 0 1px 0 #b8961f;
 }
 .fade-enter-active,
 .fade-leave-active {

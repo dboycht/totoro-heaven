@@ -32,10 +32,17 @@
  *
  * ⑤ **监听作弊码** `↑↑↓↓←→←→BA`（原版自己处理按键，我们只搭顺风车），
  *    并把方向键 / 空格**在游戏页里拦掉默认滚动**，否则按方向键输作弊码时页面会滚走、恐龙被按得看不见。
+ *
+ * ⑥ **通关监听（1.3.5）**：逐帧读原版 `distanceRan` 换算 HUD 分数，达到 300 立即 `stop()`
+ *    定格并 `emit('win')`（换算与阈值收口在 `utils/game/achievements.ts`，有单测）；
+ *    遮罩与成就 toast 由 `pages/play.vue` 渲染，「再来一局」走 `restart()`（见 defineExpose）。
  */
+import { isWinScore, scoreFromDistance } from '~/utils/game/achievements'
 const emit = defineEmits<{
   /** 作弊码输入完成 */
   (e: 'unlock'): void
+  /** 达到通关分数（300）；payload 是定格时的 HUD 分数 */
+  (e: 'win', score: number): void
 }>()
 
 /** 原版实例里我们真正用到的部分（原版没有 .d.ts，只能按源码用法最小声明） */
@@ -47,10 +54,61 @@ interface TrexRunner {
   tRex?: { xPos: number; yPos: number; jumping?: boolean; update?: (deltaTime: number, status?: string) => void }
   /** 原版清屏（只按初始逻辑尺寸）—— 我们要换成清整块画布 */
   clearCanvas?: () => void
+  /** 本局逻辑距离（原版每帧累加；HUD 分数 = Math.round(distanceRan * 0.025)） */
+  distanceRan?: number
+  /** 原版停止主循环（通关定格用） */
+  stop?: () => void
+  /** 原版整局重开（重置 distanceRan、回到待机；原版 game over 后复活走的就是它） */
+  restart?: () => void
 }
 
 const hostEl = ref<HTMLElement | null>(null)
 let cleanup: (() => void) | null = null
+
+// ── 通关监听状态（1.3.5）──
+let currentRunner: TrexRunner | null = null
+let winFired = false
+let winRaf = 0
+
+/**
+ * 逐帧读原版 `distanceRan` 换算 HUD 分数，达到 `WIN_SCORE`（300）立即 `stop()` 定格并上报。
+ * rAF 每帧检查 ⇒ 超调不超过一帧（约 0.15 分），HUD 显示定格在 300，不会涨过头。
+ * ⚠️ 原版逻辑一行未改：分数读取走我们自己的换算（`utils/game/achievements.ts`），
+ * 只读 `distanceRan` 与调用 `stop`/`restart` 这三个原版公开成员。
+ */
+const watchWin = () => {
+  winRaf = requestAnimationFrame(watchWin)
+  if (winFired || !currentRunner) return
+  const score = scoreFromDistance(currentRunner.distanceRan ?? 0)
+  if (!isWinScore(score)) return
+  winFired = true
+  cancelAnimationFrame(winRaf)
+  winRaf = 0
+  currentRunner.stop?.()
+  emit('win', score)
+}
+
+const startWatchWin = () => {
+  if (winRaf) return
+  winRaf = requestAnimationFrame(watchWin)
+}
+
+/** 通关结算后的「再来一局」：复位 win 状态并让原版整局重开 */
+function restartGame(): void {
+  if (!currentRunner) return
+  winFired = false
+  if (winRaf) {
+    cancelAnimationFrame(winRaf)
+    winRaf = 0
+  }
+  currentRunner.restart?.()
+  startWatchWin()
+}
+
+defineExpose({
+  /** 通关遮罩的「再来一局」按钮调用（play.vue） */
+  restart: restartGame,
+})
 
 const KONAMI = ['up', 'up', 'down', 'down', 'left', 'right', 'left', 'right', 'b', 'a'] as const
 type Key = (typeof KONAMI)[number]
@@ -354,6 +412,13 @@ async function boot(): Promise<void> {
     // ③ 画面放大 / 铺满 / 居中（见文件头 ③④）
     const detachScale = applyGameScale(host, runner)
 
+    // ⑥ 通关监听（1.3.5）：见文件头 ⑥ 与 watchWin 的注释
+    currentRunner = runner
+    startWatchWin()
+    // 仅用于端到端验证（`_mp-analyze/scratch/verify_game_guide.mjs` 注入 distanceRan
+    // 直接触发通关，省去真跑 300 分的一分多钟）；不承载敏感信息、不影响外观。
+    ;(window as unknown as { __totoroGame?: unknown }).__totoroGame = runner
+
     // ⑤ 游戏页里拦掉方向键 / 空格的默认滚动 —— 否则按方向键输作弊码时页面滚走、恐龙被按得看不见
     const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'PageUp', 'PageDown'])
     const onKey = (e: KeyboardEvent) => {
@@ -404,6 +469,13 @@ async function boot(): Promise<void> {
       document.removeEventListener('keydown', onCapture, true)
       document.removeEventListener('keyup', onCapture, true)
       detachScale()
+      // 通关监听与 window 引用一并收掉（组件卸载后不留悬挂 rAF 与陈旧引用）
+      if (winRaf) {
+        cancelAnimationFrame(winRaf)
+        winRaf = 0
+      }
+      currentRunner = null
+      delete (window as unknown as { __totoroGame?: unknown }).__totoroGame
     }
   } catch (err) {
     console.error('[play] 小恐龙资源加载失败：', err)
