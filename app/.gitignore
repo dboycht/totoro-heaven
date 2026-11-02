@@ -1,0 +1,16 @@
+# Android / Gradle —— 构建产物与本机配置一律不入库
+/build/
+/app/build/
+.gradle/
+local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+captures/
+.cxx/
+
+# IDE
+.idea/
+*.iml
+.kotlin/

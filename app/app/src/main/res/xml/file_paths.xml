@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 只暴露导出的轨迹目录，其余私有数据不对外 -->
+    <files-path name="runs" path="runs/" />
+</paths>

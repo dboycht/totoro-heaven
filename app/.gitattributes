@@ -1,0 +1,13 @@
+# 换行符纪律（2026-11-02 加）：
+#   · gradlew / *.sh 是 **shell 脚本**，CRLF 会让它跑不起来（`\r` 被当成命令的一部分）
+#   · *.jar 是**二进制**，绝不能做任何换行转换
+# 判据：仓库里按 LF 存，工作区也按 LF 检出；别让 git 自作主张。
+* text=auto eol=lf
+
+*.jar binary
+*.png binary
+*.apk binary
+
+gradlew text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
