@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { generateCorridorRoute, buildTimeline } from '../../utils/mp/generateRoute.ts'
-import { calculateRouteSimilarity, pathLengthMeters, distanceMeters } from '../../utils/mp/routeSimilarity.ts'
+import { calculateRouteSimilarity, pathLengthMeters, distanceMeters, pointToSegmentDistance } from '../../utils/mp/routeSimilarity.ts'
 import {
   buildRunStats,
   buildTimeFields,
@@ -223,6 +223,81 @@ test('generateCorridorRoute：路线点不足时报错', () => {
   assert.throws(() => generateCorridorRoute([{ latitude: 32, longitude: 118 }], { targetKm: 1 }), /官方路线点列不足/)
 })
 
+test('★ generateCorridorRoute：**第 1 圈贴预设车道线**（起跑点/入场点与预设一致）—— 2026-11-03 用户口径', () => {
+  /**
+   * 用户口径："基于预设，先出第一圈，然后生成后续的圈数"——模拟出的第 1 圈必须与用户在
+   * 预设编辑里看到的圈一致（起跑点 = 几何第 0 点，形状 = 车道线本身）。
+   * 判据（不传 lanePlan、drift:true 的默认口径）：
+   *   ① 第 1 圈（弧长 < lapLengthM）的每个点到**车道线**的距离 ≤ 3 m（只剩 σ=0.6 的 GPS 细颗粒）；
+   *   ② 第 2 圈起叠加车道偏移表（起始 v=1.2 m）⇒ 整圈平均偏离**明显大于**第 1 圈；
+   *   ③ 没有 leadIn 时，轨迹首点也贴车道线（旧代码首点带车道偏移 ≈ 1.2 m 起）。
+   */
+  const route = loopRoute()
+  const g = generateCorridorRoute(route, { targetKm: 1.2, seed: 42, jitterSigmaM: 0.6, drift: true })
+  const pts = g.points.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
+  const lapM = Number(g.lapLengthM)
+  assert.ok(lapM > 0, `lapLengthM=${lapM}`)
+  /** 逐点到路线折线的最短距离（米） */
+  const devOf = (p: { latitude: number; longitude: number }) => {
+    let best = Number.POSITIVE_INFINITY
+    for (let i = 0; i < route.length - 1; i++) {
+      const d = pointToSegmentDistance(p.latitude, p.longitude, route[i]!.latitude, route[i]!.longitude, route[i + 1]!.latitude, route[i + 1]!.longitude)
+      if (d < best) best = d
+    }
+    return best
+  }
+  /** 沿轨迹的累计弧长（用来分圈 —— 与生成器的圈号同一口径） */
+  const cum: number[] = [0]
+  for (let i = 1; i < pts.length; i++) {
+    cum.push(cum[i - 1]! + distanceMeters(pts[i - 1]!.latitude, pts[i - 1]!.longitude, pts[i]!.latitude, pts[i]!.longitude))
+  }
+  const lap1Dev: number[] = []
+  const lap2Dev: number[] = []
+  for (let i = 0; i < pts.length; i++) {
+    if (cum[i]! < lapM) lap1Dev.push(devOf(pts[i]!))
+    else if (cum[i]! > lapM + 20) lap2Dev.push(devOf(pts[i]!))
+  }
+  assert.ok(lap1Dev.length > 20 && lap2Dev.length > 20, `两圈都得有点：第1圈 ${lap1Dev.length} / 第2圈 ${lap2Dev.length}`)
+  const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
+  const lap1Max = Math.max(...lap1Dev)
+  assert.ok(lap1Max <= 3, `第 1 圈最大偏离 ${lap1Max.toFixed(2)} m（只许 GPS 细颗粒，不许车道偏移）`)
+  const m1 = mean(lap1Dev)
+  const m2 = mean(lap2Dev)
+  assert.ok(m2 > m1 + 0.5, `第 2 圈平均偏离 ${m2.toFixed(2)} m 应明显大于第 1 圈 ${m1.toFixed(2)} m（车道偏移表回来了）`)
+  // ③ 首点贴车道线（没有进场段时首点就是起跑点一带）
+  assert.ok(devOf(pts[0]!) <= 3, `首点偏离车道线 ${devOf(pts[0]!)!.toFixed(2)} m（应只剩抖动）`)
+})
+
+test('★ generateCorridorRoute：有进场段时 loopStartIndex 处的点与起跑点重合（逐点一致）', () => {
+  const route = loopRoute()
+  const entry = { latitude: route[0]!.latitude + 40 / 111320, longitude: route[0]!.longitude }
+  const g = generateCorridorRoute(route, { targetKm: 0.7, seed: 7, leadIn: [entry] })
+  assert.ok(g.loopStartIndex > 0, `loopStartIndex=${g.loopStartIndex}（有进场段必须 > 0）`)
+  const atStart = g.points[g.loopStartIndex]!
+  assert.ok(
+    distanceMeters(Number(atStart.latitude), Number(atStart.longitude), route[0]!.latitude, route[0]!.longitude) < 0.5,
+    'loopStartIndex 处的点应就是车道线第 0 点（起跑点本身，无偏移无抖动）',
+  )
+  const first = g.points[0]!
+  assert.ok(
+    distanceMeters(Number(first.latitude), Number(first.longitude), entry.latitude, entry.longitude) < 0.5,
+    '轨迹首点应是进场点本身',
+  )
+  /**
+   * 🆕 2026-11-04（E99 回归钉子，探针 verify_lead_in_start 抓到的死分支）：
+   * 进场段必须**一步一步走**（多个插值点），不许从进场点一步跳到起跑点。
+   * 判据：40 m 进场段 + 默认 2 m 步长 ⇒ 进场段至少 5 个点；相邻点最大位移 < 10 m（一次跳变会是 ~40 m）。
+   */
+  assert.ok(g.loopStartIndex >= 5, `进场段点数（loopStartIndex=${g.loopStartIndex}）应 ≥ 5（40 m ÷ 2 m 步长）`)
+  let worst = 0
+  for (let i = 1; i <= g.loopStartIndex; i++) {
+    const a = g.points[i - 1]!
+    const b = g.points[i]!
+    worst = Math.max(worst, distanceMeters(Number(a.latitude), Number(a.longitude), Number(b.latitude), Number(b.longitude)))
+  }
+  assert.ok(worst < 10, `进场段相邻点最大位移 ${worst.toFixed(1)} m（不许出现"一步跳到起跑点"）`)
+})
+
 test('generateCorridorRoute：目标里程非法时报错', () => {
   assert.throws(() => generateCorridorRoute(loopRoute(), { targetKm: 0 }), /目标里程必须大于 0/)
 })
@@ -346,12 +421,15 @@ test('★ generateCorridorRoute：**多圈不许完全重合**（用户 2026-09-
     // ② **圈间平滑**：相邻两圈的位移差不得明显超过"逐圈漂移的封顶值"。
     //    ⚠️ 阈值**跟着幅度走**（不是写死）：把 `lapDriftMaxM` 调大时这里自动放宽，调小时自动收紧。
     //    真正的"左右剧烈晃动"是**几十米级**（旧算法每圈错开 30~86 m）⇒ 这条一定会爆。
+    //    🆕 2026-11-03（"第 1 圈贴预设车道线"）：第 1 圈偏移恒为 0，第 1→2 圈的落差因此**多了车道
+    //    偏移表的幅度**（≤ 3.5 m）⇒ 只有第一个圈边界的容忍度放宽这么多，其余圈边界口径不变。
     const driftCap = Math.max(...g.lapDriftM.map((v) => Math.abs(v)), 0.5)
     for (let i = 1; i < means.length; i++) {
+      const allowance = driftCap + (i === 1 ? 3.5 + 0.35 : 0.35)
       const d = Math.abs(means[i]! - means[i - 1]!)
       assert.ok(
-        d <= driftCap + 0.35,
-        `seed=${seed} 第 ${i}→${i + 1} 圈跳了 ${d.toFixed(2)} m（圈间漂移封顶 ${driftCap.toFixed(2)} m）：${means.map((m) => m.toFixed(2)).join(', ')}`,
+        d <= allowance,
+        `seed=${seed} 第 ${i}→${i + 1} 圈跳了 ${d.toFixed(2)} m（容忍 ${allowance.toFixed(2)} m）：${means.map((m) => m.toFixed(2)).join(', ')}`,
       )
     }
 

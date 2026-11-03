@@ -672,6 +672,23 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
       ? distanceMeters(leadFrom.latitude, leadFrom.longitude, path[0]!.latitude, path[0]!.longitude)
       : 0
 
+  /**
+   * 🆕 2026-11-03（用户口径"基于预设，先出第一圈，然后生成后续的圈数"）**第 1 圈贴预设车道线**：
+   * 关掉换圈时，**第 1 圈不再叠**"车道偏移表 / 精度下降凸起 / 逐圈漂移"（那些是第 2 圈起的事），
+   * 只保留 GPS 细颗粒（`jitterFor`）⇒ 模拟出的第 1 圈与用户在预设编辑里看到的圈一致
+   * （起跑点 = 几何第 0 点 = 用户设的起跑点，形状 = 车道线本身）。
+   * 开启换圈（【测试】）时剖面优先 —— 第 1 圈的道次由剖面控制点决定（剖面第 0 点就是预设道次）。
+   * 第 2 圈开头 `LAP1_BLEND_M` 米内把横向偏移从 0 **线性升到**偏移表，避免圈交界处出现横向跳变。
+   */
+  const LAP1_BLEND_M = 18
+  const offsetWithLap1Exact = (p: number, tableOff: { lat: number; lng: number }): { lat: number; lng: number } => {
+    if (planOn || !driftOn) return tableOff
+    if (!(lapLengthM > 0) || p >= lapLengthM + LAP1_BLEND_M) return tableOff
+    if (p < lapLengthM) return { lat: 0, lng: 0 }
+    const k = (p - lapLengthM) / LAP1_BLEND_M
+    return { lat: tableOff.lat * k, lng: tableOff.lng * k }
+  }
+
   /** 构建一条轨迹（**同一 seed** → 每次尝试的抖动完全一致，只有偏移档位不同） */
   const buildTrajectory = (zoneCount: number, ampScale: number, lenScale = 1) => {
     const r = createRng(seed)
@@ -685,7 +702,13 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     let eLat = 0
     let eLng = 0
     let acc = 0
-    let p = 0
+    /**
+     * 🆕 2026-11-04（E99，探针 verify_lead_in_start 抓到的死分支）：有进场段时 `p` 必须从
+     * **`-leadM` 起步** —— "p 为负 = 还在进场段上走"，走完（p ≥ 0）才进入跑道循环。
+     * 旧代码 `p = 0` 起步且只增不减 ⇒ 负区间分支永不可达 ⇒ 进场段只产出 1 个点（进场点本身），
+     * 下一个点直接跳到起跑点（一次 `leadM` 米的瞬移），预览里"进场段灰线"也永远画不出来（≥2 点才画）。
+     */
+    let p = leadM > 0 && leadFrom ? -leadM : 0
     /** 取当前点的抖动（米）：弧长锁定 + 细颗粒；关掉锁定时退回旧的"按序号 AR(1)" */
     const jitterFor = (arc: number): { lat: number; lng: number } => {
       if (arcLockedJitter) {
@@ -703,10 +726,14 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     } else {
       const first = locate(0)
       const j0 = jitterFor(first.arc)
-      // 🆕 2026-11-03：换圈模式首点按剖面（第 0 圈那一刻的道次）
+      // 🆕 2026-11-03：换圈模式首点按剖面（第 0 圈那一刻的道次）；
+      // 没开换圈时首点在**第 1 圈** ⇒ 偏移为 0（第 1 圈贴预设车道线，见 offsetWithLap1Exact），只留抖动
       const off0 = planOn
         ? planVectorAt(0)
-        : clampOffset(driftOn ? offsetAt(first.arc, zoneCount, ampScale, lenScale, lapDriftAt(lapIndexAt(0))) : { lat: 0, lng: 0 })
+        : offsetWithLap1Exact(
+            0,
+            clampOffset(driftOn ? offsetAt(first.arc, zoneCount, ampScale, lenScale, lapDriftAt(0)) : { lat: 0, lng: 0 }),
+          )
       pts.push({
         latitude: first.lat + (j0.lat + off0.lat) / M_PER_DEG_LAT,
         longitude: first.lng + (j0.lng + off0.lng) * degLngPerMeter(first.lat),
@@ -756,9 +783,15 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
       // 第几圈由**累积推进量**决定（闭合=取商；未闭合=每两趟算一圈，见 lapIndexAt）
       // 🆕 2026-11-03（1.3.6 需求②）：换圈模式下横向由**剖面**决定（不再叠车道表/逐圈漂移/凸起）
       //    ⚠️ 传的是**累积推进量 `p`**（不是 `here.arc` —— 那是取模后的圈内弧长，会让圈号永远停在第 1 圈）
+      // 🆕 2026-11-03（需求⑤"第 1 圈与预设一致"）：没开换圈时**第 1 圈偏移为 0**（贴预设车道线），
+      //    第 2 圈开头 18 m 内线性升到偏移表（offsetWithLap1Exact）
       const off = planOn
         ? planVectorAt(p)
-        : clampOffset(driftOn ? offsetAt(here.arc, zoneCount, ampScale, lenScale, lapDriftAt(lapIndexAt(p))) : { lat: 0, lng: 0 })
+        : clampOffset(
+            driftOn
+              ? offsetWithLap1Exact(p, offsetAt(here.arc, zoneCount, ampScale, lenScale, lapDriftAt(lapIndexAt(p))))
+              : { lat: 0, lng: 0 },
+          )
       const lat = here.lat + (j.lat + off.lat) / M_PER_DEG_LAT
       const lng = here.lng + (j.lng + off.lng) * degLngPerMeter(here.lat)
       const prev = pts[pts.length - 1]!
