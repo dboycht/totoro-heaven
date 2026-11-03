@@ -780,6 +780,7 @@
             staleSettlement ||
             freeRunBlocked ||
             dailyQuotaBlocked ||
+            localFitBlocked ||
             !gateStatus.allow
           "
           @click="openRealSubmit"
@@ -789,7 +790,26 @@
         <!-- ⚠️ 2026-09-21 审计修复（B3）：**按钮为什么灰，必须就在按钮旁边说**。
              原先解释只在上方「开跑设置」卡里（几百像素之外），而结果卡是 `v-if="result"` ——
              自由跑被拒时根本不产生 result ⇒ 用户滚到这里只会看到一个灰按钮、附近一个字都没有。 -->
-        <template v-if="freeRunBlocked">
+        <!--
+        🆕 2026-11-03（用户要求）本地校验不通过：拟合度低于门槛时按钮已禁用，
+        按本项目的既有纪律（审计 B3）—— 为什么灰必须就在按钮旁边说，并给一条"重新生成"的出路，
+        而不是只留一个点不动的按钮。
+        ⚠️ 文案全部取自纯函数 `evaluateLocalFitGate()`，并明确区分"本地闸"与"服务端判定"。
+      -->
+      <v-alert v-if="localFitBlocked" type="error" variant="tonal" density="comfortable" class="mb-2">
+        <div class="font-weight-bold">
+          <v-icon class="mr-1" size="18">mdi-shield-alert-outline</v-icon>本地校验不通过：拟合度偏低
+        </div>
+        <div class="text-body-2 mt-1">{{ localFitGate.message }}</div>
+        <div class="text-caption mt-1">{{ localFitServerNote() }}</div>
+        <div class="d-flex flex-wrap align-center ga-2 mt-2">
+          <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-replay" :disabled="isBusy || submitInFlight" @click="regenerateRun">
+            重新生成一条
+          </v-btn>
+          <span class="text-caption">按当前设置（预设 / 换圈图 / GPS 抖动度）重跑一条；也可先改上面的设置再点。</span>
+        </div>
+      </v-alert>
+      <template v-if="freeRunBlocked">
           <span class="text-caption text-warning">
             已标灰：本机记录显示你所在学校未开通「自由跑任务」（服务端会拒绝真实提交）
           </span>
@@ -1252,6 +1272,8 @@ import {
 } from '~/utils/mp/laneProfile'
 // 🆕 2026-11-03（需求②）：GPS 抖动度的滑杆范围与唯一归一化出口
 import { JITTER_SIGMA_MAX_M, JITTER_SIGMA_MIN_M, JITTER_SIGMA_STEP_M, clampJitterSigmaM } from '~/composables/demo/state'
+// 🆕 2026-11-03（用户要求）：本地拟合度质量闸（< 0.6 判"本地校验不通过"，要求重新生成）
+import { evaluateLocalFitGate, localFitServerNote } from '~/utils/mp/localFitGate'
 
 const {
   isLoggedIn,
@@ -1960,6 +1982,39 @@ const jitterModel = computed({
     setJitterSigmaM(v)
   },
 })
+
+// ---------------------------------------------------------------- 🆕 2026-11-03 本地拟合度质量闸
+/**
+ * **本地校验：拟合度 < 0.6 就不许提交，要求重新生成**（用户 2026-11-03 要求）。
+ *
+ * 判据本体在纯模块 `utils/mp/localFitGate.ts`（有单测），这里只做"接到界面上"：
+ *   · **只在结算之后判**（`run.result.fitDegree`）—— ⚠️ 跑到一半的 `run.fitDegree` 是**按已显示的点**算的，
+ *     开跑那一刻只有 1 个点、拟合度天然接近 0，拿它判会**一开跑就假红**；
+ *   · 未下发线路的任务（研途健行）与读不出拟合度的情况 ⇒ 闸**不适用**（判据在纯函数里，界面不另写一套）；
+ *   · 通过/不通过都用**纯函数给的那句话**，界面不自己造措辞（避免"界面说通过、闸说不过"）。
+ */
+const localFitGate = computed(() =>
+  evaluateLocalFitGate({
+    fitDegree: run.value.status === 'finished' ? (run.value.result?.fitDegree ?? null) : null,
+    task: activeTask.value,
+  }),
+)
+/** 本次结算被本地闸拦下（界面据此禁提交 + 就地说明） */
+const localFitBlocked = computed(() => localFitGate.value.applies && !localFitGate.value.ok)
+/**
+ * 「重新生成」＝ 清掉这次结算、按**当前设置**再生成一条（换圈图 / GPS 抖动度 / 预设都照现在这份）。
+ * 与 `doStart()` 同一入口（口径只有一处），只是先把上一次的结算与轨迹清干净。
+ */
+const regenerateRun = () => {
+  reset()
+  run.value.runType = tabRunType.value
+  start()
+  logInfo('run', '本地校验未通过 ⇒ 重新生成轨迹', {
+    fitDegree: run.value.result?.fitDegree ?? null,
+    threshold: localFitGate.value.threshold,
+  })
+  showSnackbar('已按当前设置重新生成一条轨迹 —— 结算后请再看一次本地校验', 'info')
+}
 
 const speedItems = [
   { value: 1, label: '1× 实时（3.4km 约 21 分钟）' },
