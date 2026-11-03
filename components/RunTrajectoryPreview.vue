@@ -323,8 +323,17 @@ const paths = computed(() => {
 /** 进场段（第 1 圈之前的点）：单独一段，**不计圈**、不上色（灰色实线） */
 const leadInPath = computed(() => {
   const list = lapSplit.value.leadIn
-  if (list.length < 2) return ''
-  return list
+  if (!list.length) return ''
+  /**
+   * 🆕 2026-11-04（用户实测"灰线没有接到起跑点"）：切圈口径里**交界点归属两圈**，
+   * 但 `leadIn = points[0..loopStartIndex-1]` **不含**第 1 圈的首点（= 起跑点）⇒
+   * 灰线停在最后一个步行插值点（演示步长 20 m 时断口 20 m），红点孤在前面。
+   * 画图时把第 1 圈首点补上，灰线才真正落到红点上 —— **数据口径不变**（"进场段 N 点"仍不含起跑点）。
+   */
+  const firstLapPt = lapSplit.value.laps[0]?.pts?.[0]
+  const pts = firstLapPt ? [...list, firstLapPt] : list
+  if (pts.length < 2) return ''
+  return pts
     .map((p, i) => {
       const x = lng2x(p.longitude, zoom.value) * TILE - originPx.value.x
       const y = lat2y(p.latitude, zoom.value) * TILE - originPx.value.y
