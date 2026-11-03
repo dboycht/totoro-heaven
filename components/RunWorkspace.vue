@@ -250,7 +250,7 @@
           ⚠️ 开关状态就是 `lanePlan !== null`（没有新造一份状态，避免两处口径分叉）。
           ⚠️ 只有"内外双圈"的预设才有这一块；真实路径 / 折线路径没有"道"，显示"不适用"。
         -->
-        <v-card v-if="lanePlanSupports" class="mt-3" variant="outlined">
+        <v-card v-if="lanePlanSupports" class="mt-3">
           <v-card-title class="text-subtitle-1 d-flex flex-wrap align-center ga-2">
             <v-icon color="primary">mdi-layers-triple-outline</v-icon>
             跑圈设置
@@ -334,7 +334,7 @@
           </v-card-text>
         </v-card>
         <!-- 真实路径 / 折线路径：没有"道"可言 ⇒ 如实说明这一块为什么不出现 -->
-        <v-card v-else class="mt-3" variant="outlined">
+        <v-card v-else class="mt-3">
           <v-card-title class="text-subtitle-1 d-flex align-center ga-2">
             <v-icon color="medium-emphasis">mdi-layers-off-outline</v-icon>
             跑圈设置
@@ -349,7 +349,7 @@
         <!--
           ③ 跑步 GPS 抖动：与换圈互相独立（无论开不开换圈都要用到），所以单独成块。
         -->
-        <v-card class="mt-3" variant="outlined">
+        <v-card class="mt-3">
           <v-card-title class="text-subtitle-1 d-flex align-center ga-2">
             <v-icon color="secondary">mdi-signal-variant</v-icon>
             跑步 GPS 抖动
@@ -929,6 +929,21 @@
         而且那一段没有落盘、续跑也救不了（见 HANDOVER.md §8 的"建场次仍在浏览器"那条边界）。
         ⚠️ 文案里不许出现"防 kill"这类内部说法（用户 2026-10-08 确认页面上不该有）。
       -->
+      <!--
+        ═══════════════════════════════════════════════════════════════════════
+        🆕 2026-11-03（用户要求"真实提交按钮单独占一行 + 调整 UI 与文字注解，防止混乱歧义"）
+        这一块的排布现在是"一行一件事"，从上到下：
+          ① 提示行：点提交后请让本页保持在前台（原先就有，位置不动）
+          ② 【真实提交】按钮独占一行
+          ③ 次要动作（查询判定 / 重发轨迹明细 / 提交进度）另起一行
+          ④ 「为什么现在不能提交」—— 按原因分块、一块只说一件事，每块自带小标签：
+             · 质量闸（本地拟合度）—— 我们自己对自己轨迹的要求
+             · 提交门禁（开跑开关 / 摄像头杆 / 夜间）—— 服务端链路是否就绪
+             · 自由跑未开通 / 今日次数上限 —— 服务端明确拒绝过的两种情况
+          ⚠️ 三块各自独立：不能把它们挤在同一行（原先本地闸的卡片被 flex 行挤到按钮右边，
+             和"已阻止真实提交"那张红卡连在一起，看起来像同一条错误说了两遍）。
+        ═══════════════════════════════════════════════════════════════════════
+      -->
       <div class="text-caption text-medium-emphasis mb-2 d-flex align-start">
         <v-icon size="16" class="mr-1 mt-1">mdi-tab-unselected</v-icon>
         <span>
@@ -936,6 +951,8 @@
           提交的前几步仍在本页完成；进入等待后，进度会同时打在服务端终端上。
         </span>
       </div>
+
+      <!-- ② 真实提交：独占一行 -->
       <div class="d-flex align-center flex-wrap ga-2 mb-2">
         <v-btn
           color="error"
@@ -956,46 +973,16 @@
         >
           真实提交
         </v-btn>
-        <!-- ⚠️ 2026-09-21 审计修复（B3）：**按钮为什么灰，必须就在按钮旁边说**。
-             原先解释只在上方「开跑设置」卡里（几百像素之外），而结果卡是 `v-if="result"` ——
-             自由跑被拒时根本不产生 result ⇒ 用户滚到这里只会看到一个灰按钮、附近一个字都没有。 -->
-        <!--
-        🆕 2026-11-03（用户要求）本地校验不通过：拟合度低于门槛时按钮已禁用，
-        按本项目的既有纪律（审计 B3）—— 为什么灰必须就在按钮旁边说，并给一条"重新生成"的出路，
-        而不是只留一个点不动的按钮。
-        ⚠️ 文案全部取自纯函数 `evaluateLocalFitGate()`，并明确区分"本地闸"与"服务端判定"。
-      -->
-      <v-alert v-if="localFitBlocked" type="error" variant="tonal" density="comfortable" class="mb-2">
-        <div class="font-weight-bold">
-          <v-icon class="mr-1" size="18">mdi-shield-alert-outline</v-icon>本地校验不通过：拟合度偏低
-        </div>
-        <div class="text-body-2 mt-1">{{ localFitGate.message }}</div>
-        <div class="text-caption mt-1">{{ localFitServerNote() }}</div>
-        <div class="d-flex flex-wrap align-center ga-2 mt-2">
-          <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-replay" :disabled="isBusy || submitInFlight" @click="regenerateRun">
-            重新生成一条
-          </v-btn>
-          <span class="text-caption">按当前设置（预设 / 换圈图 / GPS 抖动度）重跑一条；也可先改上面的设置再点。</span>
-        </div>
-      </v-alert>
-      <template v-if="freeRunBlocked">
-          <span class="text-caption text-warning">
-            已标灰：本机记录显示你所在学校未开通「自由跑任务」（服务端会拒绝真实提交）
-          </span>
-          <v-btn size="x-small" variant="text" @click="clearFreeRunUnsupported()">仍要试一次</v-btn>
-        </template>
-        <!-- 🆕 2026-10-07（用户要求）：服务端说"今日该任务次数已达上限"时，灰按钮旁边就地说明
-             （同审计 B3 的教训：为什么灰必须在按钮旁边说），并留「仍要试一次」的出口。 -->
-        <template v-if="dailyQuotaBlocked">
-          <span class="text-caption text-warning">
-            已标灰：服务端说今天这个任务的次数已经用完（原话「该任务次数今日已达上限!」）—— 当天再提交仍会被拒
-          </span>
-          <v-btn size="x-small" variant="text" @click="clearDailyQuotaMark()">清除标记，仍要试一次</v-btn>
-        </template>
-        <!-- ⚠️ 2026-09-21：`:disabled` 里带 `submitInFlight` —— 提交流程内部自己也会调一次 `fetchVerdict`
-             （同样往过程清单里插 ⑥ 行），只锁"按钮连点"挡不住这种并发（审计指出） -->
+        <v-chip v-if="phase !== 'idle'" size="small" variant="tonal" :color="phaseColor">{{ phaseMessage }}</v-chip>
+        <!-- 按钮为什么是灰的：这里只说"看下面哪一块"，具体原因由下面三块各自讲清（不再挤在这一行） -->
+        <span v-if="submitBlockedNote" class="text-caption text-medium-emphasis">{{ submitBlockedNote }}</span>
+      </div>
+
+      <!-- ③ 次要动作：另起一行（与主按钮分开，避免"一排按钮不知道先点哪个"） -->
+      <div v-if="result?.scantronId || canResendRunDetail" class="d-flex align-center flex-wrap ga-2 mb-2">
         <v-btn
           v-if="result?.scantronId"
+          size="small"
           variant="tonal"
           color="primary"
           prepend-icon="mdi-clipboard-check-outline"
@@ -1005,15 +992,9 @@
         >
           查询判定
         </v-btn>
-        <!--
-          🆕 2026-10-07（实测事故；用户问"能不能补发"）：重发轨迹明细。
-          场景：成绩已提交成功，但紧随其后的明细请求没发出去（页面被浏览器冻结/丢弃）。
-          本按钮直接用"当前结算这一笔"的轨迹与时间口径 ⇒ 与当时逐点一致；
-          它连"欠账都没来得及记上"的历史笔也能救（那种笔没有落盘记录，只能靠内存里这份）。
-          ⚠️ 只在内存里还有那一笔的轨迹时出现（刷新/重启后就没有了 —— 那时用顶部那张提示卡补交）。
-        -->
         <v-btn
           v-if="canResendRunDetail"
+          size="small"
           variant="tonal"
           color="warning"
           prepend-icon="mdi-cloud-upload-outline"
@@ -1023,8 +1004,46 @@
         >
           重发轨迹明细
         </v-btn>
-        <v-chip v-if="phase !== 'idle'" size="small" variant="tonal" :color="phaseColor">{{ phaseMessage }}</v-chip>
+        <span class="text-caption text-medium-emphasis">以上是"提交之后的补救动作"，不影响下面各条判定的结论。</span>
       </div>
+
+      <!--
+        ④-a 质量闸（本地拟合度）：**只有它提到我们自己的轨迹质量**
+        ⚠️ 文案取自纯函数：`headline` 当标题、`message` 当正文（两者不重复同一句话）
+      -->
+      <v-alert v-if="localFitBlocked" type="error" variant="tonal" density="comfortable" class="mb-2">
+        <div class="d-flex flex-wrap align-center ga-2 mb-1">
+          <v-chip size="x-small" color="error" variant="flat">质量闸</v-chip>
+          <span class="font-weight-bold">{{ localFitGate.headline }}</span>
+        </div>
+        <div class="text-body-2">{{ localFitGate.message }}</div>
+        <div class="text-caption mt-1">{{ localFitServerNote() }}</div>
+        <div class="d-flex flex-wrap align-center ga-2 mt-2">
+          <v-btn size="small" color="primary" variant="flat" prepend-icon="mdi-replay" :disabled="isBusy || submitInFlight" @click="regenerateRun">
+            重新生成一条
+          </v-btn>
+          <span class="text-caption">按<b>第一块</b>里当前的设置（预设 / 换圈图 / GPS 抖动度）重跑一条；也可以先改那里的设置再点。</span>
+        </div>
+      </v-alert>
+
+      <!-- ④-b 提交门禁：开跑开关 / 摄像头杆 / 夜间 —— 与"轨迹好不好"无关 -->
+      <v-alert v-if="freeRunBlocked" type="warning" variant="tonal" density="compact" class="mb-2">
+        <div class="d-flex flex-wrap align-center ga-2 mb-1">
+          <v-chip size="x-small" color="warning" variant="flat">门禁</v-chip>
+          <span class="font-weight-bold">自由跑被本机标记为"学校未开通"</span>
+        </div>
+        <div class="text-body-2">本机记录显示你所在学校未开通「自由跑任务」，服务端会拒绝真实提交。</div>
+        <v-btn size="x-small" variant="text" class="mt-1 px-0" @click="clearFreeRunUnsupported()">仍要试一次</v-btn>
+      </v-alert>
+
+      <v-alert v-if="dailyQuotaBlocked" type="warning" variant="tonal" density="compact" class="mb-2">
+        <div class="d-flex flex-wrap align-center ga-2 mb-1">
+          <v-chip size="x-small" color="warning" variant="flat">门禁</v-chip>
+          <span class="font-weight-bold">今天这个任务的次数已经用完</span>
+        </div>
+        <div class="text-body-2">服务端原话「该任务次数今日已达上限!」—— 当天再提交仍会被拒。</div>
+        <v-btn size="x-small" variant="text" class="mt-1 px-0" @click="clearDailyQuotaMark()">清除标记，仍要试一次</v-btn>
+      </v-alert>
 
       <!-- 未读到真实任务时的提示（演示模式不算——它本来就不是真实数据） -->
       <v-alert v-if="!realReady && !demoMode" type="info" variant="tonal" density="compact">
@@ -2073,6 +2092,27 @@ const localFitGate = computed(() =>
 )
 /** 本次结算被本地闸拦下（界面据此禁提交 + 就地说明） */
 const localFitBlocked = computed(() => localFitGate.value.applies && !localFitGate.value.ok)
+/**
+ * 🆕 2026-11-03（用户要求"文字注解别混乱"）：**"现在为什么不能提交"的一句话摘要**。
+ *
+ * 只列**下面真会渲染出解释块**的那几条（口径与各块的 `v-if` 一一对应）—— 这样"原因见下方"的数字/词
+ * 永远不会和实际渲染对不上；"还没结算"这种没有解释块的状态，单独说一句。
+ */
+const submitBlockedLabels = computed(() => {
+  const out: string[] = []
+  if (!realReady.value && !demoMode.value) out.push('尚未读取真实数据')
+  if (!gateStatus.value.allow) out.push('提交门禁未通过')
+  if (localFitBlocked.value) out.push('本地质量闸未通过')
+  if (freeRunBlocked.value) out.push('自由跑未开通')
+  if (dailyQuotaBlocked.value) out.push('今日次数已用完')
+  return out
+})
+const submitBlockedNote = computed(() => {
+  const labels = submitBlockedLabels.value
+  if (labels.length) return `现在不能提交：${labels.join(' · ')}（逐条见下方）`
+  if (run.value.status !== 'finished') return '现在不能提交：还没有结算出数据（先「开始跑步」→ 跑完/结束并结算）'
+  return ''
+})
 /**
  * 「重新生成」＝ 清掉这次结算、按**当前设置**再生成一条（换圈图 / GPS 抖动度 / 预设都照现在这份）。
  * 与 `doStart()` 同一入口（口径只有一处），只是先把上一次的结算与轨迹清干净。

@@ -36,7 +36,13 @@ export interface LocalFitGateResult {
   threshold: number | null
   /** 门槛来源：本地地板 / 服务端阈值（服务端更严时）/ 不适用 */
   source: 'local' | 'task' | 'none'
-  /** 给人看的一句话（界面直接渲染，别自己另写措辞） */
+  /**
+   * 🆕 2026-11-03（用户反馈"文字注解有歧义"）：**标题行**（一句短的，含判定词与数值）。
+   * 界面把它当标题渲染；`message` 里**不再重复**这句话 —— 原先两处都写"本地校验不通过"，
+   * 同一句在卡片上出现两遍，看着像两条不同的错误。
+   */
+  headline: string
+  /** 正文（说清为什么 + 该怎么办；**不重复标题里的话**） */
   message: string
   /** 不适用时说明原因（空串 = 适用） */
   skipReason: string
@@ -55,25 +61,19 @@ export function evaluateLocalFitGate(input: { fitDegree: number | string | null 
    * 同一条判据在 `realPath.ts` 的坐标解析上也踩过一次（那边会把缺坐标读成 (0,0)）。
    */
   const rawIn = input.fitDegree
-  if (rawIn === null || rawIn === undefined || (typeof rawIn === 'string' && rawIn.trim() === '')) {
-    return {
-      applies: false,
-      ok: true,
-      threshold: null,
-      source: 'none',
-      message: '',
-      skipReason: '这次还没有拟合度读数（未结算或数据不完整）⇒ 不做本地判定',
-    }
-  }
-  const raw = Number(rawIn)
   const skip = (skipReason: string): LocalFitGateResult => ({
     applies: false,
     ok: true,
     threshold: null,
     source: 'none',
+    headline: '',
     message: '',
     skipReason,
   })
+  if (rawIn === null || rawIn === undefined || (typeof rawIn === 'string' && rawIn.trim() === '')) {
+    return skip('这次还没有拟合度读数（未结算或数据不完整）⇒ 不做本地判定')
+  }
+  const raw = Number(rawIn)
   if (!Number.isFinite(raw)) return skip('这次还没有拟合度读数（未结算或数据不完整）⇒ 不做本地判定')
   /** ① 未下发线路：没有可对照的路线 ⇒ 不适用（否则这类任务永远提交不了） */
   if (routeRequirementOf(input.task).kind === 'free') {
@@ -91,22 +91,28 @@ export function evaluateLocalFitGate(input: { fitDegree: number | string | null 
       ok: true,
       threshold,
       source,
-      message: `本地校验通过：拟合度 ${raw.toFixed(2)} ≥ 门槛 ${threshold.toFixed(2)}`,
+      headline: `本地校验通过：拟合度 ${raw.toFixed(2)} ≥ 门槛 ${threshold.toFixed(2)}`,
+      message: '',
       skipReason: '',
     }
   }
   const why =
     source === 'task'
-      ? `这条轨迹偏离官方线路太远（门槛取服务端阈值 ${threshold.toFixed(2)}）`
+      ? `这条轨迹偏离官方线路太远（门槛取服务端的 ${threshold.toFixed(2)}，比本地地板 0.60 更严）`
       : `这条轨迹偏离官方线路太远（本地门槛 ${threshold.toFixed(2)}）`
   return {
     applies: true,
     ok: false,
     threshold,
     source,
+    /**
+     * ⚠️ 2026-11-03（用户反馈"文字注解有歧义"）：**标题只写判定词 + 两个数**，
+     * 正文**不再重复**"本地校验不通过"那一句 —— 原先标题与正文各写一遍，
+     * 卡片上看起来像两条不同的错误（实测截图里就是这样）。
+     */
+    headline: `本地校验不通过：拟合度 ${raw.toFixed(2)} < ${threshold.toFixed(2)}`,
     message:
-      `本地校验不通过：拟合度 ${raw.toFixed(2)} < ${threshold.toFixed(2)} —— ${why}。` +
-      `请「重新生成」一条再提交（换一条更贴合的预设 / 回「跑道编辑」按卫星图重描，或换掉这条真实路径）。`,
+      `${why}。请「重新生成」一条再提交 —— 换一条更贴合的预设 / 回「跑道编辑」按卫星图重描，或换掉这条真实路径。`,
     skipReason: '',
   }
 }
