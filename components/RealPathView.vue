@@ -17,7 +17,7 @@
  *   · **只读服务端**：本页没有任何写请求（不做申诉、不改成绩）；
  *   · **只碰本人数据**：查询用的学号来自当前登录会话，页面不提供"查别人"的入口。
  */
-import { REAL_PATH_MAX_POINTS, useRealPathExport } from '~/composables/useRealPathExport'
+import { useRealPathExport } from '~/composables/useRealPathExport'
 import { defaultRealPathName, nearestLineByGeometry } from '~/utils/mp/realPath'
 import { LOCAL_FREE_LINE_ID } from '~/utils/mp/trackLibrary'
 
@@ -135,16 +135,12 @@ const lapInfo = computed(() => {
   const sel = rp.selection.value
   if (!sel) return null
   /**
-   * ⚠️ **"切出一圈"与"只降采样"必须分开说**（2026-11-03 用户实测抓到的假话）：
-   * 那一版把 `点数变少` 一律说成"已从整场里切出一圈并降采样"，而实际 1121 点是**切圈失败**、
-   * 只是降采样到 600 —— 界面等于在骗人。现在直接比 `extractOneLap` 的结果与原始长度：
-   * **严格变短才是真切出一圈**（`lap` 是提取结果，`lapPoints` 是它再降采样后的）。
+   * 🆕 2026-11-04（用户口径"直接原样上传，而不是只保留几圈"）：
+   * 轨迹**原样整条**保存（不切圈、不降采样）；切圈**只为了报"一圈多长"**（预览按它着色）。
    */
   return {
     sourcePoints: sel.points.length,
-    lapRawPoints: sel.lap.length,
-    lapPoints: sel.lapPoints.length,
-    slicedOneLap: sel.lap.length < sel.points.length,
+    lapLengthM: sel.lapLengthM,
   }
 })
 /** 自动匹配到的那条线路（界面如实说"按位置匹配的"） */
@@ -314,14 +310,11 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
             </div>
             <template v-else>
               <div class="text-body-2">
-                原始 <b>{{ lapInfo.sourcePoints }}</b> 点 →
-                存成预设时用 <b>{{ lapInfo.lapPoints }}</b> 点
-                <template v-if="lapInfo.slicedOneLap">
-                  （已从整场里<b>切出一圈</b>：那一圈 {{ lapInfo.lapRawPoints }} 点<template v-if="lapInfo.lapRawPoints > REAL_PATH_MAX_POINTS">，再降采样到 {{ REAL_PATH_MAX_POINTS }} 点以内</template>）
+                原样保存 <b>{{ lapInfo.sourcePoints }}</b> 点（<b>不切圈、不降采样</b>）
+                <template v-if="lapInfo.lapLengthM">
+                  · 识别到一圈约 <b>{{ Math.round(lapInfo.lapLengthM) }} m</b>（跑步页预览按它把整条按圈着色）
                 </template>
-                <template v-else>
-                  （<b class="text-warning">没识别到闭环</b>，按整条轨迹保存<template v-if="lapInfo.sourcePoints > REAL_PATH_MAX_POINTS">（降采样到 {{ REAL_PATH_MAX_POINTS }} 点）</template>）
-                </template>
+                <template v-else> · <span class="text-warning">没识别到闭环</span>，预览按整条一色显示</template>
               </div>
               <div v-if="autoMatchNote" class="text-caption text-success mt-1">{{ autoMatchNote }}</div>
               <div v-else-if="taskLinesWithGeometry.length" class="text-caption text-medium-emphasis mt-1">
@@ -331,8 +324,7 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
                 当前还没有读到任务（线路列表为空）⇒ 只能先存到「本机跑道」。回「工作台」读一次任务再回本页，就会自动按位置匹配线路。
               </div>
               <div class="text-caption text-medium-emphasis mt-1">
-                为什么要切一圈：整场 3 km 是 5~8 圈，直接当"一圈"存会让跑图与圈数全乱；切不出来（不是闭环）时会<b>原样保留</b>并如实说明。
-                <br />⚠️ 真跑常常是"从场外走进来再开跑"，所以切圈是<b>从轨迹上任意一处起算</b>的（不只认起跑那一点）。
+                一圈长度只是<b>报数</b>（供预览按圈着色），轨迹本身一个点都不删 —— 5~8 圈整场原样保存。
               </div>
             </template>
           </v-card-text>

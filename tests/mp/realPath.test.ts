@@ -8,8 +8,9 @@
  * 这里钉住六件事（全都是"改坏了不报错、只会静默骗人"的一类）：
  *   ① 归档/明细响应的解析**只认事实**（坏数据安全降级，缺轨迹就如实空）；
  *   ② **按天分组**与排序（日期倒序、"日期未知"排最后）；
- *   ③ **从整场跑里切出一圈**（否则"一圈 3 km"会让跑图与换圈全乱）；
- *   ④ 降采样**首末必留**、不超上限；
+ *   ③ **原样口径**（🆕 2026-11-04 用户口径"直接原样上传，而不是只保留几圈"）：
+ *      草稿/分享包/导入都**整条原样**（不切圈不降采样）；切圈（`extractOneLap`）只为**报一圈长度**；
+ *   ④ `downsamplePath`（已不在产品链路里）**首末必留**、不超上限（判据保留，以备体量保护）；
  *   ⑤ 预设草稿的字段口径与「研途健行路径编辑器」**同源**（freeShape 权威 + 占位几何 + start=null）；
  *   ⑥ 分享包**只带白名单字段**（隐私红线）+ **能被自己读回来**（真 zip 往返）。
  */
@@ -174,6 +175,7 @@ test('buildRealPathPresetDraft：形状权威 + 占位几何 ≥3 点 + start �
     usedTime: '00:20:25',
     fitDegree: 0.97,
     sourcePoints: 967,
+    lapLengthM: 628.3,
     exportedAt: '2026-11-03T02:00:00.000Z',
   }
   const draft = buildRealPathPresetDraft({ meta, points: pts, lineId: 'L1', lineName: '东操场', presetName: '真实路径 A' })
@@ -190,6 +192,31 @@ test('buildRealPathPresetDraft：形状权威 + 占位几何 ≥3 点 + start �
   }
 })
 
+test('★ buildRealPathPresetDraft：**原样口径** —— 多圈整场原样进草稿（不切圈不降采样，点数与顺序逐点不变）', () => {
+  /**
+   * 用户 2026-11-04 口径："相关的真实路径导出以及引用指的是将原版的路径直接导出然后直接原样上传，
+   * 而不是只保留几圈"。判据：5 圈整场（240 点）进草稿 ⇒ `freeShape.points` 还是 240 点，
+   * 首点/中间点/末点与输入逐点相等（顺序即跑向，一个点都不许动）。
+   */
+  const whole = multiLap(100, 5) // 5 圈 × 48 点 = 240 点
+  const meta: RealPathMeta = {
+    date: '2026-11-03',
+    scoreId: 's-raw',
+    km: 3.14,
+    usedTime: '00:18:00',
+    fitDegree: 0.98,
+    sourcePoints: whole.length,
+    lapLengthM: pathLengthM(multiLap(100, 1)),
+    exportedAt: '2026-11-04T00:00:00.000Z',
+  }
+  const draft = buildRealPathPresetDraft({ meta, points: whole, lineId: 'L1', lineName: '东操场' })
+  assert.equal(draft.freeShape.points.length, whole.length, `原样 ${whole.length} 点，一个不删`)
+  assert.deepEqual(draft.freeShape.points[0], whole[0], '首点不变')
+  assert.deepEqual(draft.freeShape.points[Math.floor(whole.length / 2)], whole[Math.floor(whole.length / 2)], '中段点不变')
+  assert.deepEqual(draft.freeShape.points[whole.length - 1], whole[whole.length - 1], '末点不变')
+  assert.equal(draft.realPath.lapLengthM, meta.lapLengthM, '一圈长度随元信息带上（预览按圈着色用）')
+})
+
 test('defaultRealPathName：带日期（有时刻就带 HHMM）；日期缺失时如实写"日期未知"', () => {
   assert.equal(defaultRealPathName({ date: '2026-11-01', usedTime: '', startTime: '08:12:33' }), '真实路径 2026-11-01 · 0812')
   assert.equal(defaultRealPathName({ date: '2026-11-01', usedTime: '' }), '真实路径 2026-11-01')
@@ -204,8 +231,14 @@ test('parseRealPathMeta：看得出是哪一场才保留；残缺/垃圾 ⇒ und
     usedTime: '',
     fitDegree: null,
     sourcePoints: 967,
+    lapLengthM: null,
     exportedAt: '',
   })
+  /** 🆕 2026-11-04：lapLengthM 宽松解析（数字/字符串都认；没有 ⇒ null，不猜） */
+  assert.equal(parseRealPathMeta({ date: '2026-11-01', scoreId: 's1', lapLengthM: '628.3' })?.lapLengthM, 628.3)
+  assert.equal(parseRealPathMeta({ date: '2026-11-01', scoreId: 's1', lapLengthM: 0 })?.lapLengthM, 0)
+  assert.equal(parseRealPathMeta({ date: '2026-11-01', scoreId: 's1' })?.lapLengthM, null)
+  assert.equal(parseRealPathMeta({ date: '2026-11-01', scoreId: 's1', lapLengthM: 'abc' })?.lapLengthM, null)
   assert.equal(parseRealPathMeta({ km: 3 }), undefined, '既没日期也没场次号 ⇒ 没有解释力，丢掉')
   assert.equal(parseRealPathMeta(null), undefined)
   assert.equal(parseRealPathMeta('x'), undefined)
@@ -225,7 +258,7 @@ test('buildShareBundle：**只带白名单字段**（token/学号/姓名一律�
         token: 'SECRET_TOKEN',
         snCode: '20210001',
         studentName: '张三',
-        meta: { date: '2026-11-01', scoreId: 's1', km: 3.2, usedTime: '', fitDegree: null, sourcePoints: 9, exportedAt: 'x' },
+        meta: { date: '2026-11-01', scoreId: 's1', km: 3.2, usedTime: '', fitDegree: null, sourcePoints: 9, lapLengthM: null, exportedAt: 'x' },
       },
     ],
     '2026-11-03T02:00:00.000Z',
@@ -241,7 +274,7 @@ test('buildShareBundle：**只带白名单字段**（token/学号/姓名一律�
 
 test('parseShareBundle：拒绝非本应用的包 / 更高版本 / 空包；坏点丢掉非法坐标', () => {
   const good = buildShareBundle([
-    { name: 'A', lineId: 'L1', lineName: '东操场', points: circle(100, 6), meta: { date: '2026-11-01', scoreId: 's1', km: 3, usedTime: '', fitDegree: null, sourcePoints: 6, exportedAt: '' } },
+    { name: 'A', lineId: 'L1', lineName: '东操场', points: circle(100, 6), meta: { date: '2026-11-01', scoreId: 's1', km: 3, usedTime: '', fitDegree: null, sourcePoints: 6, lapLengthM: null, exportedAt: '' } },
   ])
   const ok = parseShareBundle(good)
   assert.equal(ok.ok, true)
@@ -274,7 +307,7 @@ test('parseShareBundle：拒绝非本应用的包 / 更高版本 / 空包；坏�
 test('pickBundleItem：索引越界/非数 ⇒ undefined（界面据此说"没选中"）', () => {
   const items = parseShareBundle(
     buildShareBundle([
-      { name: 'A', lineId: 'L1', lineName: '东操场', points: circle(100, 6), meta: { date: '2026-11-01', scoreId: 's1', km: 3, usedTime: '', fitDegree: null, sourcePoints: 6, exportedAt: '' } },
+      { name: 'A', lineId: 'L1', lineName: '东操场', points: circle(100, 6), meta: { date: '2026-11-01', scoreId: 's1', km: 3, usedTime: '', fitDegree: null, sourcePoints: 6, lapLengthM: null, exportedAt: '' } },
     ]),
   ).items
   assert.equal(pickBundleItem(items, 0)?.name, 'A')
@@ -341,7 +374,7 @@ test('🔄 真 zip 往返：自己写的包能被自己读回来（store 模式�
       lineId: 'L1',
       lineName: '东操场',
       points: circle(100, 12),
-      meta: { date: '2026-11-01', scoreId: 's1', km: 3.2, usedTime: '00:20:25', fitDegree: 0.97, sourcePoints: 967, exportedAt: '2026-11-03T02:00:00.000Z' },
+      meta: { date: '2026-11-01', scoreId: 's1', km: 3.2, usedTime: '00:20:25', fitDegree: 0.97, sourcePoints: 967, lapLengthM: 628.3, exportedAt: '2026-11-03T02:00:00.000Z' },
     },
   ])
   const zip = createZip([{ name: REAL_PATH_BUNDLE_FILE, data: Buffer.from(JSON.stringify(bundle), 'utf8') }])
@@ -351,6 +384,8 @@ test('🔄 真 zip 往返：自己写的包能被自己读回来（store 模式�
   assert.equal(back.items[0]!.name, '真实路径 A')
   assert.equal(back.items[0]!.points.length, 12)
   assert.equal(back.items[0]!.meta.scoreId, 's1')
+  /** 🆕 2026-11-04：一圈长度随包往返（预览按圈着色靠它） */
+  assert.equal(back.items[0]!.meta.lapLengthM, 628.3)
 
   // 不是 zip ⇒ 明确报错（不静默当空包）
   const bad = await readShareBundleFromZip(new Uint8Array([1, 2, 3, 4, 5]))

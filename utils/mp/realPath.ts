@@ -44,8 +44,14 @@ export interface RealPathMeta {
   usedTime: string
   /** 拟合度（读不出 ⇒ `null`） */
   fitDegree: number | null
-  /** 原始点数（切成"一圈"之前） */
+  /** 原始点数（🆕 2026-11-04 起轨迹**原样整条**保存，本字段就是整场的点数） */
   sourcePoints: number
+  /**
+   * 🆕 **一圈长度**（米；读不出闭环 ⇒ `null`）。
+   * 轨迹改成**原样整条**（不切圈、不降采样）后，切圈只为了**报数**：
+   * 预览按它把整条轨迹按圈着色（用户口径"仍按一圈长着色"）；`null` ⇒ 预览整条一色。
+   */
+  lapLengthM: number | null
   /** 导出时刻（ISO 字符串） */
   exportedAt: string
 }
@@ -103,6 +109,8 @@ export function parseRealPathMeta(raw: unknown): RealPathMeta | undefined {
     usedTime: str(v.usedTime),
     fitDegree: num(v.fitDegree),
     sourcePoints: Math.max(0, Math.round(Number(v.sourcePoints) || 0)),
+    /** 🆕 2026-11-04：旧数据没有 `lapLengthM` ⇒ `null`（预览整条一色，不猜） */
+    lapLengthM: num(v.lapLengthM),
     exportedAt: str(v.exportedAt),
   }
 }
@@ -342,10 +350,9 @@ export function pointToSegmentM(p: RealPathPoint, a: RealPathPoint, b: RealPathP
 }
 
 /**
- * **等距降采样**（`maxPoints` 上限）：真实轨迹动辄 1000+ 点，全存进 localStorage 会让库变小胖。
- * 判据：`points.length ≤ maxPoints` 时**原样返回**（不做任何改动）；否则按步长抽，**首末必留**。
- * ⚠️ 这不是"简化形状"（那要看垂直距离），只是为了控制体积 —— 所以别指望它保拐角，
- *    真正会毁形状的场景（例如折返尖角）由调用方传足够大的上限来避免。
+ * **等距降采样**（`maxPoints` 上限）：`points.length ≤ maxPoints` 时**原样返回**；否则按步长抽，**首末必留**。
+ * ⚠️ 2026-11-04 起**产品代码不再使用它**（用户口径：真实路径**原样整条**保存/上传，不切圈不降采样）；
+ *    函数与单测保留 —— 万一以后要给超长轨迹做个"体量保护"，判据已经钉在这里。
  */
 export function downsamplePath(points: RealPathPoint[], maxPoints = 600): RealPathPoint[] {
   const list = Array.isArray(points) ? points : []
@@ -374,7 +381,10 @@ export function defaultRealPathName(meta: Pick<RealPathMeta, 'date' | 'usedTime'
 /** 生成预设草稿需要的输入（组合层从"选中的那天那条记录 + 它的点列"组装） */
 export interface RealPathPresetDraftInput {
   meta: RealPathMeta
-  /** 切成"一圈"并且降采样之后的点（顺序即跑向） */
+  /**
+   * **原样整条轨迹**（🆕 2026-11-04 用户口径"直接原样上传，而不是只保留几圈"）：
+   * **不切圈、不降采样**，点列顺序即跑向。一圈长度（预览着色用）由 `meta.lapLengthM` 携带。
+   */
   points: RealPathPoint[]
   /** 保存到哪个**地点**（厂商线路 `pointId` 或本机键；界面让用户选） */
   lineId: string
@@ -475,6 +485,8 @@ export function buildShareBundle(items: RealPathBundleItem[], exportedAt = new D
         usedTime: String(it.meta?.usedTime ?? ''),
         fitDegree: it.meta?.fitDegree === null || it.meta?.fitDegree === undefined ? null : Number(it.meta.fitDegree),
         sourcePoints: Number(it.meta?.sourcePoints ?? 0) || 0,
+        /** 🆕 2026-11-04：一圈长度（预览按圈着色用）；没有 ⇒ null */
+        lapLengthM: it.meta?.lapLengthM === null || it.meta?.lapLengthM === undefined ? null : Number(it.meta.lapLengthM),
         exportedAt: String(it.meta?.exportedAt ?? ''),
       },
     })),
@@ -530,6 +542,7 @@ export function parseShareBundle(raw: unknown): ParsedBundle {
         usedTime: str(meta.usedTime),
         fitDegree: num(meta.fitDegree),
         sourcePoints: Number(meta.sourcePoints) || 0,
+        lapLengthM: num(meta.lapLengthM),
         exportedAt: str(meta.exportedAt),
       },
     })

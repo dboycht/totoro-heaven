@@ -6,9 +6,14 @@
  * 目前先做到直接原版数据提交"；分享形态 = **压缩包**。
  *
  * ## 分层（别把这三件事混在一起）
- *   · **纯算法**：`utils/mp/realPath.ts`（解析/切一圈/降采样/分享包/读 zip，全有单测）；
+ *   · **纯算法**：`utils/mp/realPath.ts`（解析/切一圈/分享包/读 zip，全有单测）；
  *   · **本文件**：只做"发请求 + 状态机 + 落库/下载"的编排；
  *   · **页面**：`components/RealPathView.vue` 只渲染状态与触发动作。
+ *
+ * ## 🆕 2026-11-04 口径：**轨迹原样整条**
+ * 用户口径："相关的真实路径导出以及引用指的是将原版的路径直接导出然后直接原样上传，而不是只保留几圈"。
+ * ⇒ 存预设 / 分享包 / 导入 / 跑步页引用一律用**读回来的原始点列**（不切圈、不降采样）；
+ *   切圈（`extractOneLap`）只为了**报一圈长度**（预览按圈着色用，存进 `meta.lapLengthM`）。
  *
  * ## 三条纪律
  *   ① **只读**：本功能对服务端只发只读请求（`getTermList` / `getSchoolMonthByTerm` /
@@ -26,11 +31,11 @@ import {
   buildRealPathPresetDraft,
   buildShareBundle,
   defaultRealPathName,
-  downsamplePath,
   extractOneLap,
   groupRecordsByDay,
   parseArchDetailPoints,
   parseArchRecords,
+  pathLengthM,
   pickBundleItem,
   readShareBundleFromZip,
   type RealPathBundle,
@@ -51,21 +56,16 @@ export interface RealPathMonth {
 /** 归档里一条被选中的成绩 + 它的轨迹（读到轨迹之后才有 `points`） */
 export interface RealPathSelection {
   record: RealPathRecord
+  /** **原样整条轨迹**（🆕 2026-11-04：不切圈、不降采样，存预设/分享都用它） */
   points: RealPathPoint[]
-  /** `extractOneLap()` 的结果（**可能是整条** —— 切不出闭环时它原样返回） */
-  lap: RealPathPoint[]
-  /** 切成"一圈"并降采样之后的点（存预设/分享都用它） */
-  lapPoints: RealPathPoint[]
-  /** 导出用的元信息 */
+  /**
+   * **一圈长度**（米；从整条里识别出闭环才量得出 ⇒ `null` = 没识别到）。
+   * 切圈**只为了报这一个数**（预览按它把整条按圈着色）；轨迹本身一个点都不删。
+   */
+  lapLengthM: number | null
+  /** 导出用的元信息（含 `lapLengthM`） */
   meta: RealPathMeta
 }
-
-/**
- * 一条真实路径**最多存多少个点**（存进 `localStorage` 的路线库）。
- * 判据来自真机数据：1 Hz 采样的 400 m 一圈约 100~200 点 ⇒ 600 点足够两圈，
- * 而路线库整体有 5 MB 量级上限（`utils/mp/trackLibrary.ts` 的说明）。
- */
-export const REAL_PATH_MAX_POINTS = 600
 
 export function useRealPathExport() {
   const lib = useTrackLibrary()
@@ -99,12 +99,17 @@ export function useRealPathExport() {
   const days = computed<RealPathDay[]>(() => groupRecordsByDay(records.value))
   /** 当前选中的那条（没选 ⇒ `undefined`） */
   const selectedRecord = computed(() => records.value.find((r) => r.scoreId === selectedScoreId.value))
-  /** 选中那条的"每圈点数"等读数（界面用） */
+  /** 选中那条的读数（🆕 2026-11-04：轨迹**原样整条**，一圈长度只为预览着色报数） */
   const selection = computed<RealPathSelection | null>(() => {
     const record = selectedRecord.value
     if (!record || !points.value) return null
+    /**
+     * **切圈只为了报"一圈多长"**（预览按它着色；用户口径"仍按一圈长着色"）：
+     * `extractOneLap` 认得出闭环 ⇒ 量那一圈的折线长度；认不出 ⇒ `null`（预览整条一色）。
+     * ⚠️ 轨迹本身**一个点都不删**（用户 2026-11-04 口径："直接原样上传，而不是只保留几圈"）。
+     */
     const lap = extractOneLap(points.value, { tolM: 25, minM: 200 })
-    const lapPoints = downsamplePath(lap, REAL_PATH_MAX_POINTS)
+    const lapLengthM = lap.length < points.value.length ? pathLengthM(lap) : null
     const meta: RealPathMeta = {
       date: record.date,
       scoreId: record.scoreId,
@@ -112,9 +117,10 @@ export function useRealPathExport() {
       usedTime: record.usedTime,
       fitDegree: record.fitDegree,
       sourcePoints: points.value.length,
+      lapLengthM,
       exportedAt: new Date().toISOString(),
     }
-    return { record, points: points.value, lap, lapPoints, meta }
+    return { record, points: points.value, lapLengthM, meta }
   })
 
   /** 清掉"选中的轨迹"（换天/换条时必须清，否则会把上一条的轨迹当成这一条的） */
@@ -284,7 +290,8 @@ export function useRealPathExport() {
     try {
       const draft = buildRealPathPresetDraft({
         meta: sel.meta,
-        points: sel.lapPoints,
+        /** 🆕 2026-11-04：**原样整条**（不切圈、不降采样） */
+        points: sel.points,
         lineId,
         lineName,
         presetName,
@@ -292,11 +299,11 @@ export function useRealPathExport() {
       const saved = lib.upsert(draft)
       if (!saved.ok) return { ok: false, message: saved.message }
       const name = saved.entry.customName || ''
-      logInfo('realpath', '真实路径已存为预设', { scoreId: sel.record.scoreId, lineId, points: sel.lapPoints.length })
+      logInfo('realpath', '真实路径已存为预设', { scoreId: sel.record.scoreId, lineId, points: sel.points.length })
       return {
         ok: true,
         message:
-          `已存入本机路线库：预设「${name}」（${sel.lapPoints.length} 点，取自 ${sel.meta.date || '日期未知'} 那场）` +
+          `已存入本机路线库：预设「${name}」（原样 ${sel.points.length} 点，不切圈不降采样，取自 ${sel.meta.date || '日期未知'} 那场）` +
           (saved.persisted ? '' : ' —— 但本机存储写入失败，刷新后可能丢失'),
       }
     } catch (err) {
@@ -306,7 +313,7 @@ export function useRealPathExport() {
     }
   }
 
-  /** 构造分享包（**纯本地**，不联网） */
+  /** 构造分享包（**纯本地**，不联网；轨迹原样整条） */
   const buildBundle = (presetName: string): RealPathBundle | null => {
     const sel = currentSelection()
     if (!sel) return null
@@ -314,7 +321,7 @@ export function useRealPathExport() {
       name: String(presetName || defaultRealPathName({ ...sel.meta, startTime: sel.record.startTime })),
       lineId: '',
       lineName: '',
-      points: sel.lapPoints,
+      points: sel.points,
       meta: sel.meta,
     }
     return buildShareBundle([item], new Date().toISOString())
@@ -380,7 +387,8 @@ export function useRealPathExport() {
       if (!item) return { ok: false, message: `包里没有第 ${(opts.index ?? 0) + 1} 条路径` }
       const draft = buildRealPathPresetDraft({
         meta: item.meta,
-        points: downsamplePath(item.points, REAL_PATH_MAX_POINTS),
+        /** 🆕 2026-11-04：导入同样**原样整条**（不降采样 —— 包里是什么就存什么） */
+        points: item.points,
         lineId: opts.lineId,
         lineName: opts.lineName,
         presetName: opts.presetName ?? item.name,
