@@ -296,6 +296,32 @@
               本任务<b>服务端未下发线路</b>（不指定路线）⇒ <b>请选择你要用的本机路径</b>（下面的「本机路径」）；提交报文仍<b>不含线路信息</b>。
             </div>
             <!--
+              🆕 2026-11-03（1.3.6）：「这个地点的预设」第二级下拉（用户原话："一个地点的预设只能创建一个…
+              相关预设应该一个点位可以创建多个，然后在跑步选择路径的时候可以进行选择"）。
+              · 选项 = 这个地点（`run.lineId`）下的全部预设，标题带形状读数（与「跑道编辑」/预览同源）；
+              · 选中项按地点持久化（键 `mp_preset_choice_v1`）⇒ 刷新/重开程序都记得；
+              · 判据本体是算法层的 `resolvePresetForLine()`，跑步引擎调的是同一个函数。
+              🔴 它只决定本机几何：提交报文一个字都不变（`lineId` 仍是地点的厂商线路 id）。
+            -->
+            <v-select
+              v-if="!isYtuTab && presetItems.length"
+              v-model="presetPick"
+              :items="presetItems"
+              item-title="title"
+              item-value="value"
+              label="预设（这个地点可以存多条）"
+              density="comfortable"
+              :disabled="isBusy"
+              class="mb-1"
+            />
+            <div v-if="!isYtuTab && presetItems.length" class="text-caption text-medium-emphasis mb-2">
+              这个地点有 <b>{{ presetItems.length }}</b> 条预设，选中的那条决定<b>这次用哪套几何</b>
+              （新建 / 改名 / 删除都在「我的场地 → 跑道编辑」，保存时可给预设起名字）。
+            </div>
+            <div v-if="!isYtuTab && presetItems.length && presetPreferredUnavailable" class="text-caption text-warning mb-2">
+              ⚠️ 你上次选的预设已不可用（可能被删除或几何不完整），已改用这个地点里另一条可用的预设。
+            </div>
+            <!--
               🆕 2026-09-22（用户批准）：「本机路径」下拉 —— 只在"服务端未下发线路"的任务里出现。
               选项 = 本机路线库里几何可用的条目；选择按任务记住（键 mp_free_route_choice_v1），刷新后还在。
               🆕 2026-09-23（pre3）：**一条可用几何都没有时也显示这个下拉**，里面放一条**可点占位项**
@@ -939,6 +965,7 @@
       :route="selectedLine?.pointList ?? []"
       :track-entries="libEntries"
       :line-id="run.lineId"
+      :preset-id="presetEntry?.id ?? ''"
       :lapLengthM="run.lapLengthM"
       :lapDriftM="run.lapDriftM"
     />
@@ -1255,7 +1282,17 @@ const fitRequirementText = computed(() => fitRequirementOf(activeTask.value).rea
  *    单独给一条带入口的提示。
  */
 // 🆕 2026-09-22：「本机路径」的选择按任务记住（键 `mp_free_route_choice_v1`；与提交报文无关）
-const { entries: libEntries, load: loadTrackLibrary, freeRouteChoiceFor, setFreeRouteChoice } = useTrackLibrary()
+// 🆕 2026-11-03（1.3.6）：`presetsOf` / `presetChoiceFor` / `setPresetChoice` / `presetResolutionFor`
+//   —— 一个地点多条预设的两级选择（第二级按 **lineId** 记住，键 `mp_preset_choice_v1`）
+const {
+  entries: libEntries,
+  load: loadTrackLibrary,
+  freeRouteChoiceFor,
+  setFreeRouteChoice,
+  presetChoiceFor,
+  setPresetChoice,
+  presetResolutionFor,
+} = useTrackLibrary()
 onMounted(() => loadTrackLibrary())
 const configuredIds = computed(() => new Set(libEntries.value.map((e) => String(e.lineId))))
 /** 只列"本机路线库里配置过"的线路（**没有兜底**：没配置就是空列表） */
@@ -1304,8 +1341,10 @@ const freeRouteOptions = computed(() => {
   const usable = libEntries.value
     .filter((e) => entryGeometryUsable(e))
     .map((e) => ({
-      title: `${resolveEntryName(e) || String(e.lineId)} —— ${localEntryShapeText(e)}${legacyFreePathUpdate(e).legacy ? '（旧版路径 · 建议重画）' : ''}`,
-      value: String(e.lineId),
+      // 🆕 2026-11-03（1.3.6）：一个地点多条预设 ⇒ 标题里带上**地点**（否则两条同名不同地的分不清）；
+      //   取值改成**预设 id**（`resolvePresetForLine` / `freeRouteGeometryChoice` 都认它，旧值也能退回解析）
+      title: `${resolveEntryName(e)}（${String(e.lineName ?? e.lineId)}） —— ${localEntryShapeText(e)}${legacyFreePathUpdate(e).legacy ? '（旧版路径 · 建议重画）' : ''}`,
+      value: String(e.id),
     }))
   if (usable.length) return usable
   return [{ title: '（还没有本机路径 · 点我去画一条）', value: FREE_ROUTE_DRAW_VALUE }]
@@ -1322,7 +1361,7 @@ const freeRouteLegacyDrawHref = freePathDrawHref
  * 🆕 选到那条**占位项**时 ⇒ **一键跳转**去画（不写进"记住的选择"里 —— 它不是一条真实路径）。
  */
 const freeRoutePick = computed({
-  get: () => String(freeRouteChoice.value.entry?.lineId ?? ''),
+  get: () => String(freeRouteChoice.value.entry?.id ?? ''),
   set: (v: string) => {
     const id = String(v ?? '').trim()
     if (id === FREE_ROUTE_DRAW_VALUE) {
@@ -1532,10 +1571,49 @@ const fitClass = computed(() => {
 /** 线路下拉（真实/演示都由当前生效任务提供；按坐标校区分组，本校区优先） */
 const routeGroups = computed(() => groupRoutesByCampus(activeLines.value, realProfile.value?.campusName))
 /**
- * 用户在「跑道编辑 → 本地路线库」里改过名 ⇒ 下拉里也显示他起的名字（1.1.9 需求②）。
- * 没改过名时返回 undefined，`toSelectItems` 的行为**逐字不变**。
+ * 🆕 2026-11-03（1.3.6）：**「这个地点的预设」第二级下拉**（用户要求"一个点位可以创建多个预设，
+ * 跑步选择路径的时候可以进行选择"）。
+ *
+ * 三级关系（都要说清，否则用户不知道哪个说了算）：
+ *   ① 「线路」下拉 = **地点**（`run.lineId`，官方线路 / 自由跑用哪条几何 / 本机键）；
+ *   ② 「预设」下拉 = **这个地点下的哪一条预设**（本块；选择按 `lineId` 持久化）；
+ *   ③ 判据本体在算法层 `resolvePresetForLine()`（纯函数、有单测）——界面与跑步引擎**同源**。
+ *
+ * ⚠️ 只在"这个地点真有预设"时渲染（没有 ⇒ 与旧版一样：下面照旧提示"这条线路还没描过跑道"）。
+ * 🔴 它只决定**本机几何**：提交报文一个字都不变。
  */
-const customNameOf = (id: string) => libEntries.value.find((e) => String(e.lineId) === String(id))?.customName
+const presetChoice = computed(() => presetResolutionFor(run.value.lineId))
+const presetItems = computed(() =>
+  libEntries.value
+    .filter((e) => String(e.lineId) === String(run.value.lineId))
+    .map((e) => ({
+      title: `${resolveEntryName(e)} —— ${localEntryShapeText(e)}`,
+      value: String(e.id),
+    })),
+)
+const presetPick = computed({
+  get: () => String(presetChoice.value.entry?.id ?? ''),
+  set: (v: string) => {
+    const id = String(v ?? '').trim()
+    if (!id) return
+    logInfo('run', '用户改了「预设」', { lineId: run.value.lineId, presetId: id })
+    setPresetChoice(run.value.lineId, id)
+  },
+})
+/** 这次实际会被用到的预设（跑步引擎同源判据）；没预设/几何不可用时是 undefined */
+const presetEntry = computed(() => presetChoice.value.entry)
+/** 用户上次选的预设已不可用（被删/几何不完整）⇒ 界面必须如实说明 */
+const presetPreferredUnavailable = computed(() => presetChoice.value.preferredUnavailable)
+
+/** 用户改过名 ⇒ 线路下拉里也显示他起的名字（1.1.9 需求②）。没改过名时返回 undefined，`toSelectItems` 行为逐字不变。 */
+const customNameOf = (id: string) => {
+  /**
+   * ⚠️ 2026-11-03（1.3.6）：**只有这个地点恰好一条预设时**才用它代表整个地点 ——
+   * 一个地点多条预设时，"拿哪条预设的名字当地点名字"没有正确答案（选哪条看下一级「预设」下拉）。
+   */
+  const list = libEntries.value.filter((e) => String(e.lineId) === String(id))
+  return list.length === 1 ? list[0]?.customName : undefined
+}
 const lineItems = computed(() => toSelectItems(routeGroups.value, customNameOf))
 /** 选了其他校区线路时的提示（未跨校区为空串） */
 const crossCampusWarning = computed(() => warnForSelection(routeGroups.value, run.value.lineId))
@@ -1635,7 +1713,8 @@ const applyFreeKm = (raw: unknown) => {
  *    **回落到这次真正会用的那条**（`freeRouteEntry`，与引擎同源）。
  */
 const selectedLaneLengthM = computed(() => {
-  const byLineId = libEntries.value.find((x) => String(x.lineId) === String(run.value.lineId))
+  // 🆕 2026-11-03（1.3.6）：按**这次真要跑的那条预设**算（与引擎 `geometryEntryFor` 同源）
+  const byLineId = presetEntry.value ?? libEntries.value.find((x) => String(x.lineId) === String(run.value.lineId))
   const e = byLineId ?? (routeIsFree.value ? freeRouteEntry.value : undefined)
   if (!e) return 0
   const freeLap = freePathLapLengthM(e.freeShape)

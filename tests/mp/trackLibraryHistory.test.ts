@@ -39,6 +39,7 @@ const circle = (r: number, n = 12) =>
   })
 
 const base: TrackRouteEntry = {
+  id: 'L1',
   lineId: 'L1',
   lineName: '西操场',
   outer: circle(100),

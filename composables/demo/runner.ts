@@ -319,7 +319,14 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
       //    ℹ️（2026-09-20 更正）**自由跑现在也要选线路**（用户要求）——本函数对两种跑法一视同仁：
       //       都用 `run.lineId` 从"本机描过的线路"里挑几何。原先这里写着"自由跑没有线路 ⇒ 直接用官方模板"，
       //       那句在 2026-09-18 收紧"只允许描过的跑道"之后就已经不成立了，容易误导，故删除。
-      const trackEntry = line ? lib.get(line.pointId) : undefined
+      /**
+       * 🆕 2026-11-03（1.3.6）：**一个地点可以有多条预设** ⇒ 这里取的不再是"该地点唯一那条"，
+       * 而是**判据选出来的那一条**（`lib.geometryEntryFor()` → 算法层 `resolvePresetForLine()`：
+       * 用户选的（可用）→ 本地点第一条可用的 → 本地点第一条）。
+       * 🔴 与跑步页那条「预设」下拉**同一个判据**，不许出现第二套 —— 否则"界面说用 A、实际用 B"。
+       * ⚠️ 仍然只影响**本机几何**：提交报文一个字都不变。
+       */
+      const trackEntry = line ? lib.geometryEntryFor(line.pointId) : undefined
       let geometry: LatLng[] = line?.pointList ?? []
       /**
        * ⭐ 2026-09-22「非官方路径绘制」：几何统一走 `resolveTrackGeometry` ——

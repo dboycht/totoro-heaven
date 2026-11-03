@@ -171,9 +171,9 @@ test('🔴 freeRouteGeometryChoice：用户选的那条**已被删除** ⇒ 落�
 })
 
 test('entryGeometryUsable：有形状 / 双圈够点 ⇒ 可用；双圈点数不够 ⇒ 不可用（与引擎同判据）', () => {
-  assert.equal(entryGeometryUsable({ lineId: 'a', lineName: 'a', outer: [], inner: [], createdAt: '', appVersion: '', freeShape: CURVE } as TrackRouteEntry), true)
+  assert.equal(entryGeometryUsable({ id: 'a', lineId: 'a', lineName: 'a', outer: [], inner: [], createdAt: '', appVersion: '', freeShape: CURVE } as TrackRouteEntry), true)
   assert.equal(entryGeometryUsable(entry('ring', '2026-09-22T14:00:00.000Z')), true)
-  const broken = { lineId: 'b', lineName: 'b', outer: [{ latitude: 1, longitude: 2 }], inner: [], createdAt: '', appVersion: '' } as TrackRouteEntry
+  const broken = { id: 'b', lineId: 'b', lineName: 'b', outer: [{ latitude: 1, longitude: 2 }], inner: [], createdAt: '', appVersion: '' } as TrackRouteEntry
   assert.equal(entryGeometryUsable(broken), false)
   assert.equal(entryGeometryUsable(null), false)
   // 选了一条"几何坏了"的 ⇒ 与"被删"同样处理（落回 + 提示），不选它

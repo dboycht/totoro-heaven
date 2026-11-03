@@ -38,6 +38,11 @@ export interface FreeShapeSavePayload {
    * `undefined`（= 不传）会让 `upsert` 沿用旧值，那正是这个 bug 的成因。
    */
   start: null
+  /**
+   * 🆕 2026-11-03（1.3.6）：**预设名称**（用户填的；留空 ⇒ `upsert` 自动命名）。
+   * 一个本机键下可以有多条预设 ⇒ 名字是"这条是哪条"的唯一人话标识。
+   */
+  presetName?: string
 }
 
 /**
@@ -48,6 +53,8 @@ export function buildFreeShapeSave(input: {
   shape: FreePathShape | null | undefined
   lineId: string
   lineName: string
+  /** 🆕 2026-11-03（1.3.6）：预设名称（留空 ⇒ `upsert` 自动命名，绝不落一个空名字进库） */
+  presetName?: string
 }): FreeShapeSavePayload | null {
   if (!usableFreePathShape(input.shape)) return null
   const shape = input.shape as FreePathShape
@@ -61,6 +68,7 @@ export function buildFreeShapeSave(input: {
     inner: placeholder.map((p) => ({ latitude: p.latitude, longitude: p.longitude })),
     freeShape: shape,
     start: null,
+    ...(input.presetName === undefined ? {} : { presetName: String(input.presetName) }),
   }
 }
 

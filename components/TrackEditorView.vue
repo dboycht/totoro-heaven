@@ -28,8 +28,10 @@ import {
 import {
   LOCAL_FREE_LINE_ID,
   TRACK_HISTORY_MAX,
+  duplicateNameGroups,
   entryDetailRows,
   entrySummaryText,
+  formatLocalDateTime,
   historyLogText,
   localFreeTrackLine,
   resolveEntryName,
@@ -176,6 +178,14 @@ const lines = computed<MpRunLine[]>(() => {
   return [...vendor, { pointId: local.lineId, pointName: local.lineName, pointList: [] }]
 })
 const lineId = ref<string>('')
+/**
+ * 🆕 2026-11-03（1.3.6）：**正在编辑的是哪一条预设**（一个地点可以有多条）。
+ *   · 非空 ⇒ 保存就是**更新这一条**；空串 ⇒ 保存是**新建一条**（`presetId` 由组合层生成）。
+ *   · 与 `lineId` 的关系：`lineId` 是**地点**，`presetId` 是这个地点下的**某一条预设**。
+ */
+const presetId = ref<string>('')
+/** 预设名称输入框（保存时交给 `lib.upsert({presetName})`；留空 = 自动命名） */
+const presetName = ref<string>('')
 const lib = useTrackLibrary()
 /** 模板里要用的 ref 需要拿出来（嵌套在对象里的 ref 模板不会自动解包） */
 const libEntries = lib.entries
@@ -191,8 +201,15 @@ const draftInner = ref<N[]>([])
 const draftStartOffsetM = ref(0)
 const draftStartPoint = ref<N | null>(null)
 const draftStartDirection = ref<LoopDirection>('forward')
-const loadDraft = (id: string) => {
-  const e = lib.get(id)
+const loadDraft = (ref: string) => {
+  const e = lib.get(ref)
+  /**
+   * 🆕 2026-11-03（1.3.6）：把"正在编辑哪条预设 + 它叫什么"一起载入 ——
+   * ⚠️ 名称框里放的是**显示名**（`resolveEntryName`）：旧条目没有自定义名时就是厂商线路名，
+   *    用户直接点保存会把它**显式**存成预设名 —— 显示不变，但从此这条预设有了自己的名字（符合"名称不可为空"）。
+   */
+  presetId.value = e ? String(e.id) : ''
+  presetName.value = e ? resolveEntryName(e) : ''
   draftOuter.value = (e?.outer ?? []).map(num)
   draftInner.value = (e?.inner ?? []).map(num)
   draftStartOffsetM.value = Number(e?.start?.offsetM ?? 0)
@@ -247,8 +264,48 @@ const setRing = (which: 'outer' | 'inner', pts: N[]) => {
   if (which === 'outer') draftOuter.value = pts
   else draftInner.value = pts
 }
-/** 切换线路 ⇒ 自动载入那条线路已保存的草稿（没保存过就是空的） */
-watch(lineId, (id) => loadDraft(String(id ?? '')))
+/**
+ * 切换线路（地点）⇒ 自动载入**这个地点这次该编辑的那条预设**。
+ * 🆕 2026-11-03（1.3.6）：判据用算法层的 `resolvePresetForLine()`（与跑步页/引擎同源）——
+ * 一个地点有多条时取"用户选过的（可用）→ 第一条可用的 → 第一条"，
+ * 旧数据（一个地点一条、id === lineId）下结果与旧版**逐字一致**。
+ */
+watch(lineId, (id) => loadDraft(String(lib.presetResolutionFor(String(id ?? '')).entry?.id ?? '')))
+
+/**
+ * 🆕 2026-11-03（1.3.6）：**"预设"下拉 + 名称输入**（用户要求"一个点位可以创建多个预设"、
+ * "保存预设的时候可以输入相关名字进行存储，便于用户区分"）。
+ *
+ * 选项 = 这个地点的全部预设（最新保存在前），外加一项**「新建预设」**（空串值）：
+ * 选中它 ⇒ 只清空"正在编辑的是哪条"，草稿与名称框**保留**（用户常常是"照着这条改一版"，别把手上的点清掉）。
+ */
+const presetOptions = computed(() => [
+  ...libEntries.value
+    .filter((e) => String(e.lineId) === String(lineId.value))
+    .map((e) => ({ title: `${resolveEntryName(e)} —— ${entrySummaryText(e)}`, value: String(e.id) })),
+  { title: '＋ 新建一条预设（保存后出现在上面）', value: '' },
+])
+const startNewPreset = () => {
+  presetId.value = ''
+  presetName.value = ''
+  showSnackbar('已切到「新建预设」：描好内外圈 → 填名字（可留空自动命名）→ 点「保存（本机）」', 'info')
+}
+/**
+ * 「预设」下拉变化：选中一条 ⇒ 载入它；选到「＋ 新建一条预设」（空串）⇒ 走 `startNewPreset()`。
+ * ⚠️ 两条路径都**不静默改草稿**：载入是明确动作，新建则保留手上的点（用户常是"照着这条改一版"）。
+ */
+const onPresetPick = (v: unknown) => {
+  const id = String(v ?? '').trim()
+  if (!id) {
+    startNewPreset()
+    return
+  }
+  loadDraft(id)
+}
+/** 这个地点**同名预设**的检测结果（旧数据可能本来就有同名 —— 只提示，绝不自动改名） */
+const dupNames = computed(() => duplicateNameGroups(libEntries.value))
+/** 正在编辑的那条预设（`presetId` 为空 = 还没保存过 / 正在新建） */
+const editingEntry = computed(() => (presetId.value ? lib.get(presetId.value) : undefined))
 
 /**
  * **快速定位**（用户要求）：把地图移到"已描的圈"的范围，并挑一个刚好装得下的缩放级。
@@ -694,10 +751,20 @@ const save = () => {
     return
   }
   /** 🆕 审计 B4：这次保存会清掉一条已存在的非官方路径形状 ⇒ 提示里要如实说（见下面的 `freeShape: null`） */
-  const hadFreeShapeAtSave = Boolean(lib.get(lineId.value)?.freeShape)
+  const hadFreeShapeAtSave = Boolean(editingEntry.value?.freeShape)
+  /**
+   * 🆕 2026-11-03（1.3.6）：**保存的是哪一条预设**。
+   *   · `presetId` 非空 ⇒ **更新那一条**（保留创建日期/创建版本/编辑历史）；
+   *   · `presetId` 为空（点了「＋ 新建一条预设」/ 这个地点还没有预设）⇒ **新建一条**。
+   * ⚠️ 这是与旧版最大的差别：旧版的 `upsert` 按 `lineId` 覆盖 ⇒ 一个地点永远只有一条。
+   */
+  const savingPresetId = presetId.value.trim()
   const saved = lib.upsert({
+    ...(savingPresetId ? { id: savingPresetId } : {}),
     lineId: lineId.value,
     lineName: String(currentLine.value?.pointName ?? lineId.value),
+    /** 🆕 预设名称（用户手填；留空 ⇒ 组合层自动命名，保证不重名且非空） */
+    presetName: presetName.value,
     outer: outer.value,
     inner: inner.value,
     // ⭐ 把"所选道次"一起存起来（跑步页就按它生成，不再随机）
@@ -733,11 +800,15 @@ const save = () => {
      */
     freeShape: null,
   })
-  if (!saved) {
-    showSnackbar('保存被拒绝：内外圈点数不足（各需至少 3 点）', 'error')
+  if (!saved.ok) {
+    // 🆕 2026-11-03（1.3.6）：两种拒绝要**分开说**（几何不合法 / 名称撞车），措辞由组合层给
+    showSnackbar(saved.message, 'error')
     return
   }
   const { entry, persisted } = saved
+  /** 保存成功后把编辑器切到"正在编辑这一条"（否则下一次保存又会新建一条，越存越多） */
+  presetId.value = String(entry.id)
+  presetName.value = resolveEntryName(entry)
   /**
    * ⚠️ **落盘是否成功必须如实说**（2026-09-22，issue #12）：
    *   `lib.upsert` 现在把 `persist()` 的结果一起返回（原先丢掉了）—— 否则配额满 / 隐私模式下
@@ -745,9 +816,10 @@ const save = () => {
    *   自由路线任务恰恰只有它这一条几何来源（跑步页读的就是它）。
    * 另外把"存的是哪一条"写清楚：本机跑道（本任务未下发线路）与"服务端线路"是两回事，
    *   混在一起用户会以为存成了官方路线。
+   * 🆕 2026-11-03：再补上**预设名**（一个地点多条时，"存的是哪一条"就靠它）。
    */
   const localSaving = String(lineId.value) === LOCAL_FREE_LINE_ID
-  const detail = `${localSaving ? '本机跑道 · ' : ''}第 ${entry.editCount ?? 1} 次保存 · ${entry.updatedAppVersion ? `v${entry.updatedAppVersion}` : '版本未知'} · 起跑点${hasStart.value ? '已设' : '未设'}`
+  const detail = `${localSaving ? '本机跑道 · ' : ''}预设「${resolveEntryName(entry)}」· 第 ${entry.editCount ?? 1} 次保存 · ${entry.updatedAppVersion ? `v${entry.updatedAppVersion}` : '版本未知'} · 起跑点${hasStart.value ? '已设' : '未设'}`
   /**
    * 🆕 审计 B4：这次保存**确实清掉了一条已存在的路径形状**时要如实说 ——
    * 否则用户会以为"存了双圈、形状还在"（实际跑步页已经改走双圈几何）。
@@ -765,18 +837,34 @@ const reset = () => {
 }
 /** 本地路线管理：载入到编辑器（顺带定位过去） */
 const loadEntry = (id: string) => {
-  lineId.value = String(id)
-  loadDraft(String(id))
+  const target = lib.get(String(id))
+  if (!target) {
+    showSnackbar('这条预设已经不在本机路线库里了', 'warning')
+    return
+  }
+  // ⚠️ 先把地点切过去，再**显式**载入这一条 —— 只改 lineId 的话，watch 会载入"这个地点默认那条"，
+  //    而不是用户点的这一条（一个地点多条预设时这正是要避免的"点了 A 载入了 B"）
+  lineId.value = String(target.lineId)
+  loadDraft(String(target.id))
   focusOn()
-  showSnackbar('已载入这条本地路线')
+  showSnackbar(`已载入预设「${resolveEntryName(target)}」`)
 }
 const removeEntry = (id: string) => {
-  const persisted = lib.remove(String(id))
-  if (String(id) === String(lineId.value)) reset()
+  const out = lib.remove(String(id))
+  if (!out.removed) {
+    showSnackbar('这条预设已经不在本机路线库里了', 'warning')
+    return
+  }
+  // 删掉的正是手上这条 ⇒ 清空草稿与"正在编辑"标记（否则界面还停在一个已不存在的预设上）
+  if (String(id) === String(presetId.value)) {
+    presetId.value = ''
+    presetName.value = ''
+    reset()
+  }
   // 删掉的那条如果正展开着详情，收起它（否则详情区会挂在一个已不存在的条目上）
   if (isDetailOpen(id)) detailId.value = null
   // ⚠️ 2026-09-20 审计修复：落盘失败时不能报"已删除" —— 否则刷新后被删的路线又回来了
-  showSnackbar(persisted ? '已从本机路线库删除' : '已从内存移除，但本机存储写入失败（刷新后可能还在）', persisted ? 'success' : 'warning')
+  showSnackbar(out.persisted ? '已从本机路线库删除' : '已从内存移除，但本机存储写入失败（刷新后可能还在）', out.persisted ? 'success' : 'warning')
 }
 
 // ---------------------------------------------------------------- 路线库「详情」展开（1.1.12 需求③）
@@ -809,38 +897,52 @@ const renameLen = computed(() => Array.from(renameText.value ?? '').length)
 const openRename = (id: string) => {
   const e = lib.get(String(id))
   renameId.value = String(id)
-  renameText.value = e?.customName ?? ''
+  // 🆕 2026-11-03（1.3.6）：改名框里放**显示名**（旧条目没有自定义名时就是厂商名）——
+  //    一个地点多条预设后，"这条现在叫什么"必须看得见，否则改完不知道原来叫什么。
+  renameText.value = e ? resolveEntryName(e) : ''
   renameOpen.value = true
 }
 const confirmRename = () => {
   const out = lib.rename(String(renameId.value), renameText.value)
   renameOpen.value = false
-  if (!out) {
-    showSnackbar('这条路线已经不在本机路线库里了', 'warning')
+  if (!out.ok) {
+    // 🆕 2026-11-03："名称不可以相同"与"这条已不在库里"是两种不同的拒绝，措辞由组合层给
+    showSnackbar(out.message, out.reason === 'duplicate-name' ? 'error' : 'warning')
     return
   }
   const { entry: updated, persisted } = out
+  // 改名的就是手上这条 ⇒ 名称框跟着变（否则保存时又把它改回旧名字）
+  if (String(updated.id) === String(presetId.value)) presetName.value = resolveEntryName(updated)
   showSnackbar(
-    (updated.customName ? `已改名为「${resolveEntryName(updated)}」` : '已恢复显示官方线路名') +
+    `已改名为「${resolveEntryName(updated)}」` +
       // ⚠️ 落盘失败要说清楚（否则刷新后名字"自己变回去"，用户以为没保存）
       (persisted ? '' : '（但本机存储写入失败，刷新后可能丢失）'),
     persisted ? 'success' : 'warning',
   )
 }
-/** 一键恢复官方名（清空自定义名） */
-const clearCustomName = () => {
-  renameText.value = ''
-  showSnackbar('已清空输入框，点「保存名字」即恢复官方名', 'info')
+/**
+ * 一键填回当前名称（🆕 2026-11-03 语义变化）。
+ * ⚠️ 旧版这里是"清空输入框 = 恢复官方名"，但**预设名称不可以为空**（用户要求）⇒
+ *    改名入口不再提供"清空"，而是"填回这条现在显示的名字"（改错了可以退回）。
+ */
+const resetRenameText = () => {
+  renameText.value = renameEntry.value ? resolveEntryName(renameEntry.value) : ''
+  showSnackbar('已填回这条预设现在的名字', 'info')
 }
 /** 列表/标题统一用"自定义名优先"的显示名（纯函数，唯一入口） */
 const nameOf = (e: { lineId: string; lineName: string; customName?: string }) => resolveEntryName(e)
-/** 线路下拉的选项标题：库里有记录就用"你起的名字"，否则用厂商线路名（缺名时明确写"未命名"） */
+/**
+ * 线路下拉的选项标题。
+ * 🆕 2026-11-03（1.3.6）：这个地点有 **N 条预设**时标题带上条数 ——
+ * 否则用户会以为"我存了三条，下拉里怎么还是一条"（下拉选的是**地点**，预设看旁边的「预设」下拉）。
+ */
 const lineOptions = computed(() =>
   lines.value.map((l) => {
-    const e = lib.get(String(l.pointId))
+    const list = libEntries.value.filter((e) => String(e.lineId) === String(l.pointId))
     const vendor = String(l.pointName ?? '').trim()
+    const base = list.length === 1 ? nameOf(list[0]!) : vendor || `未命名线路（${l.pointId}）`
     return {
-      title: e ? nameOf(e) : vendor || `未命名线路（${l.pointId}）`,
+      title: list.length > 1 ? `${base}（${list.length} 条预设）` : base,
       value: String(l.pointId),
     }
   }),
@@ -1012,6 +1114,45 @@ const lineOptions = computed(() =>
               hide-details
               class="mb-3"
             />
+            <!--
+              🆕 2026-11-03（1.3.6）：「预设」下拉 + 名称输入（用户要求：一个点位可以创建多条预设，
+              保存时可以输入名字便于区分，名称不可相同）。
+              · 选项 = 这个地点的全部预设 + 一项「＋ 新建一条预设」；
+              · 选中一条 ⇒ 保存就是更新它；选「新建」⇒ 保存是新建（同一个地点下多出一条）；
+              · 名称留空 ⇒ 自动命名（优先用线路名，撞名了叫「东操场 · 预设 2」），绝不会存成空名字。
+            -->
+            <div class="d-flex align-center ga-2 mb-2">
+              <v-select
+                v-model="presetId"
+                :items="presetOptions"
+                label="这个地点的预设"
+                density="compact"
+                hide-details
+                class="flex-grow-1"
+                @update:model-value="onPresetPick"
+              />
+              <v-btn size="small" variant="tonal" class="mt-1" @click="startNewPreset">新建</v-btn>
+            </div>
+            <v-text-field
+              v-model="presetName"
+              label="预设名称（留空 = 自动命名）"
+              density="compact"
+              :counter="24"
+              maxlength="24"
+              hide-details="auto"
+              class="mb-2"
+            />
+            <div class="text-caption text-medium-emphasis mb-3">
+              一个地点可以存<b>多条预设</b>（例如东操场的「内道 / 外道 / 起跑点在东侧」）：
+              描好内外圈 → 起个名字 → 点「保存（本机）」。<b>名称全库不可重复</b>；
+              跑步页会在选完线路后再让你选这个地点用哪条预设。
+              <template v-if="editingEntry">
+                <br />正在编辑：<b>{{ resolveEntryName(editingEntry) }}</b>
+                （预设编号 {{ editingEntry.id }}）·
+                创建 {{ editingEntry.createdAt ? formatLocalDateTime(editingEntry.createdAt) : '未记录' }}
+              </template>
+              <template v-else><br />当前是<b>新建模式</b>：保存后会在这个地点下多出一条预设。</template>
+            </div>
             <!-- 🆕 2026-09-22（issue #12）：任务未下发线路时，把"这是本机跑道"说在选项正下方 -->
             <div v-if="localFreeLine" class="text-caption text-medium-emphasis mb-3">
               本任务未下发线路 —— 上面这条「<b>本机跑道</b>」是本机的条目：在它上面描好内外圈并保存，
@@ -1206,48 +1347,49 @@ const lineOptions = computed(() =>
         <v-card class="mt-3">
           <v-card-title class="text-subtitle-1">
             本地路线库
-            <span class="text-caption text-medium-emphasis">（{{ libEntries.length }} 条）</span>
+            <span class="text-caption text-medium-emphasis">（{{ libEntries.length }} 条预设）</span>
           </v-card-title>
           <v-card-text>
+            <!-- 🆕 2026-11-03（1.3.6）：旧数据里可能本来就有同名预设（那时没有唯一性约束）
+                 ⇒ **只提示、绝不自动改名**；新保存/改名时才会被拒绝（名称全库唯一）。 -->
+            <v-alert v-if="dupNames.length" type="warning" variant="tonal" density="compact" class="mb-2">
+              有 {{ dupNames.length }} 组预设<b>重名</b>（{{ dupNames.map((g) => g.name).join('、') }}）——
+              这是旧数据留下的（那时还没有"名称不可重复"这条规则）。我们<b>不会替你自动改名</b>，
+              请点「重命名」自己区分开；新保存或改名时重名会被拒绝。
+            </v-alert>
             <div v-if="!libEntries.length" class="text-caption text-medium-emphasis">
               还没有配置好的路线。描好内外圈后点「保存（本机）」，这里就会按「创建 / 最近保存的时间与版本 + 编辑次数」列出来。
             </div>
             <v-list v-else density="compact" class="pa-0">
-              <template v-for="e in libEntries" :key="e.lineId">
+              <template v-for="e in libEntries" :key="e.id">
                 <v-list-item class="px-0">
                   <v-list-item-title class="text-body-2 d-flex flex-wrap align-center ga-1">
                     {{ nameOf(e) }}
-                    <v-chip v-if="String(e.lineId) === String(lineId)" size="x-small" color="primary" variant="tonal">正在编辑</v-chip>
-                    <v-chip v-if="e.customName" size="x-small" color="info" variant="tonal">已改名</v-chip>
+                    <v-chip v-if="String(e.id) === String(presetId)" size="x-small" color="primary" variant="tonal">正在编辑</v-chip>
+                    <!-- 🆕 2026-11-03：这条属于哪个地点（一个地点多条预设后，这是"它在哪"的关键信息） -->
+                    <v-chip size="x-small" color="secondary" variant="tonal">地点：{{ e.lineName || e.lineId }}</v-chip>
                     <!-- 🆕 起跑点/编辑次数：不展开也能一眼看到（1.1.12 需求②③）
                          ⚠️ 编辑次数**只在真的记录过时才显示**：旧条目没有这个字段，
                             显示"编辑 1 次"是替用户猜的（详情里如实写"未记录（旧数据）"）。 -->
                     <v-chip v-if="e.start" size="x-small" color="error" variant="tonal">起跑点已设</v-chip>
                     <v-chip v-if="e.editCount" size="x-small" color="secondary" variant="tonal">编辑 {{ e.editCount }} 次</v-chip>
-                    <!--
-                      ⚠️ 2026-09-22：这里原先还有一个「【测试】圈型 / 直线型（折返）」的小标签 —— 那也属于
-                      "非官方路径"那套 UI（只服务于带 `freeShape` 的记录），已随它一起搬到
-                      `components/FreePathView.vue`（独立子页）。
-                      本页对这类记录仍会**如实显示**形状信息（列表副标题与详情行都来自纯函数
-                      `entrySummaryText` / `entryDetailRows`，一个字没改）—— 只是不再由本页额外加标记。
-                    -->
                   </v-list-item-title>
                   <v-list-item-subtitle class="text-caption">{{ entrySummaryText(e) }}</v-list-item-subtitle>
                   <template #append>
-                    <v-btn size="x-small" variant="text" @click="toggleDetail(e.lineId)">
-                      {{ isDetailOpen(e.lineId) ? '收起详情' : '详情' }}
+                    <v-btn size="x-small" variant="text" @click="toggleDetail(e.id)">
+                      {{ isDetailOpen(e.id) ? '收起详情' : '详情' }}
                     </v-btn>
-                    <v-btn size="x-small" variant="text" @click="loadEntry(e.lineId)">载入</v-btn>
-                    <v-btn size="x-small" variant="text" color="primary" @click="openRename(e.lineId)">重命名</v-btn>
-                    <v-btn size="x-small" variant="text" color="error" @click="removeEntry(e.lineId)">删除</v-btn>
+                    <v-btn size="x-small" variant="text" @click="loadEntry(e.id)">载入</v-btn>
+                    <v-btn size="x-small" variant="text" color="primary" @click="openRename(e.id)">重命名</v-btn>
+                    <v-btn size="x-small" variant="text" color="error" @click="removeEntry(e.id)">删除</v-btn>
                   </template>
                 </v-list-item>
                 <!-- 详情（1.1.12 需求③）：时间 / 版本 / 次数 / 几何 / 起跑点 + 最近几次编辑留痕 -->
                 <v-expand-transition>
-                  <div v-if="isDetailOpen(e.lineId)" class="lib-detail mb-2 pa-2">
+                  <div v-if="isDetailOpen(e.id)" class="lib-detail mb-2 pa-2">
                     <v-table density="compact" class="lib-detail-table mb-2">
                       <tbody>
-                        <tr v-for="row in entryDetailRows(e)" :key="`${e.lineId}-${row.label}`">
+                        <tr v-for="row in entryDetailRows(e)" :key="`${e.id}-${row.label}`">
                           <td class="text-medium-emphasis lib-detail-label">{{ row.label }}</td>
                           <td>{{ row.value }}</td>
                         </tr>
@@ -1257,7 +1399,7 @@ const lineOptions = computed(() =>
                       编辑历史（最近 {{ historyMax }} 次，最新在上）
                     </div>
                     <ul v-if="e.history?.length" class="text-caption pl-4 mt-1 mb-0">
-                      <li v-for="(log, i) in e.history" :key="`${e.lineId}-log-${i}`">{{ historyLogText(log) }}</li>
+                      <li v-for="(log, i) in e.history" :key="`${e.id}-log-${i}`">{{ historyLogText(log) }}</li>
                     </ul>
                     <div v-else class="text-caption pl-1 mt-1">还没有编辑历史（这一条是用旧版本存的）。</div>
                   </div>
@@ -1267,17 +1409,16 @@ const lineOptions = computed(() =>
           </v-card-text>
         </v-card>
 
-        <!-- 重命名弹窗（1.1.9 需求②）：只改本机显示名，不动厂商线路名 -->
+        <!-- 重命名弹窗（1.1.9 需求②）：只改预设名，不动厂商线路名、不动几何、不动创建日期 -->
         <v-dialog v-model="renameOpen" max-width="460">
           <v-card>
-            <v-card-title class="text-subtitle-1">给这条路线改个名字</v-card-title>
+            <v-card-title class="text-subtitle-1">给这条预设改个名字</v-card-title>
             <v-card-text>
               <v-text-field
                 v-model="renameText"
-                label="新名字（留空＝恢复官方名）"
+                label="新名字"
                 density="compact"
                 autofocus
-                clearable
                 :counter="24"
                 maxlength="24"
                 hide-details="auto"
@@ -1285,13 +1426,14 @@ const lineOptions = computed(() =>
                 @keyup.enter="confirmRename"
               />
               <div class="text-caption text-medium-emphasis">
-                当前输入 {{ renameLen }} / 24 字。改的是<b>本机显示名</b>，只影响这台电脑上的列表；
+                当前输入 {{ renameLen }} / 24 字。<b>名称全库不可重复</b>（撞了会被拒绝，并告诉你被谁占了）；
+                留空会自动命名。改的是<b>这条预设的名字</b>，只影响这台电脑上的列表；
                 厂商线路名与提交用的线路 id 都不变。
-                <template v-if="renameEntry">官方名：<b>{{ renameEntry.lineName }}</b></template>
+                <template v-if="renameEntry">地点：<b>{{ renameEntry.lineName || renameEntry.lineId }}</b></template>
               </div>
             </v-card-text>
             <v-card-actions>
-              <v-btn variant="text" size="small" @click="clearCustomName">清空输入</v-btn>
+              <v-btn variant="text" size="small" @click="resetRenameText">填回当前名字</v-btn>
               <v-spacer />
               <v-btn variant="text" size="small" @click="renameOpen = false">取消</v-btn>
               <v-btn color="primary" size="small" variant="flat" @click="confirmRename">保存名字</v-btn>

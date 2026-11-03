@@ -62,7 +62,7 @@ import { buildFreeShapeSave, startClearedNote } from '~/utils/mp/freePathSave'
 // 「改回内外双圈」要判"记录上现存的这两圈到底合不合法" ⇒ 复用跑道编辑页同一套纯函数判据
 import { validateRings } from '~/utils/mp/trackEditor'
 // 🆕 2026-09-29（用户口径："老版本路径文件提示需要更新"）：老数据的识别与那句提示都在纯模块里（有单测）
-import { LOCAL_FREE_LINE_ID, LOCAL_FREE_LINE_NAME, legacyFreePathUpdate, localFreeTrackLine } from '~/utils/mp/trackLibrary'
+import { LOCAL_FREE_LINE_ID, LOCAL_FREE_LINE_NAME, legacyFreePathUpdate, localFreeTrackLine, resolveEntryName } from '~/utils/mp/trackLibrary'
 // 🆕 2026-09-22（真实用户实测）：本页对"有官方线路的任务"不生效 ⇒ 给一条直达「跑道编辑」的出路
 // 🆕 2026-09-23（pre3）：跑步页的「一键去画一条本机路径」会带 `?draw=curve` 进来 ⇒ 自动进"圈型"绘制模式
 import { drawModeFromQuery, trackEditorLink } from '~/utils/mp/routeGroups'
@@ -105,8 +105,47 @@ const showSnackbar = useNotice()
 const lib = useTrackLibrary()
 /** 模板里要用的 ref 需要拿出来（嵌套在对象里的 ref 模板不会自动解包） */
 const libEntries = lib.entries
-/** 本任务对应的那条本机记录（键名固定 `local:free`；还没有就是 undefined） */
-const entry = computed(() => lib.get(LOCAL_FREE_LINE_ID))
+/**
+ * 🆕 2026-11-03（1.3.6）：**这个本机键下可以有多条预设**（与「跑道编辑」同一套模型）。
+ *   · `localPresets` = `local:free` 的全部预设（最新保存在前）；
+ *   · `presetId` 非空 ⇒ 正在编辑那一条；空 ⇒ **新建**（保存后这个键下多出一条）；
+ *   · `presetName` 留空 ⇒ 自动命名（优先用「本机跑道」那个名字，撞名了叫「… · 预设 2」）。
+ */
+const localPresets = computed(() => lib.presetsOf(LOCAL_FREE_LINE_ID))
+const presetId = ref<string>('')
+const presetName = ref<string>('')
+/** 本页展示/对照用的那条：选中的那条，没选过就是最新一条（一条都没有 ⇒ undefined） */
+const entry = computed(() => {
+  const picked = presetId.value ? lib.get(presetId.value) : undefined
+  if (picked && String(picked.lineId) === LOCAL_FREE_LINE_ID) return picked
+  return localPresets.value[0]
+})
+/**
+ * 🆕 2026-11-03（1.3.6）：本页的「预设」下拉（与「跑道编辑」同一套模型）。
+ * 选项 = `local:free` 下的全部预设 + 一项「＋ 新建一条路径预设」。
+ */
+const presetOptions = computed(() => [
+  ...localPresets.value.map((e) => ({ title: `${resolveEntryName(e)} —— ${freePathShapeText(e.freeShape) ?? '内外双圈几何'}`, value: String(e.id) })),
+  { title: '＋ 新建一条路径预设（保存后出现在上面）', value: '' },
+])
+const startNewPreset = () => {
+  presetId.value = ''
+  presetName.value = ''
+  showSnackbar('已切到「新建预设」：画好路径 → 填名字（可留空自动命名）→ 点「保存到本机路线库」', 'info')
+}
+/** 下拉变化：选中一条 ⇒ 载入它的形状；选到「＋ 新建」⇒ 保留手上的点、只清掉"正在编辑"标记 */
+const onPresetPick = (v: unknown) => {
+  const id = String(v ?? '').trim()
+  if (!id) {
+    startNewPreset()
+    return
+  }
+  const target = lib.get(id)
+  if (!target) return
+  presetId.value = String(target.id)
+  presetName.value = resolveEntryName(target)
+  loadFreeDraft(target.freeShape)
+}
 /** 这条记录上已保存的形状（纯函数读数；界面只渲染它，不自己拼字符串） */
 const savedShapeText = computed(() => freePathShapeText(entry.value?.freeShape))
 /**
@@ -223,7 +262,7 @@ onMounted(() => {
    * ⚠️ 只在挂载时读一次：保存后记录会变，若跟着 watch 重灌草稿会把用户
    *    正在填的趟数/正在画的草稿冲掉。
    */
-  loadFreeDraft(lib.get(LOCAL_FREE_LINE_ID)?.freeShape)
+  loadFreeDraft(entry.value?.freeShape)
   /**
    * 🆕 2026-09-23（pre3，用户要求"一键跳转"）：从跑步页的「一键去画一条本机路径」进来时带 `?draw=curve`
    * ⇒ **自动进入"圈型"绘制模式**（用户点一下就能开始画，不用自己找形状按钮）。
@@ -625,6 +664,11 @@ const saveFreeShape = () => {
     shape,
     lineId: LOCAL_FREE_LINE_ID,
     lineName: String(localFreeLine.value?.lineName ?? entry.value?.lineName ?? LOCAL_FREE_LINE_NAME),
+    /**
+     * 🆕 2026-11-03（1.3.6）：预设名称（用户填的；留空由组合层自动命名）。
+     * ⚠️ 名称的**判重与兜底全在组合层**（`findNameConflict` / `autoPresetName`），本页不自己判。
+     */
+    presetName: presetName.value,
   })
   if (!payload) {
     showSnackbar('还存不了这条路径：至少 2 个不重合的点（圈型 3 点以上才是真正的圈；折线型多点几个就多几个拐弯）', 'warning')
@@ -632,13 +676,22 @@ const saveFreeShape = () => {
   }
   /** 这次保存会不会**真的清掉**一个原先存在的起跑点（提示里如实说，见 `startClearedNote`） */
   const hadStartAtSave = hasStart.value
-  const saved = lib.upsert(payload)
-  if (!saved) {
-    showSnackbar('保存被拒：这条记录既没有合法的内外圈、也没有可用的本机路径形状', 'error')
+  /**
+   * 🆕 2026-11-03（1.3.6）：`presetId` 非空 ⇒ **更新那一条**；空 ⇒ **新建一条预设**
+   * （同一个 `local:free` 键下可以有多条 —— 与「跑道编辑」同一个模型）。
+   */
+  const updatingId = presetId.value.trim()
+  const saved = lib.upsert(updatingId ? { ...payload, id: updatingId } : payload)
+  if (!saved.ok) {
+    // 两种拒绝分开说（几何不合法 / 名称撞车），措辞由组合层给
+    showSnackbar(saved.message, 'error')
     return
   }
   const { entry: savedEntry, persisted } = saved
-  const detail = `本机跑道 · 第 ${savedEntry.editCount ?? 1} 次保存 · ${freePathShapeText(savedEntry.freeShape) ?? '形状未存上'}`
+  /** 保存后切到"正在编辑这一条"，否则下一次保存又会新建一条（越存越多） */
+  presetId.value = String(savedEntry.id)
+  presetName.value = resolveEntryName(savedEntry)
+  const detail = `预设「${resolveEntryName(savedEntry)}」· 第 ${savedEntry.editCount ?? 1} 次保存 · ${freePathShapeText(savedEntry.freeShape) ?? '形状未存上'}`
   const clearedStart = startClearedNote(hadStartAtSave)
   showSnackbar(
     `研途健行路径已存入本机路线库（${detail}）${clearedStart}${persisted ? '' : '（但本机存储写入失败，刷新后可能丢失）'}`,
@@ -674,21 +727,27 @@ const clearFreeShapeOnEntry = () => {
     return
   }
   const saved = lib.upsert({
+    // 🆕 2026-11-03（1.3.6）：改的必须是**当前这条预设**（`presetId` 空 ⇒ 该键下最新那条）
+    ...(presetId.value.trim() ? { id: presetId.value.trim() } : {}),
     lineId: LOCAL_FREE_LINE_ID,
     lineName: String(localFreeLine.value?.lineName ?? e.lineName ?? LOCAL_FREE_LINE_NAME),
     outer: rings.outer,
     inner: rings.inner,
+    // ⚠️ 名称沿用这条预设现在的名字（这一步只删形状，不改名）
+    presetName: resolveEntryName(e),
     freeShape: null,
   })
-  if (!saved) {
-    showSnackbar('删除被拒：内外圈不合法（各需至少 3 点）', 'error')
+  if (!saved.ok) {
+    showSnackbar(saved.message, 'error')
     return
   }
   freeMode.value = 'off'
   draftFreePoints.value = []
   draftPolyPoints.value = []
+  presetId.value = String(saved.entry.id)
+  presetName.value = resolveEntryName(saved.entry)
   showSnackbar(
-    `已删除「研途健行路径」形状，这条记录改回内外双圈几何${saved.persisted ? '' : '（但本机存储写入失败，刷新后可能丢失）'}`,
+    `已删除「研途健行路径」形状，这条预设改回内外双圈几何${saved.persisted ? '' : '（但本机存储写入失败，刷新后可能丢失）'}`,
     saved.persisted ? undefined : 'warning',
   )
 }
@@ -948,8 +1007,37 @@ const pathOf = (pts: P[], close = false) => {
             路径编辑器
           </v-card-title>
           <v-card-text>
+            <!--
+              🆕 2026-11-03（1.3.6）：**预设下拉 + 名称**（用户要求"一个点位可以创建多个预设"、
+              "保存预设的时候可以输入相关名字进行存储，便于用户区分"）。
+              本机的 `local:free` 这个键下同样可以存多条路径（例如"绕操场一圈 / 绕图书馆折返"）。
+              · 选中一条 ⇒ 保存就是**更新它**；点「新建」⇒ 保存是**新建一条**；
+              · 名称留空 ⇒ 自动命名；**全库不可重名**（撞了会被拒绝，并告诉你被谁占了）。
+            -->
+            <div class="d-flex align-center ga-2 mb-2">
+              <v-select
+                v-model="presetId"
+                :items="presetOptions"
+                label="这条路径的预设"
+                density="compact"
+                hide-details
+                class="flex-grow-1"
+                @update:model-value="onPresetPick"
+              />
+              <v-btn size="small" variant="tonal" class="mt-1" @click="startNewPreset">新建</v-btn>
+            </div>
+            <v-text-field
+              v-model="presetName"
+              label="预设名称（留空 = 自动命名）"
+              density="compact"
+              :counter="24"
+              maxlength="24"
+              hide-details="auto"
+              class="mb-2"
+            />
             <div v-if="savedShapeText" class="text-caption text-medium-emphasis mb-3">
               本机记录（<code>local:free</code>）上已保存的形状：<b>{{ savedShapeText }}</b>
+              <template v-if="entry"><br />正在编辑：<b>{{ resolveEntryName(entry) }}</b></template>
             </div>
 
             <!--

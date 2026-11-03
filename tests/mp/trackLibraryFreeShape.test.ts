@@ -139,6 +139,7 @@ test('saveSummaryText：存的是非官方形状时，摘要说的是形状（�
 
 test('entrySummaryText / entryDetailRows：有形状时标出形状，且说明"跑图以它为准"', () => {
   const e: TrackRouteEntry = {
+    id: 'local:free',
     lineId: 'local:free',
     lineName: '本机跑道',
     outer: [],
@@ -155,6 +156,7 @@ test('entrySummaryText / entryDetailRows：有形状时标出形状，且说明"
 
 test('形状与内外圈可以**同时**存在：跑图取形状的展开结果，且展开长度 = 计划长度', () => {
   const e: TrackRouteEntry = {
+    id: 'local:free',
     lineId: 'local:free',
     lineName: '本机跑道',
     outer: ring(4),
@@ -178,6 +180,7 @@ test('形状与内外圈可以**同时**存在：跑图取形状的展开结果�
  */
 test('localEntryGeometryText：带非官方路径形状 ⇒ 复用 freePathShapeText 的口径（圈型/折线型）', () => {
   const withCurve: TrackRouteEntry = {
+    id: 'local:free',
     lineId: 'local:free',
     lineName: '本机跑道（本任务未下发线路）',
     outer: [],
@@ -208,6 +211,7 @@ test('localEntryGeometryText：带非官方路径形状 ⇒ 复用 freePathShape
 
 test('localEntryGeometryText：老条目（没有形状）⇒ 如实说"内外双圈"，并给出与跑步引擎同源的一圈长度', () => {
   const e: TrackRouteEntry = {
+    id: 'sunrunLine-1',
     lineId: 'sunrunLine-1',
     lineName: '西操场',
     outer: ring(4),
@@ -226,6 +230,7 @@ test('localEntryGeometryText：老条目（没有形状）⇒ 如实说"内外�
 
 test('localEntryGeometryText：内外圈点数不够 ⇒ **如实说不可用**（绝不假装有几何）', () => {
   const e: TrackRouteEntry = {
+    id: 'sunrunLine-1',
     lineId: 'sunrunLine-1',
     lineName: '西操场',
     outer: ring(2),

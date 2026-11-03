@@ -189,6 +189,7 @@ test('normalizeLibrary：新格式原样、旧格式（{lineId:{outer,inner}}）
 
 test('entrySummaryText：列表摘要必须带点位数、所选道次、创建日期与版本（用户要求）', () => {
   const text = entrySummaryText({
+    id: 'L1',
     lineId: 'L1',
     lineName: '西操场',
     outer: circle(100, 12),
@@ -204,7 +205,7 @@ test('entrySummaryText：列表摘要必须带点位数、所选道次、创建�
   assert.match(text, /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/, text)
   assert.ok(text.includes('v1.1.7'), text)
 
-  const bare = entrySummaryText({ lineId: 'x', lineName: 'x', outer: [], inner: [], createdAt: '', appVersion: '' })
+  const bare = entrySummaryText({ id: 'x', lineId: 'x', lineName: 'x', outer: [], inner: [], createdAt: '', appVersion: '' })
   assert.ok(bare.includes('创建日期未知') && bare.includes('版本未知') && bare.includes('道次未记录'), bare)
 })
 
@@ -258,6 +259,7 @@ test('normalizeLibrary：customName 被归一化保存；空白自定义名归�
 
 test('entrySummaryText：改过名时摘要要标出**官方原名**（避免"改完就不知道对应哪条线路"）', () => {
   const entry = {
+    id: 'L1',
     lineId: 'L1',
     lineName: '西操场',
     customName: '我的外道',

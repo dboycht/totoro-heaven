@@ -53,14 +53,31 @@ export interface TrackStart {
 }
 
 export interface TrackRouteEntry {
-  /** 厂商线路 id（主键；**提交时仍用它** —— 我们只换"生成用的几何"，不动报文口径） */
+  /**
+   * 🆕 **预设主键**（2026-11-03，1.3.6：「一个地点可以有多条预设」）。
+   *
+   * ## 为什么要加它（用户原话）
+   * > "一个地点的预设只能创建一个，例如「东操场」点位只能创建一个预设；
+   * >  相关预设应该一个点位可以创建多个，然后在跑步选择路径的时候可以进行选择"
+   *
+   * 在这之前 `lineId` 既是"地点"又是主键 ⇒ **一个地点只能存一条**（`upsert` 按 `lineId` 覆盖）。
+   * 现在职责拆开：`id` = 这条**预设**的身份，`lineId` = 它属于哪个**地点**（厂商线路 / 本机键）。
+   *
+   * ## 迁移口径（**旧数据逐字不变**）
+   * 旧数据没有这个字段 ⇒ `normalizeLibrary` 迁移时取 `id = lineId`
+   * （于是旧的本机路径选择 `mp_free_route_choice_v1` 里存的值照旧能解析到那一条 —— 零迁移风险）。
+   */
+  id: string
+  /** 厂商线路 id（**地点键**：一个地点可有多条预设；**提交时仍用它** —— 我们只换"生成用的几何"，不动报文口径） */
   lineId: string
   /** 线路名快照（任务换版后仍看得懂这条记录是什么；**厂商线路名**，我们不覆写它） */
   lineName: string
   /**
-   * **用户自己起的名字**（2026-09-18 新增，1.1.9 需求②：本地路线库支持重命名）。
-   * 与 `lineName`（厂商快照）分开存 —— 重命名只动这条本机记录，**不动厂商线路名**；
-   * 清空（改成空串/空白）＝ 恢复显示厂商原名快照。
+   * **这条预设的名称**（2026-09-18 新增时叫"用户自己起的名字"，1.1.9 需求②：本地路线库支持重命名；
+   * 🆕 2026-11-03 起语义扩展为**预设名称** —— 同一个地点下靠它区分）。
+   * 与 `lineName`（厂商快照）分开存 —— 改名只动这条本机记录，**不动厂商线路名**；
+   * 清空（改成空串/空白）＝ 恢复显示厂商原名快照（**旧数据就是这个状态**，逐字不变）。
+   * ⚠️ 新存的预设**一律有名字**（留空由 `autoPresetName()` 自动生成），且**全库不可重名**。
    */
   customName?: string
   outer: LatLng[]
@@ -176,6 +193,203 @@ export function resolveEntryName(e: Pick<TrackRouteEntry, 'lineId' | 'lineName' 
   return sanitizeLineName(e.customName) || String(e.lineName ?? '').trim() || String(e.lineId ?? '')
 }
 
+// ================================================================ 🆕 2026-11-03（1.3.6）：**一个地点多条预设**
+//
+// 用户原话："一个地点的预设只能创建一个，例如「东操场」点位只能创建一个预设；相关预设应该
+//   一个点位可以创建多个，然后在跑步选择路径的时候可以进行选择；用户选择相关路径，保存预设的时候
+//   可以输入相关名字进行存储，便于用户区分，**预设名称不可以相同**，且预设存储相关创建日期等等一系列信息"。
+//
+// 本节的四个纯函数就是那三句话的**唯一判据来源**（界面/组合层/跑步引擎都调它们，不许各写一套）：
+//   · `newTrackPresetId()`    —— 预设主键怎么生成；
+//   · `nameKey()` / `findNameConflict()` —— "名称不可以相同"怎么判（**全库**比较，不看地点）；
+//   · `autoPresetName()`      —— 用户没填名字时怎么自动起一个不重名的；
+//   · `presetsOfLine()` / `resolvePresetForLine()` —— "这个地点有哪些预设、这次跑哪一条"。
+
+/** 预设 id 的**唯一生成入口**（组合层的 `upsert` 与单测共用；不许在别处自己拼） */
+export function newTrackPresetId(seed?: { now?: number; rand?: () => number }): string {
+  const now = Math.floor(Number(seed?.now ?? Date.now()))
+  const r = Math.floor((seed?.rand ? seed.rand() : Math.random()) * 0x100000000)
+  return `p-${now.toString(36)}-${(r >>> 0).toString(36).padStart(7, '0')}`
+}
+
+/**
+ * 名称的**比较键**（判重专用）：过一遍 `sanitizeLineName`（折空白/去控制字符/限长）再统一小写。
+ * 判据：`nameKey('  西 操场 ') === nameKey('西 操场')`（连续空白折成**一个**空格，不删空格）、
+ *      `nameKey('Loop') === nameKey('loop')`、`nameKey('东\u200b操场') === nameKey('东操场')`。
+ * ⚠️ 于是「东 操场」与「东操场」**算两个不同的名字**（沿用既有的空白归一化口径，不自造新规则）。
+ */
+export function nameKey(raw: unknown): string {
+  return sanitizeLineName(raw).toLowerCase()
+}
+
+/**
+ * **"预设名称不可以相同"的唯一判据**：在整库范围里找另一条同名（比的是**显示名**，即
+ * `resolveEntryName` 的结果 —— 旧数据没有自定义名时显示的是厂商线路名，它同样占住这个名字）。
+ *
+ * @param exceptId 排除自己（保存/改名时传自己的 id；此时"名字没变"不算冲突）
+ * @returns 冲突的那一条；没有冲突 ⇒ `undefined`
+ */
+export function findNameConflict(
+  entries: TrackRouteEntry[] | null | undefined,
+  name: unknown,
+  exceptId?: string | null,
+): TrackRouteEntry | undefined {
+  const key = nameKey(name)
+  if (!key) return undefined
+  const skip = String(exceptId ?? '').trim()
+  for (const e of Array.isArray(entries) ? entries : []) {
+    if (!e || typeof e !== 'object') continue
+    if (skip && String(entryIdOf(e)) === skip) continue
+    if (nameKey(resolveEntryName(e)) === key) return e
+  }
+  return undefined
+}
+
+/** 一条本机条目的**预设 id**（读旧数据时退回 `lineId` —— 迁移前的条目 id 就是 lineId） */
+export function entryIdOf(e: { id?: unknown; lineId?: unknown } | null | undefined): string {
+  const id = String(e?.id ?? '').trim()
+  if (id) return id
+  return String(e?.lineId ?? '').trim()
+}
+
+/**
+ * 用户没填名字时**自动起一个不重名的预设名**（唯一入口）。
+ * 形状：先试 `lineName`（多数情况就是「东操场」）→ 撞了就 `东操场 · 预设 2` → `… 3` → …
+ * ⚠️ 名称有 24 码点上限（`TRACK_NAME_MAX`）⇒ 先按后缀长度给基名留位，再截断，
+ *    否则长线路名会让后缀被截掉、候选名与基名相同 ⇒ 死循环（有上限计数兜底，绝不无限循环）。
+ */
+export function autoPresetName(
+  entries: TrackRouteEntry[] | null | undefined,
+  lineName: unknown,
+  lineId: unknown,
+  exceptId?: string | null,
+): string {
+  const base = sanitizeLineName(lineName) || String(lineId ?? '').trim() || '预设'
+  if (!findNameConflict(entries, base, exceptId)) return base
+  for (let i = 2; i < 1000; i++) {
+    const suffix = ` · 预设 ${i}`
+    const room = Math.max(1, TRACK_NAME_MAX - Array.from(suffix).length)
+    const head = Array.from(base).slice(0, room).join('')
+    const candidate = sanitizeLineName(head + suffix)
+    if (candidate && !findNameConflict(entries, candidate, exceptId)) return candidate
+  }
+  /** 兜底（理论上到不了）：用时间戳造一个一定不重名的 */
+  return sanitizeLineName(`${base} · ${Date.now().toString(36)}`)
+}
+
+/**
+ * 名称冲突时给用户看的"占用者"一句话：`名字（地点：X）`。
+ * ⚠️ 同名判定是**全库**的 ⇒ 冲突的那条可能在**别的地点**，只报名字用户会翻不到；
+ *    同一个地点内则不重复写一遍地点（噪音）。
+ */
+export function conflictOwnerText(e: TrackRouteEntry, selfLineId?: string | null): string {
+  const name = resolveEntryName(e)
+  const place = String(e.lineName ?? '').trim() || String(e.lineId ?? '')
+  if (!place || nameKey(place) === nameKey(name)) return name
+  if (String(e.lineId ?? '') === String(selfLineId ?? '')) return name
+  return `${name}（地点：${place}）`
+}
+
+/**
+ * 🆕 2026-11-03（1.3.6）：**保存预设的结果**（组合层 `upsert` 的返回值，界面按 `ok` 分支渲染）。
+ *
+ * 为什么不再用"`undefined` = 失败"：现在有**两种失败**（几何不合法 / 名称撞车），
+ * 而"名称撞车"必须把**是谁占了**告诉用户 —— 一个 `undefined` 说不清，界面就只能自己猜措辞。
+ */
+export type TrackSaveResult =
+  | { ok: true; entry: TrackRouteEntry; persisted: boolean }
+  | { ok: false; reason: 'invalid-geometry' | 'duplicate-name'; message: string }
+
+/** 改名结果（`not-found` = 这条预设已经不在库里了） */
+export type TrackRenameResult =
+  | { ok: true; entry: TrackRouteEntry; persisted: boolean }
+  | { ok: false; reason: 'not-found' | 'duplicate-name'; message: string }
+
+/** 某个**地点**（`lineId`）下的全部预设（保持库内顺序：最新保存的在前） */
+export function presetsOfLine(
+  entries: TrackRouteEntry[] | null | undefined,
+  lineId: unknown,
+): TrackRouteEntry[] {
+  const key = String(lineId ?? '').trim()
+  if (!key) return []
+  return (Array.isArray(entries) ? entries : []).filter((e) => e && String(e.lineId) === key)
+}
+
+/**
+ * 按**引用**找一条预设：先按预设 `id` 精确找，找不到再按 `lineId` 退回（＝该地点最新保存的那条）。
+ *
+ * ⚠️ 为什么要退回：`mp_free_route_choice_v1`（本机路径选择）里可能存着**旧版本写进去的 `lineId`**
+ *    （那时 id 就是 lineId），也可能是用户手输的 `local:free`。退回保证这些值**照旧解析得到**。
+ */
+export function findEntryByRef(
+  entries: TrackRouteEntry[] | null | undefined,
+  ref: unknown,
+): TrackRouteEntry | undefined {
+  const key = String(ref ?? '').trim()
+  if (!key) return undefined
+  const list = Array.isArray(entries) ? entries : []
+  return list.find((e) => e && entryIdOf(e) === key) ?? list.find((e) => e && String(e.lineId) === key)
+}
+
+/** 「这个地点这次跑哪一条预设」的判定结果 */
+export interface PresetResolution {
+  /** 选中的预设（这个地点一条都没有 ⇒ `undefined`） */
+  entry?: TrackRouteEntry
+  /** `true` = 用户上次选的那条已不可用（被删 / 几何坏了）⇒ 已落回本地点别的预设，界面要如实说明 */
+  preferredUnavailable: boolean
+}
+
+/**
+ * **"这个地点这次用哪条预设"的唯一判据**（跑步引擎与跑步页共用，不许出现第二套）。
+ *
+ * 顺序（即优先级）：
+ *   ① 用户选过（`preferredId`）且那条**确实属于这个地点**且几何可用 ⇒ 用它；
+ *   ② 否则本地点**第一条几何可用**的预设；
+ *   ③ 否则本地点第一条（几何不完整也如实返回 —— 由调用方按"没有几何"处理，这里不假装有）。
+ *
+ * ⚠️ 跨地点**绝不串味**：`preferredId` 指向的是别的地点/已被删的条目 ⇒ 一律落回本地点。
+ */
+export function resolvePresetForLine(
+  entries: TrackRouteEntry[] | null | undefined,
+  lineId: unknown,
+  preferredId?: string | null,
+): PresetResolution {
+  const list = presetsOfLine(entries, lineId)
+  if (!list.length) return { preferredUnavailable: false }
+  const want = String(preferredId ?? '').trim()
+  const picked = want ? list.find((e) => entryIdOf(e) === want) : undefined
+  if (picked && entryGeometryUsable(picked)) return { entry: picked, preferredUnavailable: false }
+  const preferredUnavailable = Boolean(want)
+  const usable = list.find((e) => entryGeometryUsable(e))
+  return { entry: usable ?? list[0], preferredUnavailable }
+}
+
+/** 一个地点下有几条预设（跑步页/编辑器显示"这个地点有几条"用） */
+export function presetCountOfLine(entries: TrackRouteEntry[] | null | undefined, lineId: unknown): number {
+  return presetsOfLine(entries, lineId).length
+}
+
+/**
+ * 🆕 **同名预设的检测**（只报不改）：返回"显示名相同"的分组。
+ * 用途：**旧数据**里可能本来就有两条同名（那时没有唯一性约束，我们**绝不自动改名**）
+ * ⇒ 界面上如实提示一句，让用户自己去重命名。
+ */
+export function duplicateNameGroups(
+  entries: TrackRouteEntry[] | null | undefined,
+): { name: string; ids: string[] }[] {
+  const byKey = new Map<string, { name: string; ids: string[] }>()
+  for (const e of Array.isArray(entries) ? entries : []) {
+    if (!e || typeof e !== 'object') continue
+    const name = resolveEntryName(e)
+    const key = nameKey(name)
+    if (!key) continue
+    const g = byKey.get(key)
+    if (g) g.ids.push(entryIdOf(e))
+    else byKey.set(key, { name, ids: [entryIdOf(e)] })
+  }
+  return [...byKey.values()].filter((g) => g.ids.length > 1)
+}
+
 /**
  * **任务未下发线路时，编辑器里那条「本机跑道」的固定键名**（issue #12，2026-09-22）。
  *
@@ -273,7 +487,9 @@ export function freeRouteGeometryChoice(
   const usable = list.filter((e) => entryGeometryUsable(e))
   const want = String(preferredLineId ?? '').trim()
   /** 用户选过就不算"没选"；选过但不可用 ⇒ 下面如实提示并落回 ③/④ */
-  const picked = want ? list.find((e) => String(e?.lineId) === want) : undefined
+  // 🆕 2026-11-03（1.3.6）：引用现在可能是**预设 id**（一个地点多条预设）⇒ 统一走 `findEntryByRef`
+  //   （先按 id 找、再按 lineId 退回 ⇒ 旧版本写进 localStorage 的 lineId 值照旧解析得到）
+  const picked = want ? findEntryByRef(list, want) : undefined
   if (picked && entryGeometryUsable(picked)) {
     return { entry: picked, fallback: false, reason: '用你在「本机路径」里选的那条本机几何', preferredUnavailable: false }
   }
@@ -326,8 +542,23 @@ export function freeRouteLocalEntry(
  */
 export const FREE_ROUTE_CHOICE_KEY = 'mp_free_route_choice_v1'
 
-/** 解析"按任务记住的本机路径选择"（纯函数；坏数据/异形一律安全降级成空表，绝不抛错） */
-export function parseFreeRouteChoices(raw: unknown): Record<string, string> {
+/**
+ * 🆕 2026-11-03（1.3.6）：**"这个地点用哪条预设"的选择**（`{ [lineId]: 预设 id }`）。
+ *
+ * 为什么要持久化：一个地点可以有多条预设了（用户要求），跑步页的两级下拉里
+ * "线路 → 预设"的第二级选择必须**记住**，否则每次进页都落回默认那条，
+ * 用户会以为"我选的没生效"（与 `mp_free_route_choice_v1` 当初的教训同一类）。
+ *
+ * ⚠️ 沿用**同一条实现**（`parseRefChoiceMap` / `withRefChoice`）—— 形状都是 `{[键]: 条目引用}`，
+ *    分成两套只会让两边慢慢漂移。它同样**只决定本机几何**，绝不进任何提交报文。
+ */
+export const PRESET_CHOICE_KEY = 'mp_preset_choice_v1'
+
+/**
+ * 「按某个键记住用了哪一条本机条目」的**通用解析**（纯函数；坏数据/异形一律安全降级成空表，绝不抛错）。
+ * 两个调用方：`FREE_ROUTE_CHOICE_KEY`（按 taskId 记本机路径）与 `PRESET_CHOICE_KEY`（按 lineId 记预设）。
+ */
+export function parseRefChoiceMap(raw: unknown): Record<string, string> {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
@@ -338,20 +569,25 @@ export function parseFreeRouteChoices(raw: unknown): Record<string, string> {
   return out
 }
 
-/** 写入/覆盖一条选择（返回**新对象**，不改原对象；`lineId` 为空串 = 清掉该任务的选择） */
-export function withFreeRouteChoice(
+/** 写入/覆盖一条选择（返回**新对象**，不改原对象；`ref` 为空串 = 清掉该键的选择） */
+export function withRefChoice(
   map: Record<string, string> | null | undefined,
-  taskId: string | null | undefined,
-  lineId: string | null | undefined,
+  key: string | null | undefined,
+  ref: string | null | undefined,
 ): Record<string, string> {
-  const out = { ...parseFreeRouteChoices(map) }
-  const key = String(taskId ?? '').trim()
-  if (!key) return out
-  const val = String(lineId ?? '').trim()
-  if (val) out[key] = val
-  else delete out[key]
+  const out = { ...parseRefChoiceMap(map) }
+  const k = String(key ?? '').trim()
+  if (!k) return out
+  const val = String(ref ?? '').trim()
+  if (val) out[k] = val
+  else delete out[k]
   return out
 }
+
+/** 旧名（本机路径选择用）：与 `parseRefChoiceMap` **同一实现** —— 保留旧名只为不动既有 import 与单测 */
+export const parseFreeRouteChoices = parseRefChoiceMap
+/** 旧名（本机路径选择用）：与 `withRefChoice` **同一实现** */
+export const withFreeRouteChoice = withRefChoice
 
 /** 坐标是否可解析成一对有限数（**不要求是数字类型**：契约层允许字符串坐标） */
 const isFinitePoint = (v: unknown): v is LatLng =>
@@ -426,6 +662,33 @@ export function prependHistory(prev: TrackEditLog[] | undefined, log: TrackEditL
  */
 export function normalizeLibrary(raw: unknown, fallbackVersion = '未知'): TrackRouteEntry[] {
   const out: TrackRouteEntry[] = []
+  /**
+   * 🆕 2026-11-03（1.3.6）：已用掉的**预设 id**（保证同一份数据里 id 唯一）。
+   * 迁移口径：旧数据没有 `id` ⇒ **取 `lineId`**（于是旧的本机路径选择里存的值照旧解析得到）；
+   * 万一 `lineId` 已被另一条占用（坏数据）⇒ 加 `#2/#3…` 后缀，**绝不丢掉条目**。
+   */
+  const usedIds = new Set<string>()
+  const assignId = (v: Record<string, unknown>, lineId: string): string => {
+    const raw = String(v.id ?? '').trim()
+    let id = ''
+    if (raw) {
+      if (!usedIds.has(raw)) id = raw
+      else {
+        // 存量数据里 id 撞车（坏数据/手工拷贝）：加后缀保住**两条都在**，且保留原 id 的痕迹
+        let n = 2
+        while (usedIds.has(`${raw}#${n}`)) n++
+        id = `${raw}#${n}`
+      }
+    }
+    if (!id) {
+      const base = lineId || 'preset'
+      id = base
+      let n = 2
+      while (usedIds.has(id)) id = `${base}#${n++}`
+    }
+    usedIds.add(id)
+    return id
+  }
   const push = (lineId: string, v: Record<string, unknown>) => {
     // ⚠️ 审计 S1：不是"元素形状对"就收 —— 必须内外圈都够 3 点，**或**带一个可用的非官方形状
     if (!lineId || !isValidTrackEntry(v)) return
@@ -439,6 +702,8 @@ export function normalizeLibrary(raw: unknown, fallbackVersion = '未知'): Trac
     /** 非官方形状：不认识的形状/坏数据一律 undefined（= 退回双圈模式），绝不抛 */
     const freeShape = parseFreePathShape(v.freeShape)
     out.push({
+      // 🆕 2026-11-03（1.3.6）：预设主键（旧数据 = lineId ⇒ 既有引用零迁移）
+      id: assignId(v, lineId),
       lineId,
       lineName: String(v.lineName ?? lineId),
       ...(customName ? { customName } : {}),
@@ -560,7 +825,11 @@ export function entrySummaryText(e: TrackRouteEntry): string {
   const lane = e.laneNo ? `第 ${e.laneNo} 道${e.laneCount ? `/${e.laneCount}` : ''}` : '道次未记录'
   // 改过名时**顺带标出厂商原名**：改的是本机显示名，提交用的仍是厂商 lineId，
   // 把原名留在摘要里，用户才不会"改完就不知道这条对应哪条官方线路"（2026-09-18）。
-  const renamed = sanitizeLineName(e.customName) ? `（官方名：${String(e.lineName ?? '').trim() || e.lineId}）` : ''
+  // 🆕 2026-11-03（1.3.6）：显示名与厂商名**只是大小写/空白不同**（自动命名常常就是取厂商名）时不再重复标一遍。
+  const renamed =
+    nameKey(resolveEntryName(e)) !== nameKey(String(e.lineName ?? '').trim())
+      ? `（官方名：${String(e.lineName ?? '').trim() || e.lineId}）`
+      : ''
   // 🆕 最近一次保存（时间 + 版本）：旧数据无此字段 ⇒ **一个字都不加**（不显示"未记录"噪音）
   const saved = e.updatedAt
     ? ` · 最近保存 ${formatLocalDateTime(e.updatedAt)}${e.updatedAppVersion ? `（${versionText(e.updatedAppVersion)}）` : ''}`
@@ -582,6 +851,9 @@ export function entrySummaryText(e: TrackRouteEntry): string {
  */
 export function entryDetailRows(e: TrackRouteEntry): { label: string; value: string }[] {
   return [
+    /** 🆕 2026-11-03（1.3.6）：预设名与编号 —— 一个地点多条预设后，列表里"哪一条"必须有据可查 */
+    { label: '预设名称', value: resolveEntryName(e) },
+    { label: '预设编号', value: entryIdOf(e) || '—' },
     { label: '线路（厂商标识）', value: String(e.lineId ?? '') || '—' },
     { label: '官方线路名', value: String(e.lineName ?? '').trim() || '（厂商未提供名称）' },
     { label: '创建时间', value: e.createdAt ? formatLocalDateTime(e.createdAt) : '未记录（旧数据）' },

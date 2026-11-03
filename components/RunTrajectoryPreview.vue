@@ -22,6 +22,12 @@ import { freePathPoints, type FreePathShape } from '~/utils/mp/pathShape'
 
 /** 本机路线库里的一条（只取画面要用的字段，避免组件依赖整个 TrackRouteEntry） */
 type TrackEntryLike = {
+  /**
+   * 🆕 2026-11-03（1.3.6）：**预设主键**。一个地点可以有多条预设之后，
+   * "画哪一条"必须按它来 —— 只按 `lineId` 找会永远画到该地点最新保存的那条，
+   * 而这次跑的可能是用户选的另一条（所见非所跑）。
+   */
+  id?: string
   lineId: string
   outer: { latitude: string | number; longitude: string | number }[]
   inner: { latitude: string | number; longitude: string | number }[]
@@ -49,6 +55,11 @@ const props = defineProps<{
   trackEntries?: TrackEntryLike[]
   /** 当前线路 id：决定用路线库里哪一条几何 */
   lineId?: string
+  /**
+   * 🆕 2026-11-03（1.3.6）：**这次实际要跑的预设 id**（一个地点可以有多条预设）。
+   * 传了就**优先按它**找条目（与跑步引擎 `resolvePresetForLine()` 选中那条一致）；不传 ⇒ 与旧版逐笔相同（按 `lineId`）。
+   */
+  presetId?: string
   /** 本次轨迹的"一圈多长"（米）：据此按圈拆段着色；0/缺省 = 整条一色 */
   lapLengthM?: number
   /** 逐圈漂移量（米，来自生成器 `lapDriftM`）：图例里显示"第 N 圈偏了多少" */
@@ -90,11 +101,21 @@ const distBetween = (a: P, b: P): number => {
 const LAP_COLORS = ['#38bdf8', '#a78bfa', '#22c55e', '#f59e0b', '#f472b6', '#facc15', '#2dd4bf', '#fb7185', '#93c5fd', '#c4b5fd', '#fca5a5', '#86efac']
 const OTHER_COLOR = '#94a3b8'
 
-/** 当前选中线路在本机路线库里的几何（没配置过 → undefined，那两层就不画） */
+/**
+ * 当前选中线路在本机路线库里的几何（没配置过 → undefined，那两层就不画）。
+ * 🆕 2026-11-03（1.3.6）：**先按预设 id 找**（一个地点多条预设 ⇒ 必须画"这次真要跑的那条"），
+ * 找不到再按 `lineId` 退回（旧调用方/旧数据逐笔不变）。
+ */
 const entry = computed(() => {
+  const list = props.trackEntries ?? []
+  const preset = String(props.presetId ?? '')
+  if (preset) {
+    const hit = list.find((e) => String(e.id ?? e.lineId) === preset)
+    if (hit) return hit
+  }
   const id = String(props.lineId ?? '')
   if (!id) return undefined
-  return (props.trackEntries ?? []).find((e) => String(e.lineId) === id)
+  return list.find((e) => String(e.lineId) === id)
 })
 
 /**
