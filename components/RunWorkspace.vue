@@ -223,6 +223,14 @@
       </v-card-text>
     </v-card>
 
+    <!--
+      ═══════════════════════════════════════════════════════════════════════════
+      🧱 第一块：开跑前（左右两栏，保持 8:4 的原比例）
+         · 左栏（上→下）＝ ① 跑步信息（RunMetricsCard）② 跑圈设置（含"是否开启换圈"二态开关）③ 跑步 GPS 抖动
+         · 右栏 ＝ 开跑设置（线路 / 预设 / 模拟倍速 / 配速策略 / 开始跑步 + 原有提示卡，逐字未改）
+      布局调整见 2026-11-03 用户要求："三大块上下块状结构；第一块分左右两侧，左侧三区域，右侧保持原版"。
+      ═══════════════════════════════════════════════════════════════════════════
+    -->
     <v-row>
       <v-col cols="12" md="8">
         <RunMetricsCard
@@ -234,6 +242,141 @@
           :fit-class="fitClass"
           :progress="progress"
         />
+
+        <!--
+          ② 跑圈设置：二态开关决定是否开启"每轮换圈"。
+          · 关（默认）＝ 旧口径：整圈恒定在预设道次 + 每圈小幅随机漂移（与 1.3.5 及更早逐点一致）；
+          · 开 ＝ 生成一张"圈数（时间）× 道次"的换圈图，可拖动控制点、可重新模拟。
+          ⚠️ 开关状态就是 `lanePlan !== null`（没有新造一份状态，避免两处口径分叉）。
+          ⚠️ 只有"内外双圈"的预设才有这一块；真实路径 / 折线路径没有"道"，显示"不适用"。
+        -->
+        <v-card v-if="lanePlanSupports" class="mt-3" variant="outlined">
+          <v-card-title class="text-subtitle-1 d-flex flex-wrap align-center ga-2">
+            <v-icon color="primary">mdi-layers-triple-outline</v-icon>
+            跑圈设置
+            <v-chip size="x-small" variant="tonal" color="primary">原胚跑道 → 模拟跑道 → 最终路径</v-chip>
+            <v-chip v-if="lanePlan" size="x-small" variant="tonal" color="success">
+              {{ lanePlanLaps }} 圈 · 起始第 {{ lanePlanBaseLane }} 道
+            </v-chip>
+            <v-spacer />
+            <!-- 二态滑块（用户要求的"开关"）：开 ⇒ 生成初始换圈图；关 ⇒ 回到旧口径 -->
+            <v-switch
+              v-model="lanePlanEnabled"
+              color="primary"
+              density="compact"
+              hide-details
+              inset
+              label="开启换圈"
+              :disabled="isBusy || !lanePlanLapM"
+              class="lane-switch flex-grow-0"
+            />
+          </v-card-title>
+          <v-card-text>
+            <v-alert v-if="!lanePlanLapM" type="info" variant="tonal" density="compact" class="mb-2">
+              这条预设还量不出一圈多长（几何不完整）⇒ 换圈设置暂时用不了。先去「跑道编辑」把内外圈描好并保存。
+            </v-alert>
+
+            <!-- 关：说明现在按什么跑（不制造"我开了但没生效"的错觉） -->
+            <template v-if="!lanePlanEnabled">
+              <div class="text-body-2 mb-1">
+                这次按 <b>{{ lanePlanLaps }}</b> 圈跑（{{ lanePlanTargetKm.toFixed(2) }} km ÷ 一圈约
+                <b>{{ Math.round(lanePlanLapM) }} m</b>，向上取整）· 一圈约
+                <b>{{ Math.round(lanePlanLapSeconds) }} 秒</b>（按当前配速）。
+              </div>
+              <div class="text-caption text-medium-emphasis">
+                换圈<b>未开启</b>：跑图沿用旧口径（<b>整圈恒定在第 {{ lanePlanBaseLane || '—' }} 道</b> + 每圈小幅随机漂移）。
+                打开右上角的开关会以预设道次为起点生成一张换圈图 —— 之后你可以拖动圆点改成自己想跑的走法。
+              </div>
+            </template>
+
+            <!-- 开：换圈图 + 校验 + 重新模拟 -->
+            <template v-else>
+              <div class="d-flex flex-wrap align-center ga-2 mb-2">
+                <v-btn size="small" variant="tonal" prepend-icon="mdi-shuffle-variant" :disabled="isBusy" @click="generateLanePlan">
+                  重新生成初始版本
+                </v-btn>
+                <span class="text-caption text-medium-emphasis">
+                  这次按 <b>{{ lanePlanLaps }}</b> 圈 · 一圈约 <b>{{ Math.round(lanePlanLapSeconds) }} 秒</b> · 起始第
+                  {{ lanePlanBaseLane }} 道
+                </span>
+              </div>
+              <LaneProfileChart
+                :points="lanePlanPoints"
+                :laps="lanePlanLaps"
+                :lane-count="lanePlanLaneCount"
+                :lap-seconds="lanePlanLapSeconds"
+                :disabled="isBusy"
+                @update:points="onLanePlanUpdate"
+              />
+              <div class="text-body-2 mt-1">这次每圈：<b>{{ lanePlanText || '（还没设）' }}</b></div>
+              <div class="text-caption text-medium-emphasis mt-1">
+                换道平滑：剖面里的斜变会摊到约 <b>18 m</b> 的距离上（不会瞬移）；开启换圈即<b>取代</b>旧的"每圈随机漂移"。
+              </div>
+              <v-alert v-if="!lanePlanCheck.ok" type="warning" variant="tonal" density="compact" class="mt-2">
+                <div v-for="(p, i) in lanePlanCheck.problems" :key="`lp-${i}`">{{ p }}</div>
+              </v-alert>
+              <div class="d-flex flex-wrap align-center ga-2 mt-2">
+                <v-btn
+                  size="small"
+                  color="primary"
+                  variant="flat"
+                  prepend-icon="mdi-replay"
+                  :disabled="isBusy || !lanePlanCheck.ok"
+                  @click="resimulateWithPlan"
+                >
+                  按这张图重新模拟（再次评测）
+                </v-btn>
+                <span class="text-caption text-medium-emphasis">
+                  重新生成轨迹并按当前配速重新计时；跑完看下面第二块的轨迹与第三块的判定。
+                </span>
+              </div>
+            </template>
+          </v-card-text>
+        </v-card>
+        <!-- 真实路径 / 折线路径：没有"道"可言 ⇒ 如实说明这一块为什么不出现 -->
+        <v-card v-else class="mt-3" variant="outlined">
+          <v-card-title class="text-subtitle-1 d-flex align-center ga-2">
+            <v-icon color="medium-emphasis">mdi-layers-off-outline</v-icon>
+            跑圈设置
+            <v-chip size="x-small" variant="tonal">不适用</v-chip>
+          </v-card-title>
+          <v-card-text class="text-caption text-medium-emphasis">
+            这次选的预设没有"内外双圈"（例如从「真实路径」导出的路径）⇒ 没有道次可换，<b>不参与换圈</b>。
+            轨迹直接按这条几何生成（对应流程里的"最终路径"）。
+          </v-card-text>
+        </v-card>
+
+        <!--
+          ③ 跑步 GPS 抖动：与换圈互相独立（无论开不开换圈都要用到），所以单独成块。
+        -->
+        <v-card class="mt-3" variant="outlined">
+          <v-card-title class="text-subtitle-1 d-flex align-center ga-2">
+            <v-icon color="secondary">mdi-signal-variant</v-icon>
+            跑步 GPS 抖动
+            <v-spacer />
+            <v-btn size="x-small" variant="text" :disabled="isBusy" @click="jitterModel = clampJitterSigmaM(0.6)">恢复默认 0.6</v-btn>
+          </v-card-title>
+          <v-card-text>
+            <div class="d-flex align-center flex-wrap ga-3">
+              <span class="text-body-2">抖动度</span>
+              <v-slider
+                v-model="jitterModel"
+                :min="JITTER_SIGMA_MIN_M"
+                :max="JITTER_SIGMA_MAX_M"
+                :step="JITTER_SIGMA_STEP_M"
+                density="compact"
+                hide-details
+                thumb-label
+                class="jitter-slider"
+                :disabled="isBusy"
+              />
+              <v-chip size="small" variant="tonal" color="secondary">σ = {{ jitterModel.toFixed(1) }} m</v-chip>
+            </div>
+            <div class="text-caption text-medium-emphasis mt-1">
+              0 = 完全平滑（不像真机）；0.6 = 与旧版默认一致；2.0 = 明显漂。它只改<b>逐点高频噪声</b>，不改车道与里程算法。
+            </div>
+          </v-card-text>
+        </v-card>
       </v-col>
 
       <v-col cols="12" md="4">
@@ -735,6 +878,32 @@
       </v-col>
     </v-row>
 
+
+    <!-- ═══════════════════════════════════════════════════════════════════════
+         🧱 第二块：模拟查看效果 —— 跑出来的轨迹 / 本机跑道 / 官方路线 / 逐圈着色（矢量、离线）
+         ═══════════════════════════════════════════════════════════════════════ -->
+
+    <!-- 轨迹预览（矢量、离线）：看"有没有贴着官方路线走 / 有没有跑在自己描的跑道两圈之间"
+         —— 1.1.9 起把**本机路线库的内外圈 + 所选车道线**一起画出来（几何与真实提交同源）
+         —— 并按"一圈多长"把轨迹**拆成每圈一色**（多圈同色会糊成一条粗带，用户反馈过）
+         ⚠️ `:lapLengthM` **必须用 camelCase 绑定**（不要写 :lap-length）：
+            Vue 解析 prop 时走 `camelize(属性名)`，而 `camelize('lap-length')` = `lapLength`
+            ≠ 组件声明的 `lapLengthM`（**末尾那个大写 M 丢失**）⇒ 该 prop 被**静默丢弃**（=undefined）；
+            **dev 与生产都会丢**（dev 只是额外给一条 warning）。详见 ERROR.md E48。 -->
+    <RunTrajectoryPreview
+      :points="run.points"
+      :route="selectedLine?.pointList ?? []"
+      :track-entries="libEntries"
+      :line-id="run.lineId"
+      :preset-id="presetEntry?.id ?? ''"
+      :lapLengthM="run.lapLengthM"
+      :lapDriftM="run.lapDriftM"
+    />
+
+    <!-- ═══════════════════════════════════════════════════════════════════════
+         🧱 第三块：提交判定区域 —— 结算（本地预判）／自检表／本地拟合度闸／真实提交／报文预览
+         ═══════════════════════════════════════════════════════════════════════ -->
+
     <RunSelfCheckCard :run="run">
       <!-- ⚠️ 本段是<b>插槽内容</b>：它必须与自检表处在<b>同一张卡</b>里 ——
            拆分前「结算表 + 真实提交」就是一张卡、一个 v-card-text；
@@ -972,124 +1141,6 @@
 
       <RunPayloadPreview :run="run" />
     </RunSelfCheckCard>
-
-    <!--
-      🆕 2026-11-03（1.3.6 需求②）每轮换圈：跑步页的「换圈图」+「GPS 抖动度」。
-
-      用户口径（原话要点）：
-      · 先算圈数 n（向上取整）与每圈用时 T；画"时间 × 道次"的 XY 图，图里斜率小于 1/T；
-      · 起始 y0 = 预设里设的道次，之后上下波动但不超过内外圈范围；控制点可拖动；
-      · 流程是 原胚跑道 → 模拟跑道 → 最终路径 → 提交；由真实数据导出的路径不参与这一步；
-      · 点「再次评测」＝按新图重新模拟并计时，看是否符合标准；正常后可以真实提交。
-
-      ⚠️ 只在"这次要用的预设是内外双圈几何"时出现（有 freeShape 的路径没有"道"可言）。
-      ⚠️ 换圈图与抖动度不落盘、不进预设（用户明确"只放跑步页，每次开跑前设"）。
-      🔴 它们只影响本机生成的几何：提交报文一个字都不变。
-    -->
-    <v-card v-if="lanePlanSupports" class="mb-4" variant="outlined">
-      <v-card-title class="text-subtitle-1 d-flex flex-wrap align-center ga-2">
-        <v-icon color="primary">mdi-layers-triple-outline</v-icon>
-        每轮换圈（模拟跑道）
-        <v-chip size="x-small" variant="tonal" color="primary">原胚跑道 → 模拟跑道 → 最终路径</v-chip>
-        <v-chip v-if="lanePlan" size="x-small" variant="tonal" color="success">{{ lanePlanLaps }} 圈 · 起始第 {{ lanePlanBaseLane }} 道</v-chip>
-        <v-spacer />
-        <v-btn size="small" variant="tonal" prepend-icon="mdi-shuffle-variant" :disabled="isBusy" @click="generateLanePlan">
-          {{ lanePlan ? '重新生成初始版本' : '生成初始版本' }}
-        </v-btn>
-        <v-btn v-if="lanePlan" size="small" variant="text" color="error" :disabled="isBusy" @click="clearLanePlan">关掉换圈图</v-btn>
-      </v-card-title>
-      <v-card-text>
-        <v-alert v-if="!lanePlanLapM" type="info" variant="tonal" density="compact" class="mb-2">
-          这条预设还量不出一圈多长（几何不完整）⇒ 换圈图暂时用不了。先去「跑道编辑」把内外圈描好并保存。
-        </v-alert>
-        <template v-else-if="!lanePlan">
-          <div class="text-body-2 mb-2">
-            这次按 <b>{{ lanePlanLaps }}</b> 圈跑（{{ lanePlanTargetKm.toFixed(2) }} km ÷ 一圈约
-            <b>{{ Math.round(lanePlanLapM) }} m</b>，向上取整）· 一圈约
-            <b>{{ Math.round(lanePlanLapSeconds) }} 秒</b>（按当前配速）。
-          </div>
-          <div class="text-caption text-medium-emphasis">
-            现在<b>没有换圈图</b>：跑图沿用旧口径（整圈恒定在第 {{ lanePlanBaseLane || '—' }} 道 + 每圈小幅随机漂移）。
-            点「生成初始版本」会以<b>预设里设的道次</b>为起点，生成一张每圈最多挪 1 条道的图 ——
-            之后你可以拖动圆点改成自己想跑的走法。
-          </div>
-        </template>
-        <template v-else>
-          <LaneProfileChart
-            :points="lanePlanPoints"
-            :laps="lanePlanLaps"
-            :lane-count="lanePlanLaneCount"
-            :lap-seconds="lanePlanLapSeconds"
-            :disabled="isBusy"
-            @update:points="onLanePlanUpdate"
-          />
-          <div class="text-body-2 mt-1">
-            这次每圈：<b>{{ lanePlanText || '（还没设）' }}</b>
-          </div>
-          <div class="text-caption text-medium-emphasis mt-1">
-            换道平滑：剖面里的斜变会摊到约 <b>18 m</b> 的距离上（不会瞬移）；本图<b>取代</b>旧的"每圈随机漂移"。
-          </div>
-          <v-alert v-if="!lanePlanCheck.ok" type="warning" variant="tonal" density="compact" class="mt-2">
-            <div v-for="(p, i) in lanePlanCheck.problems" :key="`lp-${i}`">{{ p }}</div>
-          </v-alert>
-          <div class="d-flex flex-wrap align-center ga-2 mt-2">
-            <v-btn
-              size="small"
-              color="primary"
-              variant="flat"
-              prepend-icon="mdi-replay"
-              :disabled="isBusy || !lanePlanCheck.ok"
-              @click="resimulateWithPlan"
-            >
-              按这张图重新模拟（再次评测）
-            </v-btn>
-            <span class="text-caption text-medium-emphasis">
-              重新生成轨迹并按当前配速重新计时；跑完看下面的自检表是否达标，正常后即可真实提交。
-            </span>
-          </div>
-        </template>
-
-        <v-divider class="my-3" />
-        <!-- 🆕 GPS 抖动度（也是"操作变量"之一，同样只放跑步页） -->
-        <div class="d-flex align-center flex-wrap ga-3">
-          <v-icon size="18" color="secondary">mdi-signal-variant</v-icon>
-          <span class="text-body-2">GPS 抖动度</span>
-          <v-slider
-            v-model="jitterModel"
-            :min="JITTER_SIGMA_MIN_M"
-            :max="JITTER_SIGMA_MAX_M"
-            :step="JITTER_SIGMA_STEP_M"
-            density="compact"
-            hide-details
-            thumb-label
-            class="jitter-slider"
-            :disabled="isBusy"
-          />
-          <v-chip size="small" variant="tonal" color="secondary">σ = {{ jitterModel.toFixed(1) }} m</v-chip>
-          <v-btn size="x-small" variant="text" :disabled="isBusy" @click="jitterModel = clampJitterSigmaM(0.6)">恢复默认 0.6</v-btn>
-        </div>
-        <div class="text-caption text-medium-emphasis mt-1">
-          0 = 完全平滑（不像真机）；0.6 = 与旧版默认一致；2.0 = 明显漂。它只改<b>逐点高频噪声</b>，不改车道与里程算法。
-        </div>
-      </v-card-text>
-    </v-card>
-
-    <!-- 轨迹预览（矢量、离线）：看"有没有贴着官方路线走 / 有没有跑在自己描的跑道两圈之间"
-         —— 1.1.9 起把**本机路线库的内外圈 + 所选车道线**一起画出来（几何与真实提交同源）
-         —— 并按"一圈多长"把轨迹**拆成每圈一色**（多圈同色会糊成一条粗带，用户反馈过）
-         ⚠️ `:lapLengthM` **必须用 camelCase 绑定**（不要写 :lap-length）：
-            Vue 解析 prop 时走 `camelize(属性名)`，而 `camelize('lap-length')` = `lapLength`
-            ≠ 组件声明的 `lapLengthM`（**末尾那个大写 M 丢失**）⇒ 该 prop 被**静默丢弃**（=undefined）；
-            **dev 与生产都会丢**（dev 只是额外给一条 warning）。详见 ERROR.md E48。 -->
-    <RunTrajectoryPreview
-      :points="run.points"
-      :route="selectedLine?.pointList ?? []"
-      :track-entries="libEntries"
-      :line-id="run.lineId"
-      :preset-id="presetEntry?.id ?? ''"
-      :lapLengthM="run.lapLengthM"
-      :lapDriftM="run.lapDriftM"
-    />
 
     <!--
       🆕 2026-09-22（用户批准）：里程没跑够时的二次确认（不硬拦）。
@@ -1955,6 +2006,27 @@ const clearLanePlan = () => {
   setLanePlan(null)
   showSnackbar('已关掉换圈图：这次跑图回到「整圈恒定在预设道次」（旧口径）', 'info')
 }
+/**
+ * 🆕 2026-11-03（用户要求"跑圈设置用二态滑块决定是否开启换圈"）：
+ * **开关就是这个状态**（`lanePlan !== null`），不另造一份布尔量 —— 两份状态迟早会分叉。
+ *   · 开 ⇒ 立刻按当前圈数/道次生成一张初始换圈图（用户可再拖）；
+ *   · 关 ⇒ 清掉换圈图，回到旧口径。
+ * ⚠️ 几何量不出一圈长度时**不许开**（`lanePlanLapM === 0`）：那时 `n` 会被算成 1，生成的图没有意义。
+ */
+const lanePlanEnabled = computed({
+  get: () => Boolean(lanePlan.value),
+  set: (on: boolean) => {
+    if (on) {
+      if (!(lanePlanLapM.value > 0)) {
+        showSnackbar('这条预设量不出一圈多长（几何不完整）⇒ 换圈开不了；先去「跑道编辑」把内外圈描好', 'warning')
+        return
+      }
+      generateLanePlan()
+      return
+    }
+    clearLanePlan()
+  },
+})
 /**
  * 点「按这张图重新模拟」：**重新生成轨迹 + 重新计时**，让用户在提交前看到真实的
  * 里程/时长/速度/拟合度是否符合任务标准（用户口径："点击再次评测，相关数据再次模拟并计时查看是否符合相关标准"）。
