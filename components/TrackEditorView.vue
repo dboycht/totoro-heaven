@@ -285,10 +285,36 @@ const presetOptions = computed(() => [
     .map((e) => ({ title: `${resolveEntryName(e)} —— ${entrySummaryText(e)}`, value: String(e.id) })),
   { title: '＋ 新建一条预设（保存后出现在上面）', value: '' },
 ])
+/**
+ * 🆕 2026-11-03（用户实测反馈："点击新建预设，为什么会自动填充已经有的相关预设"）：
+ * **新建 = 完全空白，从头描**（用户选择的口径）。
+ *
+ * 旧行为（本次改掉）：只清 `presetId`/`presetName`，把**草稿里的点全留着**（当时想的是"照着这条改一版"）。
+ * 代价是：点「新建」后画布上还挂着上一条的内外圈、起跑点、进场点与偏移 —— 看起来像"自动填充了已有预设"，
+ * 用户会怀疑是不是读错了数据。现在改成把**画布上的东西全清**，并把这句写在提示里。
+ *
+ * ⚠️ 保留的两个**参数**：`laneCount`（车道数）与 `insetM`（内缩米数）—— 它们是"这条路多宽"的常量，
+ * 每次重设一遍没意义；但**必须在面板上写明"沿用当前值"**，否则又是一次"悄悄填充"。
+ * `laneNo`（第几道）会回到"居中那道"，避免出现"新建的预设莫名其妙是第 8 道"（而这条路只有 6 道）。
+ */
 const startNewPreset = () => {
   presetId.value = ''
   presetName.value = ''
-  showSnackbar('已切到「新建预设」：描好内外圈 → 填名字（可留空自动命名）→ 点「保存（本机）」', 'info')
+  /** 画布清空：内外圈、起跑点、进场点、沿跑道偏移、绕向 */
+  draftOuter.value = []
+  draftInner.value = []
+  draftStartPoint.value = null
+  draftStartOffsetM.value = 0
+  draftStartDirection.value = 'forward'
+  draftEntryPoint.value = null
+  /** 回到外圈开始描（"从头描"的自然顺序：先外后内） */
+  editing.value = 'outer'
+  laneNo.value = Math.max(1, Math.round((laneCount.value + 1) / 2))
+  showSnackbar(
+    `已切到「新建预设」：画布已清空，从头描 —— 先描外圈、再描内圈 → 填名字（可留空）→ 点「保存（本机）」` +
+      `（车道数 ${laneCount.value} 与内缩 ${insetM.value} m 沿用当前值，可在右侧改）`,
+    'info',
+  )
 }
 /**
  * 「预设」下拉变化：选中一条 ⇒ 载入它；选到「＋ 新建一条预设」（空串）⇒ 走 `startNewPreset()`。
@@ -1151,7 +1177,10 @@ const lineOptions = computed(() =>
                 （预设编号 {{ editingEntry.id }}）·
                 创建 {{ editingEntry.createdAt ? formatLocalDateTime(editingEntry.createdAt) : '未记录' }}
               </template>
-              <template v-else><br />当前是<b>新建模式</b>：保存后会在这个地点下多出一条预设。</template>
+              <template v-else><br />当前是<b>新建模式</b>：保存后会在这个地点下多出一条预设。
+                <br />⚠️ 新建时<b>画布已清空</b>（内外圈 / 起跑点 / 进场点都从零开始）；
+                只有<b>车道数 {{ laneCount }}</b> 与<b>内缩 {{ insetM }} m</b> 沿用当前值（可在下方改）。
+              </template>
             </div>
             <!-- 🆕 2026-09-22（issue #12）：任务未下发线路时，把"这是本机跑道"说在选项正下方 -->
             <div v-if="localFreeLine" class="text-caption text-medium-emphasis mb-3">
