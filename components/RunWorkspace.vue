@@ -953,6 +953,107 @@
       <RunPayloadPreview :run="run" />
     </RunSelfCheckCard>
 
+    <!--
+      🆕 2026-11-03（1.3.6 需求②）每轮换圈：跑步页的「换圈图」+「GPS 抖动度」。
+
+      用户口径（原话要点）：
+      · 先算圈数 n（向上取整）与每圈用时 T；画"时间 × 道次"的 XY 图，图里斜率小于 1/T；
+      · 起始 y0 = 预设里设的道次，之后上下波动但不超过内外圈范围；控制点可拖动；
+      · 流程是 原胚跑道 → 模拟跑道 → 最终路径 → 提交；由真实数据导出的路径不参与这一步；
+      · 点「再次评测」＝按新图重新模拟并计时，看是否符合标准；正常后可以真实提交。
+
+      ⚠️ 只在"这次要用的预设是内外双圈几何"时出现（有 freeShape 的路径没有"道"可言）。
+      ⚠️ 换圈图与抖动度不落盘、不进预设（用户明确"只放跑步页，每次开跑前设"）。
+      🔴 它们只影响本机生成的几何：提交报文一个字都不变。
+    -->
+    <v-card v-if="lanePlanSupports" class="mb-4" variant="outlined">
+      <v-card-title class="text-subtitle-1 d-flex flex-wrap align-center ga-2">
+        <v-icon color="primary">mdi-layers-triple-outline</v-icon>
+        每轮换圈（模拟跑道）
+        <v-chip size="x-small" variant="tonal" color="primary">原胚跑道 → 模拟跑道 → 最终路径</v-chip>
+        <v-chip v-if="lanePlan" size="x-small" variant="tonal" color="success">{{ lanePlanLaps }} 圈 · 起始第 {{ lanePlanBaseLane }} 道</v-chip>
+        <v-spacer />
+        <v-btn size="small" variant="tonal" prepend-icon="mdi-shuffle-variant" :disabled="isBusy" @click="generateLanePlan">
+          {{ lanePlan ? '重新生成初始版本' : '生成初始版本' }}
+        </v-btn>
+        <v-btn v-if="lanePlan" size="small" variant="text" color="error" :disabled="isBusy" @click="clearLanePlan">关掉换圈图</v-btn>
+      </v-card-title>
+      <v-card-text>
+        <v-alert v-if="!lanePlanLapM" type="info" variant="tonal" density="compact" class="mb-2">
+          这条预设还量不出一圈多长（几何不完整）⇒ 换圈图暂时用不了。先去「跑道编辑」把内外圈描好并保存。
+        </v-alert>
+        <template v-else-if="!lanePlan">
+          <div class="text-body-2 mb-2">
+            这次按 <b>{{ lanePlanLaps }}</b> 圈跑（{{ lanePlanTargetKm.toFixed(2) }} km ÷ 一圈约
+            <b>{{ Math.round(lanePlanLapM) }} m</b>，向上取整）· 一圈约
+            <b>{{ Math.round(lanePlanLapSeconds) }} 秒</b>（按当前配速）。
+          </div>
+          <div class="text-caption text-medium-emphasis">
+            现在<b>没有换圈图</b>：跑图沿用旧口径（整圈恒定在第 {{ lanePlanBaseLane || '—' }} 道 + 每圈小幅随机漂移）。
+            点「生成初始版本」会以<b>预设里设的道次</b>为起点，生成一张每圈最多挪 1 条道的图 ——
+            之后你可以拖动圆点改成自己想跑的走法。
+          </div>
+        </template>
+        <template v-else>
+          <LaneProfileChart
+            :points="lanePlanPoints"
+            :laps="lanePlanLaps"
+            :lane-count="lanePlanLaneCount"
+            :lap-seconds="lanePlanLapSeconds"
+            :disabled="isBusy"
+            @update:points="onLanePlanUpdate"
+          />
+          <div class="text-body-2 mt-1">
+            这次每圈：<b>{{ lanePlanText || '（还没设）' }}</b>
+          </div>
+          <div class="text-caption text-medium-emphasis mt-1">
+            换道平滑：剖面里的斜变会摊到约 <b>18 m</b> 的距离上（不会瞬移）；本图<b>取代</b>旧的"每圈随机漂移"。
+          </div>
+          <v-alert v-if="!lanePlanCheck.ok" type="warning" variant="tonal" density="compact" class="mt-2">
+            <div v-for="(p, i) in lanePlanCheck.problems" :key="`lp-${i}`">{{ p }}</div>
+          </v-alert>
+          <div class="d-flex flex-wrap align-center ga-2 mt-2">
+            <v-btn
+              size="small"
+              color="primary"
+              variant="flat"
+              prepend-icon="mdi-replay"
+              :disabled="isBusy || !lanePlanCheck.ok"
+              @click="resimulateWithPlan"
+            >
+              按这张图重新模拟（再次评测）
+            </v-btn>
+            <span class="text-caption text-medium-emphasis">
+              重新生成轨迹并按当前配速重新计时；跑完看下面的自检表是否达标，正常后即可真实提交。
+            </span>
+          </div>
+        </template>
+
+        <v-divider class="my-3" />
+        <!-- 🆕 GPS 抖动度（也是"操作变量"之一，同样只放跑步页） -->
+        <div class="d-flex align-center flex-wrap ga-3">
+          <v-icon size="18" color="secondary">mdi-signal-variant</v-icon>
+          <span class="text-body-2">GPS 抖动度</span>
+          <v-slider
+            v-model="jitterModel"
+            :min="JITTER_SIGMA_MIN_M"
+            :max="JITTER_SIGMA_MAX_M"
+            :step="JITTER_SIGMA_STEP_M"
+            density="compact"
+            hide-details
+            thumb-label
+            class="jitter-slider"
+            :disabled="isBusy"
+          />
+          <v-chip size="small" variant="tonal" color="secondary">σ = {{ jitterModel.toFixed(1) }} m</v-chip>
+          <v-btn size="x-small" variant="text" :disabled="isBusy" @click="jitterModel = clampJitterSigmaM(0.6)">恢复默认 0.6</v-btn>
+        </div>
+        <div class="text-caption text-medium-emphasis mt-1">
+          0 = 完全平滑（不像真机）；0.6 = 与旧版默认一致；2.0 = 明显漂。它只改<b>逐点高频噪声</b>，不改车道与里程算法。
+        </div>
+      </v-card-text>
+    </v-card>
+
     <!-- 轨迹预览（矢量、离线）：看"有没有贴着官方路线走 / 有没有跑在自己描的跑道两圈之间"
          —— 1.1.9 起把**本机路线库的内外圈 + 所选车道线**一起画出来（几何与真实提交同源）
          —— 并按"一圈多长"把轨迹**拆成每圈一色**（多圈同色会糊成一条粗带，用户反馈过）
@@ -1138,6 +1239,19 @@ import {
 } from '~/utils/mp/ytuRun'
 // 🆕 2026-09-29（issue #13）：配速**在任务允许区间内采样**（本次实际配速与"任务允许区间"同源）
 import { newRunSeed, planRealisticRun, runPaceWindow } from '~/utils/mp/realism'
+// 🆕 2026-11-03（1.3.6 需求②）「每轮换圈」：圈数/每圈用时/斜率校验/初始图 —— 全是纯函数（有单测）
+import {
+  DEFAULT_LANE_COUNT,
+  DEFAULT_LANE_NO,
+  checkLaneProfile,
+  defaultLanePoints,
+  laneProfileText,
+  lapCountForKm,
+  lapSecondsForPace,
+  normalizeLanePoints,
+} from '~/utils/mp/laneProfile'
+// 🆕 2026-11-03（需求②）：GPS 抖动度的滑杆范围与唯一归一化出口
+import { JITTER_SIGMA_MAX_M, JITTER_SIGMA_MIN_M, JITTER_SIGMA_STEP_M, clampJitterSigmaM } from '~/composables/demo/state'
 
 const {
   isLoggedIn,
@@ -1159,6 +1273,11 @@ const {
   setYtuTargetKm,
   ytuLaps,
   setYtuLaps,
+  /** 🆕 2026-11-03（1.3.6 需求②）：跑步页的换圈图与 GPS 抖动度（**不落盘、不进预设**） */
+  lanePlan,
+  setLanePlan,
+  jitterSigmaM,
+  setJitterSigmaM,
 } = useMpDemo()
 const {
   profile: realProfile,
@@ -1725,6 +1844,122 @@ const selectedLaneLengthM = computed(() => {
 })
 const freeRunLaps = computed(() => estimateLaps(freeRunKm.value, selectedLaneLengthM.value))
 const freeRunSeconds = computed(() => estimateFreeRunSeconds(freeRunKm.value, run.value.paceSecPerKm))
+
+// ---------------------------------------------------------------- 🆕 2026-11-03（1.3.6 需求②）每轮换圈
+/**
+ * **"换圈图"能用在这次跑步上吗**（唯一判据）。
+ *
+ * 用户口径："用户选择「由我的场地生成的包含内外圈信息以及相关数据的预设」，先选择一次配速生成初始版本…
+ *  （注：由真实数据导出的相关路径**不参与**该步骤）"
+ *
+ * 所以判据是：**这次真的要用的那条预设是"内外双圈"几何**（有 `outer`/`inner` 各 ≥3 点、且**没有** `freeShape`）。
+ *   · 有 `freeShape`（研途健行画的圈/折线、以及以后由真实轨迹导出的路径）⇒ **不参与**（它们没有"道"）；
+ *   · 没描过 / 几何不够点 ⇒ 不参与（开跑本来就过不去）。
+ * ⚠️ 与跑步引擎 `composables/demo/runner.ts` 里那段 `ringsForPlan` **同一判据**，不许出现第二套。
+ */
+const lanePlanEntry = computed(() => presetEntry.value ?? (routeIsFree.value ? freeRouteEntry.value : undefined))
+const lanePlanSupports = computed(
+  () =>
+    Boolean(lanePlanEntry.value) &&
+    !lanePlanEntry.value?.freeShape &&
+    (lanePlanEntry.value?.outer.length ?? 0) >= 3 &&
+    (lanePlanEntry.value?.inner.length ?? 0) >= 3,
+)
+/** 这个预设的道数 / 基准道次（换圈图的 Y 轴范围与 y0） */
+const lanePlanLaneCount = computed(() => Number(lanePlanEntry.value?.laneCount ?? 0) || DEFAULT_LANE_COUNT)
+const lanePlanBaseLane = computed(() => {
+  const raw = Number(lanePlanEntry.value?.laneNo ?? 0) || DEFAULT_LANE_NO
+  return Math.min(lanePlanLaneCount.value, Math.max(1, raw))
+})
+/**
+ * **这次要跑多少公里**（换圈图算圈数用）—— 与引擎同源：
+ *   自由跑看 `freeRunKm`；阳光跑看任务里程（研途健行类可用 `ytuTargetKm` 覆盖）。
+ */
+const lanePlanTargetKm = computed(() => {
+  if (isFreeRun.value) return Number(freeRunKm.value) || 0
+  if (routeIsFree.value) return Number(ytuTargetKmForUi.value) || 0
+  return Number(taskMileageKm.value) || 0
+})
+/** 一圈多长（米）—— 与引擎用的是同一个 `selectedLaneLengthM` */
+const lanePlanLapM = computed(() => selectedLaneLengthM.value)
+/** **圈数 n**（向上取整）—— 用户口径："先计算出大约奔跑圈数，向上取整 n" */
+const lanePlanLaps = computed(() => lapCountForKm(lanePlanTargetKm.value, lanePlanLapM.value))
+/** **每圈平均用时 T**（秒）—— 由当前配速与一圈长度算，界面与引擎同一算式 */
+const lanePlanLapSeconds = computed(() => lapSecondsForPace(run.value.paceSecPerKm, lanePlanLapM.value))
+/**
+ * 换圈图里的控制点（**按当前圈数归一化**）。
+ * 存下来的图可能是在别的圈数下画的（例如用户改了自由跑距离）⇒ `normalizeLanePoints` 会
+ * 截断/补齐到当前 n（**不另存一份**，避免"界面显示 8 圈、引擎按 6 圈跑"）。
+ */
+const lanePlanPoints = computed(() =>
+  normalizeLanePoints(lanePlan.value?.points ?? [], {
+    laps: lanePlanLaps.value,
+    baseLane: lanePlanBaseLane.value,
+    laneCount: lanePlanLaneCount.value,
+  }),
+)
+/** 剖面校验（斜率 ≤1 道/圈、道次在范围内）—— 界面与引擎同判据 */
+const lanePlanCheck = computed(() =>
+  checkLaneProfile(
+    { points: lanePlanPoints.value, laps: lanePlanLaps.value, laneCount: lanePlanLaneCount.value, baseLane: lanePlanBaseLane.value },
+    lanePlanLapSeconds.value,
+  ),
+)
+/** 逐圈道次的一句话（用户一眼看出"这次每圈在第几道"） */
+const lanePlanText = computed(() =>
+  laneProfileText(lanePlanPoints.value, lanePlanLaps.value, lanePlanLaneCount.value),
+)
+/** 用户拖完控制点后回写（只存 points；laps 一并记下，便于下次归一化） */
+const onLanePlanUpdate = (next: { u: number; lane: number }[]) => {
+  setLanePlan({ laps: lanePlanLaps.value, points: next })
+}
+/** 点「生成初始版本」：y0 = 预设道次，之后每圈 ±1 道以内随机游走（保证斜率达标） */
+const generateLanePlan = () => {
+  const points = defaultLanePoints(
+    { laps: lanePlanLaps.value, baseLane: lanePlanBaseLane.value, laneCount: lanePlanLaneCount.value },
+    newRunSeed(),
+  )
+  setLanePlan({ laps: lanePlanLaps.value, points })
+  logInfo('run', '生成初始换圈图', {
+    laps: lanePlanLaps.value,
+    laneSeconds: Math.round(lanePlanLapSeconds.value),
+    baseLane: lanePlanBaseLane.value,
+    laneCount: lanePlanLaneCount.value,
+  })
+  showSnackbar(`已按 ${lanePlanLaps.value} 圈生成初始换圈图（起始第 ${lanePlanBaseLane.value} 道）：拖动圆点改成你想跑的走法`, 'info')
+}
+/** 点「关掉换圈图」：回到旧口径（整圈恒定在预设那道 + 每圈小幅随机漂移） */
+const clearLanePlan = () => {
+  setLanePlan(null)
+  showSnackbar('已关掉换圈图：这次跑图回到「整圈恒定在预设道次」（旧口径）', 'info')
+}
+/**
+ * 点「按这张图重新模拟」：**重新生成轨迹 + 重新计时**，让用户在提交前看到真实的
+ * 里程/时长/速度/拟合度是否符合任务标准（用户口径："点击再次评测，相关数据再次模拟并计时查看是否符合相关标准"）。
+ * ⚠️ 只重跑本地模拟：不发任何请求、也不改提交报文口径。
+ */
+const resimulateWithPlan = () => {
+  if (!lanePlanCheck.value.ok) {
+    showSnackbar(`换圈图还不能用：${lanePlanCheck.value.problems.join('；')}`, 'warning')
+    return
+  }
+  reset()
+  run.value.runType = tabRunType.value
+  start()
+  logInfo('run', '按换圈图重新模拟', {
+    laps: lanePlanLaps.value,
+    laneSeconds: Math.round(lanePlanLapSeconds.value),
+    jitterSigmaM: jitterSigmaM.value,
+    text: lanePlanText.value,
+  })
+}
+/** GPS 抖动度滑杆（0~2 m，步长 0.1）：本地文本态没必要 —— 滑杆本身就是归一化好的值 */
+const jitterModel = computed({
+  get: () => Number(jitterSigmaM.value),
+  set: (v: number) => {
+    setJitterSigmaM(v)
+  },
+})
 
 const speedItems = [
   { value: 1, label: '1× 实时（3.4km 约 21 分钟）' },

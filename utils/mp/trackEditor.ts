@@ -145,6 +145,58 @@ function closestOnPolyline(p: XY, poly: XY[]): XY {
   return best
 }
 
+/**
+ * 🆕 2026-11-03（1.3.6 需求②「每轮换圈」）：**生成器那个法向是朝外还是朝内**（`+1` / `-1`）。
+ *
+ * ## 先说清"哪个法向"（口径必须与 `generateRoute` 逐字一致）
+ * `generateRoute` 施加横向偏移的写法是
+ * `offset = (north: m·dEast, east: −m·dNorth)`，在 (east, north) 坐标里就是
+ * **`m · (−dNorth, dEast)`** —— 也就是把行进方向 **逆时针转 90°** 的那个单位法向
+ * （下文记作 `L`）。`m > 0` ⇒ 沿 `L` 方向挪。
+ *
+ * ## 为什么必须有这个函数
+ * `L` 朝里还是朝外，**取决于用户描圈的方向**（顺 / 逆时针）：
+ *   · 逆时针描 ⇒ `L` 朝**内**（`-1`）；
+ *   · 顺时针描 ⇒ `L` 朝**外**（`+1`）。
+ * ⇒ 同一个"第 2 道"的偏移量在两种描法下**正好反向**（实测症状：道次 3→2→1，半径却从 94.5 涨到 97.4）。
+ * 所以方向**不许靠约定猜，必须从几何算出来**。
+ *
+ * ## 判据（可执行）
+ * 取车道线起点 `p`、行进单位切向 `d`（(east, north)）、内圈上离 `p` 最近的点 `q`：
+ *   · **朝外方向** `outward = p − q`（从内圈指向车道线）；
+ *   · **法向** `L = (−d.north, d.east)`（与生成器同一口径）；
+ *   · `L · outward ≥ 0` ⇒ `+1`（朝外）；否则 `−1`（朝内）。
+ * 几何退化（点数不足 / 朝外向量长度为 0）⇒ `+1`（旧行为）；**绝不返回 0**（那会让偏移恒为 0，换圈静默失效）。
+ *
+ * ⚠️ 纯函数；`tests/mp/laneProfile.test.ts` 用"同一个正圆、正反两种描向"钉住它必须给出相反符号。
+ */
+export function outwardNormalSign(laneLine: LatLng[], rings: TrackRings): number {
+  const line = norm(Array.isArray(laneLine) ? laneLine : [])
+  const outer = norm(rings?.outer ?? [])
+  const inner = norm(rings?.inner ?? [])
+  if (line.length < 2 || inner.length < 2) return 1
+  const pr = makeProjector(ringCentroidLat(outer.length >= 3 ? outer : line))
+  /** 找第一个"与后一点不重合"的起点（手描时可能出现重合点） */
+  let i0 = 0
+  while (i0 < line.length - 1) {
+    const a = pr.toXY(line[i0]!)
+    const b = pr.toXY(line[i0 + 1]!)
+    if (Math.hypot(b.x - a.x, b.y - a.y) > 1e-6) break
+    i0++
+  }
+  const p = pr.toXY(line[i0]!)
+  const nxt = pr.toXY(line[Math.min(line.length - 1, i0 + 1)]!)
+  const d = { x: nxt.x - p.x, y: nxt.y - p.y }
+  const len = Math.hypot(d.x, d.y)
+  if (!(len > 1e-6)) return 1
+  /** 生成器用的法向：行进方向逆时针转 90° ⇒ (east, north) = (−dNorth, dEast) */
+  const normal = { x: -d.y / len, y: d.x / len }
+  const q = closestOnPolyline(p, inner.map(pr.toXY))
+  const outward = { x: p.x - q.x, y: p.y - q.y }
+  if (!(Math.hypot(outward.x, outward.y) > 1e-6)) return 1
+  return normal.x * outward.x + normal.y * outward.y >= 0 ? 1 : -1
+}
+
 /** 点在多边形内（射线法） */
 export function pointInRing(p: { latitude: number | string; longitude: number | string }, ring: { latitude: number | string; longitude: number | string }[]): boolean {
   if (ring.length < 3) return false

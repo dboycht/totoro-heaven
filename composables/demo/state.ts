@@ -24,6 +24,8 @@
 import type { MpRunLine, MpScoreDetailRequest, MpScoreRequest, MpSunrunTask } from '~/src/mp/types'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
 import type { RunPlan } from '~/utils/mp/realism'
+// 🆕 2026-11-03（1.3.6 需求②）：换圈图的控制点类型（判据与求值都在纯模块 `utils/mp/laneProfile.ts`）
+import type { LanePoint } from '~/utils/mp/laneProfile'
 import type { TaskCheckResult } from '~/utils/mp/taskRules'
 import { FREE_RUN_KM_DEFAULT, FREE_RUN_KM_KEY, clampFreeRunKm, parseStoredFreeRunKm } from '~/utils/mp/freeRun'
 // 🆕 2026-09-29（issue #13）：研途健行的"目标里程 / 圈数"与本机记忆（纯逻辑层，含唯一归一化入口）
@@ -157,6 +159,29 @@ export const createRunState = (): DemoRunState => ({
   error: '',
 })
 
+/**
+ * 🆕 2026-11-03（1.3.6 需求②）：**GPS 抖动度**的取值范围、默认值与唯一归一化出口。
+ *
+ * 用户口径："增加新的操作变量，用户当然可以设置相关**GPS 抖动度**"（滑杆 0~2 m，步长 0.1）。
+ * 默认 **0.6 m** —— 与 `generateCorridorRoute` 原有的 `jitterSigmaM` 默认值**同一个数**，
+ * 所以"没动过滑杆"时轨迹与旧版逐点一致（这是本功能的回归保证）。
+ */
+export const JITTER_SIGMA_MIN_M = 0
+export const JITTER_SIGMA_MAX_M = 2
+export const JITTER_SIGMA_STEP_M = 0.1
+export const DEFAULT_JITTER_SIGMA_M = 0.6
+
+/**
+ * 抖动度的**唯一归一化出口**（界面/引擎都走它）：非数/越界一律夹回区间，保留一位小数。
+ * 判据：`clampJitterSigmaM('0.66') === 0.7`、`clampJitterSigmaM(-5) === 0`、`clampJitterSigmaM(NaN) === 0.6`。
+ */
+export function clampJitterSigmaM(raw: unknown): number {
+  const v = Number(raw)
+  if (!Number.isFinite(v)) return DEFAULT_JITTER_SIGMA_M
+  const clamped = Math.min(JITTER_SIGMA_MAX_M, Math.max(JITTER_SIGMA_MIN_M, v))
+  return Math.round(clamped / JITTER_SIGMA_STEP_M) * JITTER_SIGMA_STEP_M
+}
+
 /** 演示模式的成绩记录（localStorage 持久化，便于刷新后仍在） */
 export const RECORDS_KEY = 'mp_demo_records'
 
@@ -272,6 +297,9 @@ export function useDemoState(hooks: DemoStateHooks) {
     run.value = createRunState()
     ytuTargetKm.value = null
     ytuLaps.value = null
+    // 🆕 2026-11-03：跑步页那两个"只放本页"的设置也一并归零（它们不落盘，归零只是回到默认口径）
+    lanePlan.value = null
+    jitterSigmaM.value = DEFAULT_JITTER_SIGMA_M
     hooks.resetRecords()
   }
 
@@ -354,6 +382,36 @@ export function useDemoState(hooks: DemoStateHooks) {
     return laps
   }
 
+  /**
+   * 🆕 2026-11-03（1.3.6 需求②「每轮换圈」）：**跑步页的换圈图**（用户拖出来的"时间 × 道次"剖面）。
+   *
+   * 三条口径（用户明确："只放跑步页，每次开跑前设"）：
+   *   ① **不落盘、不进预设** —— 它是"这一次想怎么跑"的临时设置，`useState` 内存态，
+   *      刷新即回到"没有换圈图"（那时跑图行为 = 旧口径，逐字不变）；
+   *   ② 只存 `{ laps, points }`：`laneCount` / `baseLane` 在开跑时从**当前预设**读
+   *      （换预设就自动按新预设的道次与道数归一化，见 `runLaneProfile()`）；
+   *   ③ 判据全在纯模块 `utils/mp/laneProfile.ts`（圈数/用时/斜率/初始图），这里只存状态。
+   */
+  const lanePlan = useState<{ laps: number; points: LanePoint[] } | null>('mpLanePlan', () => null)
+
+  /** 设定/清除换圈图（`null` = 关掉换圈、回到旧口径） */
+  const setLanePlan = (next: { laps: number; points: LanePoint[] } | null): void => {
+    lanePlan.value = next
+  }
+
+  /**
+   * 🆕 2026-11-03（需求②）**GPS 抖动度**（米，σ）：用户在跑步页用滑杆调（0~2，步长 0.1）。
+   * ⚠️ 同样**不落盘**（与换圈图同一条口径）；默认 0.6 = 生成器原默认值 ⇒ 不动滑杆时行为与旧版一致。
+   */
+  const jitterSigmaM = useState<number>('mpJitterSigmaM', () => DEFAULT_JITTER_SIGMA_M)
+
+  /** 设定 GPS 抖动度（夹到 0~2，保留一位小数 —— 滑杆步长就是 0.1） */
+  const setJitterSigmaM = (raw: unknown): number => {
+    const v = clampJitterSigmaM(raw)
+    jitterSigmaM.value = v
+    return v
+  }
+
   const logout = () => {
     hooks.stopRunTimer()
     clearSession()
@@ -373,6 +431,11 @@ export function useDemoState(hooks: DemoStateHooks) {
     setYtuTargetKm,
     ytuLaps,
     setYtuLaps,
+    // 🆕 2026-11-03（1.3.6 需求②）：换圈图 + GPS 抖动度（只放跑步页、不落盘）
+    lanePlan,
+    setLanePlan,
+    jitterSigmaM,
+    setJitterSigmaM,
     enableDemo,
     disableDemo,
     clearLocalData,

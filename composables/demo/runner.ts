@@ -13,7 +13,9 @@
 import { calculateRouteSimilarity } from '~/utils/mp/routeSimilarity'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
-import { applyStartToLoop, laneLoop, laneRatioFor } from '~/utils/mp/trackEditor'
+import { applyStartToLoop, laneLoop, laneRatioFor, outwardNormalSign, ringWidthM } from '~/utils/mp/trackEditor'
+// 🆕 2026-11-03（1.3.6 需求②）「每轮换圈」：道次/道数缺省值在纯模块里（与界面同一份）
+import { DEFAULT_LANE_COUNT, DEFAULT_LANE_NO } from '~/utils/mp/laneProfile'
 // 🆕 2026-10-30（1.3.3）：进场段（纯算法，见 utils/mp/pathShape.ts 末尾一节）
 import { prependEntrySegment } from '~/utils/mp/pathShape'
 import { buildRunStats, buildTimeFields } from '~/utils/mp/runData'
@@ -31,7 +33,7 @@ import { newLocalRecordId } from '~/utils/mp/recordState'
 import { YTU_TARGET_KM_FALLBACK, clampYtuTargetKm } from '~/utils/mp/ytuRun'
 import { toSubmitRunType, type MpRunLine, type MpScoreDetailRequest, type MpScoreRequest } from '~/src/mp/types'
 import { DEMO_PASS_POINTS, demoScantronId } from '~/src/mp/demo'
-import { DEMO_STEP_M, REAL_STEP_M, TICK_MS, createRunState, type DemoStateApi } from './state'
+import { DEMO_STEP_M, REAL_STEP_M, TICK_MS, clampJitterSigmaM, createRunState, type DemoStateApi } from './state'
 import type { DemoRecordsApi } from './records'
 
 /** 跑步计时器放在模块级：整个应用只有一个（多个组件调用 useMpDemo 不会各起一个） */
@@ -339,12 +341,49 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
        * `2` = 生成器默认的圆角轮数（老条目的既有行为，逐字不变）。
        */
       const smoothRouteForThisRun = resolved ? (resolved.smooth ? 2 : 0) : 2
+      /**
+       * 🆕 2026-11-03（1.3.6 需求②）**每轮换圈**：只有"含内外圈的真跑道预设"才参与这一步
+       * （用户原话："用户选择「由我的场地生成的包含内外圈信息以及相关数据的预设」…先选择一次配速生成初始版本"）。
+       *
+       * 排除两类（都走旧口径，逐字不变）：
+       *   · 带 `freeShape` 的条目（研途健行路径 / 折线折返）—— 它们没有"道"可言；
+       *   · 内外圈点数不足的条目（本来就没有合法几何）。
+       *
+       * ⚠️ 法向朝向必须**从几何算**（`outwardNormalSign`）：它取决于描圈方向与起跑点是否反向
+       *    —— 算错的症状是"道次往内换，轨迹却越跑越外"。
+       */
+      const ringsForPlan =
+        trackEntry && !trackEntry.freeShape && trackEntry.outer.length >= 3 && trackEntry.inner.length >= 3
+          ? { outer: trackEntry.outer, inner: trackEntry.inner }
+          : null
+      const planLaps = Number(state.lanePlan.value?.laps ?? 0)
+      const planPoints = state.lanePlan.value?.points ?? []
+      const planWidthM = ringsForPlan ? ringWidthM(ringsForPlan) : 0
+      const lanePlanForThisRun =
+        ringsForPlan && planLaps >= 1 && planPoints.length >= 2 && planWidthM > 0
+          ? {
+              laneCount: Number(trackEntry?.laneCount ?? 0) || DEFAULT_LANE_COUNT,
+              baseLane: Number(trackEntry?.laneNo ?? 0) || DEFAULT_LANE_NO,
+              points: planPoints,
+              ringWidthM: planWidthM,
+              /** 换道横向平滑窗口（用户选"15~20 m 平滑过渡"） */
+              transitionM: 18,
+              normalSign: outwardNormalSign(resolved?.geometry ?? geometry, ringsForPlan),
+            }
+          : undefined
       const generated = generateCorridorRoute(geometry, {
         targetKm: plan.targetKm,
         stepM: isRealLine ? REAL_STEP_M : DEMO_STEP_M,
         drift: true,
         seed: newRunSeed(),
         smoothRoute: smoothRouteForThisRun,
+        /**
+         * 🆕 2026-11-03（需求②）：**GPS 抖动度**由跑步页滑杆给（0~2 m，默认 0.6 =
+         * 生成器原默认值 ⇒ 没动滑杆时轨迹与旧版逐点一致）。
+         */
+        jitterSigmaM: clampJitterSigmaM(state.jitterSigmaM.value),
+        // 🆕 2026-11-03（需求②）：换圈剖面（没有就完全不传 ⇒ 走旧的"车道偏移 + 逐圈漂移"口径）
+        ...(lanePlanForThisRun ? { lanePlan: lanePlanForThisRun } : {}),
         // 🆕 1.3.3：进场段（只走一次的前缀）；未设时是 undefined ⇒ 行为与旧版一致
         ...(resolved?.leadIn ? { leadIn: resolved.leadIn } : {}),
       })

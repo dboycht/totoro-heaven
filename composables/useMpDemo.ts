@@ -77,6 +77,17 @@ export function useMpDemo() {
     setYtuTargetKm: state.setYtuTargetKm,
     ytuLaps: state.ytuLaps,
     setYtuLaps: state.setYtuLaps,
+    /**
+     * 🆕 2026-11-03（1.3.6 需求②「每轮换圈」）：**跑步页的换圈图**与 **GPS 抖动度**。
+     * 两条口径（用户明确"只放跑步页，每次开跑前设"）：
+     *   · `lanePlan` = `{laps, points} | null`（`null` = 没有换圈图 ⇒ 跑图走旧口径，逐字不变）；
+     *   · `jitterSigmaM` = 0~2 m（默认 0.6 = 生成器原默认值 ⇒ 没动滑杆时轨迹与旧版逐点一致）。
+     * ⚠️ 二者**都不落盘、不进预设**；判据与初始图生成都在 `utils/mp/laneProfile.ts`（纯函数、有单测）。
+     */
+    lanePlan: state.lanePlan,
+    setLanePlan: state.setLanePlan,
+    jitterSigmaM: state.jitterSigmaM,
+    setJitterSigmaM: state.setJitterSigmaM,
     records: records.records,
     term: records.term,
     stats: records.stats,

@@ -15,6 +15,8 @@
  */
 
 import { distanceMeters, calculateRouteSimilarity, pointToSegmentDistance, type LatLng } from './routeSimilarity'
+// 🆕 2026-11-03（1.3.6 需求②）「每轮换圈」：剖面求值/道次→ratio 都在纯模块里（有单测）
+import { laneAtU, laneRatioExact } from './laneProfile'
 
 export interface CorridorOptions {
   /** 目标里程（公里） */
@@ -80,6 +82,43 @@ export interface CorridorOptions {
   lapDriftRatio?: number
   /** 每圈漂移的**硬上限**（米，默认 2.2）—— 防极端取样把某圈顶到跑道边 */
   lapDriftMaxM?: number
+  /**
+   * 🆕 2026-11-03（1.3.6 需求②）**每轮换圈剖面**：按圈号决定"这一圈横向在哪条道"。
+   *
+   * 用户口径（原话要点）：先算圈数 n（向上取整）、每圈平均用时 T，画一张"时间 t × 道次"的图，
+   * 图里斜率小于 `1/T`；用户可以拖动控制点；流程是 **原胚跑道 → 模拟跑道 → 最终路径 → 提交**。
+   *
+   * 给了它之后本函数的横向行为**整体换成换圈剖面**：
+   *   · **不再**用 `laneTable`（按段的恒定车道偏移）；
+   *   · **不再**叠加 `lapDrift`（每圈 ±2.2 m 的随机漂移 —— 用户明确说"并不是左右抖动"，
+   *     2026-11-03 选择"换圈开启时关掉它"）；
+   *   · **不再**有 `bursts`（精度下降小凸起；那也是"左右抖"，一并交给换圈接管）；
+   *   · 仍保留 `jitterSigmaM` 的**逐点细颗粒**（那是 GPS 本身的高频噪声，不是车道变化）。
+   *
+   * 换算：第 u 圈的道次 → `ratio` → 相对**基准道**的横向米数
+   * `(ratio(lane(u)) - ratio(baseLane)) * ringWidthM`，方向取路线法向（与既有车道偏移同一套几何）。
+   */
+  lanePlan?: {
+    /** 这个预设一共几道（`laneCount`） */
+    laneCount: number
+    /** 基准道次 = 预设里选的道次（生成几何就是按它建的），剖面相对它偏移 */
+    baseLane: number
+    /** 控制点（u = 圈坐标 0..laps；lane = 道次 1..laneCount，可小数） */
+    points: { u: number; lane: number }[]
+    /** 内外圈之间的实际宽度（米）—— 调用方用 `ringWidthM(rings)` 算好传进来 */
+    ringWidthM: number
+    /**
+     * 换道**横向平滑窗口**（米，默认 18）：把剖面里的陡变摊成一段斜线（用户选"15~20 m 平滑过渡"）。
+     * ⚠️ 按斜率上限（≤1 道/圈）画出来的图本身是缓慢漂移，本窗口主要兜住**导入/坏数据**里的阶跃。
+     */
+    transitionM?: number
+    /**
+     * **右法向朝外还是朝内**（`+1` / `-1`，默认 `+1`）。
+     * 由调用方用 `trackEditor.outwardNormalSign(laneLine, rings)` 从几何算出来 ——
+     * 它取决于用户描圈的方向（顺/逆时针），**不许靠约定猜**（猜错的症状：道次 3→2→1 却越跑越外）。
+     */
+    normalSign?: number
+  }
 }
 
 export interface GeneratedRoute {
@@ -532,6 +571,75 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     const t = segmentTangentAt(arcPos)
     return { lat: lane * t.lng, lng: -lane * t.lat }
   }
+
+  // ---- 🆕 2026-11-03（1.3.6 需求②）：**每轮换圈剖面** ----
+  /**
+   * 换圈模式下的**横向米数**（正 = 偏法向一侧），是 `lanePlan` 的唯一消费者。
+   *
+   * 为什么用"相对基准道的差"而不是"直接取车道线"：
+   *   生成器的几何（`genRoute`）已经是**基准道**那条车道线（调用方用 `laneLoop(rings, ratio(baseLane))` 建的），
+   *   所以要换到第 k 道，只需沿法向挪 `(ratio(k) - ratio(base)) * 环宽` —— 与既有 `laneAt` 的
+   *   "横向米数"是同一套几何，且**不必重建整条几何**（重建会把 `lapLengthM`/弧长基准一起挪掉，
+   *   圈号与预览着色全部跟着漂）。
+   */
+  const plan = options.lanePlan
+  /** 换圈模式是否启用（给了且几何可用） */
+  const planOn = Boolean(plan) && Number(plan?.ringWidthM) > 0 && Array.isArray(plan?.points) && plan!.points.length >= 2
+  /** 基准道 ratio（剖面 offset = 0 的那条道） */
+  const planBaseRatio = planOn ? laneRatioExact(Number(plan!.baseLane), Number(plan!.laneCount)) : 0
+  /**
+   * **右法向的朝外符号**（`+1` 朝外 / `-1` 朝内）——由调用方从几何算好传来。
+   * ⚠️ 这是本功能唯一"看方向"的地方：漏了它，描圈方向一反，换圈就会**朝反方向**跑
+   * （2026-11-03 单测实测：道次 3→2→1 却在半径 94.5→97.4 上越跑越外）。
+   */
+  const planNormalSign = Number(plan?.normalSign) === -1 ? -1 : 1
+  /**
+   * 剖面在"圈坐标 u"处的**朝外米数**（正 = 偏外圈那侧，负 = 偏内圈那侧）。
+   * ⚠️ 这里**不带法向朝向**（`normalSign` 只在转成向量时乘）—— 这样 `lapDriftM` 报出来的是
+   *    人话"偏内 2.1 m / 偏外 1.2 m"，而不是"某个坐标系下的正负"（预览图例直接读它）。
+   */
+  const planOffsetAtU = (u: number): number => {
+    if (!planOn) return 0
+    const lane = laneAtU(plan!.points, u)
+    /** ratio 越大 = 越靠外 ⇒ (目标 - 基准) × 环宽 就是"朝外多少米" */
+    return (laneRatioExact(lane, Number(plan!.laneCount)) - planBaseRatio) * Number(plan!.ringWidthM)
+  }
+  /**
+   * 换圈模式下的横向米数（带**横向平滑**）。
+   * ⚠️ 入参必须是**累积推进量**（跨圈单调递增），**不是** `locate()` 返回的 `arc`
+   *    —— 后者对闭合路线是**取模后的圈内弧长**（每圈回到 0），拿它算圈号会永远停在第 1 圈
+   *    （2026-11-03 单测先红才发现的：实测第 3 圈仍停在基准道，半径差 2 m）。
+   *    这正是本文件开头那条"必须用全局弧长做插值推进"的同一个坑。
+   * ⚠️ 平滑只沿"弧长"做（窗口 `transitionM` 米），因此：
+   *    · 缓慢漂移（≤1 道/圈 ⇒ 一圈 400 m 才挪 1 道）**几乎不受影响**（这正是用户设计的观感）；
+   *    · 万一剖面里有阶跃（导入/坏数据），会被摊成约 `transitionM` 米的一段斜线，**不会瞬移**。
+   */
+  const PLAN_TRANSITION_M = Math.max(0, Number(plan?.transitionM ?? 18))
+  const planOffsetAt = (travelM: number): number => {
+    if (!planOn) return 0
+    if (!(PLAN_TRANSITION_M > 0)) return planOffsetAtU(travelM / lapLengthM)
+    const half = PLAN_TRANSITION_M / 2
+    const SAMPLES = 6
+    let sum = 0
+    for (let i = 0; i <= SAMPLES; i++) {
+      sum += planOffsetAtU((travelM - half + (PLAN_TRANSITION_M * i) / SAMPLES) / lapLengthM)
+    }
+    return sum / (SAMPLES + 1)
+  }
+  /** 换圈模式下的横向偏移向量（法向；按 `planClampM` 兜底截断，防坏 `ringWidthM`） */
+  const planVectorAt = (travelM: number): { lat: number; lng: number } => {
+    /** 朝外米数 × 法向朝向 = 在"生成器法向"坐标里的米数 */
+    const raw = planOffsetAt(travelM) * planNormalSign
+    const m = Math.max(-planClampM, Math.min(planClampM, raw))
+    /** 法向方向取**该弧长处**的线段切向（用圈内弧长定位线段没问题 —— 切向是周期性的） */
+    const t = segmentTangentAt(((travelM % pathTotal) + pathTotal) % pathTotal)
+    return { lat: m * t.lng, lng: -m * t.lat }
+  }
+  /**
+   * 换圈模式下**允许的最大横向偏离**（米）：剖面本身可以横跨整条跑道（最多约一个环宽），
+   * 所以不能再用 `MAX_OFF_ROUTE_M`（5 m）去截断，否则"换到最外道"会被悄悄剪掉。
+   */
+  const planClampM = planOn ? Math.max(maxOffRouteM, Number(plan!.ringWidthM) + 0.5) : maxOffRouteM
   /** 旧"按弧长的噪声波"已废弃（就是"左右抖动太假"的来源）；逐点颗粒改由 `jitterFor` 独立叠加 */
   const noiseAt = (_arcPos: number): { lat: number; lng: number } => ({ lat: 0, lng: 0 })
   /** 偏移向量按**上限截断**：无论怎么叠加，单点偏离不超过 maxOffRouteM ⇒ 不会甩出跑道 */
@@ -583,9 +691,10 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     } else {
       const first = locate(0)
       const j0 = jitterFor(first.arc)
-      const off0 = clampOffset(
-        driftOn ? offsetAt(first.arc, zoneCount, ampScale, lenScale, lapDriftAt(lapIndexAt(0))) : { lat: 0, lng: 0 },
-      )
+      // 🆕 2026-11-03：换圈模式首点按剖面（第 0 圈那一刻的道次）
+      const off0 = planOn
+        ? planVectorAt(0)
+        : clampOffset(driftOn ? offsetAt(first.arc, zoneCount, ampScale, lenScale, lapDriftAt(lapIndexAt(0))) : { lat: 0, lng: 0 })
       pts.push({
         latitude: first.lat + (j0.lat + off0.lat) / M_PER_DEG_LAT,
         longitude: first.lng + (j0.lng + off0.lng) * degLngPerMeter(first.lat),
@@ -621,9 +730,11 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
       const here = locate(p)
       const j = jitterFor(here.arc)
       // 第几圈由**累积推进量**决定（闭合=取商；未闭合=每两趟算一圈，见 lapIndexAt）
-      const off = clampOffset(
-        driftOn ? offsetAt(here.arc, zoneCount, ampScale, lenScale, lapDriftAt(lapIndexAt(p))) : { lat: 0, lng: 0 },
-      )
+      // 🆕 2026-11-03（1.3.6 需求②）：换圈模式下横向由**剖面**决定（不再叠车道表/逐圈漂移/凸起）
+      //    ⚠️ 传的是**累积推进量 `p`**（不是 `here.arc` —— 那是取模后的圈内弧长，会让圈号永远停在第 1 圈）
+      const off = planOn
+        ? planVectorAt(p)
+        : clampOffset(driftOn ? offsetAt(here.arc, zoneCount, ampScale, lenScale, lapDriftAt(lapIndexAt(p))) : { lat: 0, lng: 0 })
       const lat = here.lat + (j.lat + off.lat) / M_PER_DEG_LAT
       const lng = here.lng + (j.lng + off.lng) * degLngPerMeter(here.lat)
       const prev = pts[pts.length - 1]!
@@ -647,8 +758,15 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
     })),
     km: (built.accumulated / 1000).toFixed(2),
     fitDegree: Number(fit).toFixed(2),
-    driftEpisodes: driftOn ? bursts.length : 0,
-    lapDriftM: Array.from({ length: lapsUsed }, (_, i) => Number(lapDriftAt(i).toFixed(2))),
+    driftEpisodes: planOn ? 0 : driftOn ? bursts.length : 0,
+    /**
+     * 🆕 2026-11-03（1.3.6 需求②）：换圈模式下这一栏改报**每圈的实际横向偏移（米）**
+     * （= 该圈中点的道次相对基准道挪了多少）—— 预览图例"第 N 圈偏了多少"直接可读；
+     * 非换圈模式**逐字保持旧口径**（逐圈随机漂移量）。
+     */
+    lapDriftM: planOn
+      ? Array.from({ length: lapsUsed }, (_, i) => Number(planOffsetAtU(i + 0.5).toFixed(2)))
+      : Array.from({ length: lapsUsed }, (_, i) => Number(lapDriftAt(i).toFixed(2))),
     lapLengthM: Number(lapLengthM.toFixed(1)),
   }
 }
