@@ -284,7 +284,7 @@ try {
     const text = readFileSync(file, 'utf8')
     const injected = text
       // 页面把口径收口在 `canStart` 里（自由跑落地后）⇒ 注入要同时拆掉"按钮用 canStart"与"canStart 里的约束"
-      .replace(':disabled="!canStart"', ':disabled="!activeTask"')
+      .replaceAll(':disabled="!canStart"', ':disabled="!activeTask"') // 🆕 2026-11-04：真实路径结算按钮也是 canStart ⇒ 全部替换
       .replace(/const canStart = computed\(\(\) =>[\s\S]{0,240}?\n\)\n/, 'const canStart = computed(() => true)\n')
     if (injected === text) failures.push('注入 13：RunWorkspace.vue 里找不到「开始跑步」的 canStart 绑定（自测需同步更新）')
     writeFileSync(file, injected, 'utf8')

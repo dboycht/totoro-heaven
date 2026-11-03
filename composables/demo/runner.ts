@@ -10,7 +10,7 @@
  * `demo/records.ts` 的返回值传入；依赖方向：本文件 → {`./state`, `./records`}（单向，**不反向**）。
  * ⚠️ 传进来的 ref 与 `useState` 拿到的是同一个对象，所以 `run.value = ...` 这类赋值照旧对全局生效。
  */
-import { calculateRouteSimilarity } from '~/utils/mp/routeSimilarity'
+import { calculateRouteSimilarity, pathLengthMeters } from '~/utils/mp/routeSimilarity'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
 import { applyStartToLoop, laneLoop, laneRatioFor, outwardNormalSign, ringWidthM } from '~/utils/mp/trackEditor'
@@ -336,6 +336,49 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
        */
       const resolved = trackEntry ? resolveTrackGeometry(trackEntry) : null
       if (resolved && resolved.geometry.length >= 2) geometry = resolved.geometry
+      /**
+       * 🆕 2026-11-04（用户口径）**真实路径预设 = 「选择路径 → 检验 → 提交」，不模拟**：
+       * 轨迹就是导出时的**原始点列**（不切圈、不降采样，**不进生成器** —— 不叠加抖动/换道/圆角）；
+       * **里程原样**（`realPath.km`，读不出才退回折线长度），**用时/时间戳按当前配速重算**
+       * （`finish()` 的既有口径：`duration = km × pace`、`startMs = 结算时刻 - duration`）。
+       * 直接走 `finish()` 复用**同一套**报文构造器/自检/记录 —— 提交报文形状一个字不变。
+       */
+      if (trackEntry?.realPath) {
+        const curve = trackEntry.freeShape?.kind === 'curve' ? trackEntry.freeShape.points : []
+        const raw = curve
+          .map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
+          .filter((p) => Number.isFinite(p.latitude) && Number.isFinite(p.longitude))
+        if (raw.length < 2) {
+          run.value.error = '这条真实路径预设的几何是空的（点数不足）：请回「我的场地 → 真实路径【测试】」重新导出，或换一条路径'
+          return
+        }
+        const metaKm = Number(trackEntry.realPath.km)
+        const km = Number.isFinite(metaKm) && metaKm > 0 ? metaKm : pathLengthMeters(raw) / 1000
+        const rawPoints = raw.map((p) => ({ latitude: p.latitude.toFixed(6), longitude: p.longitude.toFixed(6) }))
+        const metaLapM = Number(trackEntry.realPath.lapLengthM)
+        run.value = {
+          ...createRunState(),
+          status: 'running',
+          runType: run.value.runType,
+          lineId: line?.pointId ?? '',
+          paceSecPerKm: run.value.paceSecPerKm,
+          plan: { targetKm: km, paceSecPerKm: run.value.paceSecPerKm, overshootRatio: 0, durationSeconds: 0 },
+          speed: run.value.speed,
+          targetKm: km,
+          distanceM: km * 1000,
+          points: rawPoints,
+          visibleCount: rawPoints.length,
+          officialRoute: line?.pointList ?? [],
+          /** 预览按圈着色：用导出时记下的一圈长度；旧数据没有 ⇒ 0 = 整条一色（不猜） */
+          lapLengthM: Number.isFinite(metaLapM) && metaLapM > 0 ? metaLapM : 0,
+          lapDriftM: [],
+          loopStartIndex: 0,
+          passPoints: { all: DEMO_PASS_POINTS.length, done: DEMO_PASS_POINTS.length, notPassed: 0 },
+        }
+        lastFitAt = 0
+        finish()
+        return
+      }
       /**
        * 非官方路径不做圆角（圆角会把直线折返的几何毁掉，见 `resolveTrackGeometry` 的注释）；
        * `2` = 生成器默认的圆角轮数（老条目的既有行为，逐字不变）。
