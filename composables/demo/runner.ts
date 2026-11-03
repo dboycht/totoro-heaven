@@ -404,6 +404,12 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
         // 供「轨迹预览」按圈着色（多圈同色会糊成一条粗带）
         lapLengthM: generated.lapLengthM,
         lapDriftM: generated.lapDriftM,
+        /**
+         * 🆕 2026-11-03（用户要求"轨迹第 1 圈必须从起跑点开始"）：
+         * 第 1 圈从第几个点开始（= 进场段点数，没有进场段时 0）。
+         * 预览据此从该点开始切圈 ⇒ 进场段单独画成"进场段（不计圈）"，第 1 圈的第 0 个点就是起跑点。
+         */
+        loopStartIndex: generated.loopStartIndex ?? 0,
         passPoints: { all: DEMO_PASS_POINTS.length, done: 0, notPassed: DEMO_PASS_POINTS.length },
         /**
          * ⚠️ 2026-09-21（用户要求"冗余提示"，并修一个自伤 bug）：任务速度窗与时长窗互斥时的说明，

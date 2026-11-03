@@ -85,6 +85,16 @@ export interface DemoRunState {
   lapLengthM: number
   /** 🆕 逐圈漂移量（米），与 `lapLengthM` 配套，图例里显示"第 N 圈偏了多少" */
   lapDriftM: number[]
+  /**
+   * 🆕 2026-11-03（用户要求"轨迹第 1 圈必须从起跑点开始"）：
+   * **第 1 圈从第几个点开始**（= 进场段的点数）。0 = 没有进场段（旧口径，第 0 点就是第 1 圈开头）。
+   *
+   * 为什么需要它：设了进场点时，轨迹最前面几个点是"从进场点走到起跑点"的那段直线。
+   * 若仍按 `lapLengthM` 从**第 0 点**开始切圈，第 1 圈就把进场段算进去了 ——
+   * 于是"第 1 圈"并不是从起跑点开始的（预览里 橙点=轨迹起点 与 红点=起跑点 也对不上）。
+   * 有了这个下标，切圈从它开始，起跑点就正好落在第 1 圈的第 0 个点上。
+   */
+  loopStartIndex: number
   fitDegree: number
   passPoints: { all: number; done: number; notPassed: number }
   /** 结束后的提交报文预览与判定 */
@@ -153,6 +163,7 @@ export const createRunState = (): DemoRunState => ({
   officialRoute: [],
   lapLengthM: 0,
   lapDriftM: [],
+  loopStartIndex: 0,
   fitDegree: 0,
   passPoints: { all: 4, done: 0, notPassed: 4 },
   result: null,

@@ -140,6 +140,12 @@ export interface GeneratedRoute {
    * 调用方把累积弧长除以它，就能知道每个点属于第几圈（与内部切圈规则完全一致）。
    */
   lapLengthM: number
+  /**
+   * 🆕 2026-11-03（用户要求"轨迹第 1 圈必须从起跑点开始"）：
+   * **第 1 圈从第几个点开始**（= 进场段的点数）。`0` = 没有进场段（旧口径）。
+   * 调用方切圈时从这个下标开始 ⇒ 进场段不计入第 1 圈，且 `points[loopStartIndex]` 与起跑点重合。
+   */
+  loopStartIndex: number
 }
 
 /**
@@ -670,6 +676,12 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
   const buildTrajectory = (zoneCount: number, ampScale: number, lenScale = 1) => {
     const r = createRng(seed)
     const pts: { latitude: number; longitude: number }[] = []
+    /**
+     * 🆕 2026-11-03（用户要求"轨迹第 1 圈必须从起跑点开始"）：
+     * 记下**跑道本体**从第几个点开始（= 进场段占的点数）。
+     * 循环段第一个点就是**起跑点**，预览据此从该下标切圈 ⇒ 第 1 圈不再包含进场段。
+     */
+    let loopStartIndex: number | null = null
     let eLat = 0
     let eLng = 0
     let acc = 0
@@ -726,6 +738,18 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
         pts.push({ latitude: lat, longitude: lng })
         continue
       }
+      /**
+       * 🆕 2026-11-03（用户要求"轨迹第 1 圈必须从起跑点开始"）：
+       * 走到跑道上的**第一刻**，先把**起跑点本身**补成一个点（`path[0]`），再照常推进。
+       * 这样 `pts[loopStartIndex]` 与"你设的起跑点"**完全重合**，第 1 圈就是从起跑点开始画/开始数的。
+       * ⚠️ 不能只靠"第一个 locate(stepM) 的点"顶替 —— 那会落在起跑点前方约一个步长（3 m）处。
+       */
+      if (leadM > 0 && leadFrom && loopStartIndex === null) {
+        const prev0 = pts[pts.length - 1]!
+        acc += distanceMeters(prev0.latitude, prev0.longitude, path[0]!.latitude, path[0]!.longitude)
+        pts.push({ latitude: path[0]!.latitude, longitude: path[0]!.longitude })
+        loopStartIndex = pts.length - 1
+      }
 
       const here = locate(p)
       const j = jitterFor(here.arc)
@@ -741,7 +765,7 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
       acc += distanceMeters(prev.latitude, prev.longitude, lat, lng)
       pts.push({ latitude: lat, longitude: lng })
     }
-    return { pts, accumulated: acc }
+    return { pts, accumulated: acc, loopStartIndex: loopStartIndex ?? 0 }
   }
 
   // 车道模型是**确定性**的（偏移由弧长与随机种子决定，不再有"加码档位"）⇒ 直接构建一次即可。
@@ -768,6 +792,12 @@ export function generateCorridorRoute(officialRoute: LatLng[], options: Corridor
       ? Array.from({ length: lapsUsed }, (_, i) => Number(planOffsetAtU(i + 0.5).toFixed(2)))
       : Array.from({ length: lapsUsed }, (_, i) => Number(lapDriftAt(i).toFixed(2))),
     lapLengthM: Number(lapLengthM.toFixed(1)),
+    /**
+     * 🆕 2026-11-03（用户要求"轨迹第 1 圈必须从起跑点开始"）：
+     * 第 1 圈从第几个点开始（= 进场段点数）。没有进场段时是 0。
+     * ⚠️ 只有**设了进场点**时它才 > 0；旧数据/没设进场点的轨迹一律 0 ⇒ 切圈行为逐字不变。
+     */
+    loopStartIndex: built.loopStartIndex,
   }
 }
 

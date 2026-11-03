@@ -28,6 +28,8 @@
 import { laneLoop, laneRatioFor, pointAtArcM, type TrackRings } from '~/utils/mp/trackEditor'
 // 🆕 2026-09-22（审计 B3 连带）：带 freeShape 的条目画它自己的形状（内外圈只是占位几何，不能当车道线画）
 import { freePathPoints, type FreePathShape } from '~/utils/mp/pathShape'
+// 🆕 2026-11-03（用户要求"轨迹第 1 圈必须从起跑点开始"）：切圈判据抽成纯函数（有单测）
+import { splitLapsByLength } from '~/utils/mp/lapSplit'
 
 /** 本机路线库里的一条（只取画面要用的字段，避免组件依赖整个 TrackRouteEntry） */
 type TrackEntryLike = {
@@ -64,6 +66,13 @@ const props = defineProps<{
   lapLengthM?: number
   /** 逐圈漂移量（米，来自生成器 `lapDriftM`）：图例里显示"第 N 圈偏了多少" */
   lapDriftM?: number[]
+  /**
+   * 🆕 2026-11-03（用户要求"轨迹第 1 圈必须从起跑点开始"）：
+   * **第 1 圈从第几个点开始**（= 进场段点数；0/缺省 = 没有进场段）。
+   * 给了它之后，`points` 里下标更小的那一段会被画成"进场段（不计圈）"，
+   * 第 1 圈的第 0 个点就是起跑点 —— 红色起跑点标记于是正好落在第 1 圈的起点上。
+   */
+  loopStartIndex?: number
 }>()
 
 type P0 = { latitude: number; longitude: number }
@@ -192,35 +201,22 @@ const lapDriftOf = (lap0: number): number | null => {
   return Number.isFinite(v) ? v : null
 }
 
-/** 轨迹按"圈"拆段（多圈同色会糊成一条粗带；拆开后每圈一色，重叠也能看出分层） */
-const lapSegments = computed<{ lap: number; pts: P[] }[]>(() => {
-  const pts = finite((props.points ?? []).map(toP))
-  const lapM = Number(props.lapLengthM ?? 0)
-  if (!(lapM > 0) || pts.length < 2) return [{ lap: 0, pts }]
-  const out: { lap: number; pts: P[] }[] = []
-  let acc = 0
-  let cur: P[] = [pts[0]!]
-  let curLap = 0
-  const mPerDegLat = 111320
-  const mLngAt = (lat: number) => 111320 * Math.cos((lat * Math.PI) / 180)
-  const dist = (a: P, b: P) =>
-    Math.hypot((b.latitude - a.latitude) * mPerDegLat, (b.longitude - a.longitude) / (1 / mLngAt(a.latitude)))
-  for (let i = 1; i < pts.length; i++) {
-    acc += dist(pts[i - 1]!, pts[i]!)
-    const lap = Math.floor(acc / lapM)
-    if (lap !== curLap) {
-      /** 本圈收尾：把新点也放进上一圈（线段跨圈时才不断裂） */
-      cur.push(pts[i]!)
-      out.push({ lap: curLap, pts: cur })
-      cur = [pts[i]!]
-      curLap = lap
-    } else {
-      cur.push(pts[i]!)
-    }
-  }
-  if (cur.length > 1) out.push({ lap: curLap, pts: cur })
-  return out
-})
+/**
+ * 轨迹按"圈"拆段（多圈同色会糊成一条粗带；拆开后每圈一色，重叠也能看出分层）。
+ *
+ * 🆕 2026-11-03（用户要求"轨迹第 1 圈必须从起跑点开始"）：
+ * 切圈从 `loopStartIndex` 开始（= 进场段点数），进场段单独拿出来画成"不计圈"的一段。
+ * 判据本体抽到了纯函数 `splitLapsByLength()`（`utils/mp/lapSplit.ts`，有单测）。
+ */
+const lapSplit = computed(() =>
+  splitLapsByLength(
+    finite((props.points ?? []).map(toP)),
+    Number(props.lapLengthM ?? 0),
+    Number(props.loopStartIndex ?? 0),
+  ),
+)
+/** 兼容旧调用点：圈段列表（不含进场段） */
+const lapSegments = computed(() => lapSplit.value.laps)
 
 // ---------------------------------------------------------------- 统计（与画法无关的那些读数）
 /**
@@ -323,6 +319,18 @@ const paths = computed(() => {
     lane: tr && tr.lane.length >= 3 ? d(tr.lane, true) : '',
     shape: tr && tr.shape.length >= 2 ? d(tr.shape, tr.shape.length > 2) : '',
   }
+})
+/** 进场段（第 1 圈之前的点）：单独一段，**不计圈**、不上色（灰色实线） */
+const leadInPath = computed(() => {
+  const list = lapSplit.value.leadIn
+  if (list.length < 2) return ''
+  return list
+    .map((p, i) => {
+      const x = lng2x(p.longitude, zoom.value) * TILE - originPx.value.x
+      const y = lat2y(p.latitude, zoom.value) * TILE - originPx.value.y
+      return `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`
+    })
+    .join(' ')
 })
 /** 每圈一条路径（隐藏的圈**不画**；图例里仍然列出来，用来恢复） */
 const lapPaths = computed(() =>
@@ -541,6 +549,9 @@ watch(
             <path v-if="paths.lane" :d="paths.lane" fill="none" stroke="#22c55e" stroke-width="1" opacity="0.7" />
             <path v-if="paths.shape" :d="paths.shape" fill="none" stroke="#e879f9" stroke-width="1.6" opacity="0.9" />
 
+            <!-- 进场段（从进场点走到起跑点的那一段）：灰色实线，不计圈、不参与按圈着色 -->
+            <path v-if="leadInPath" :d="leadInPath" fill="none" stroke="#cbd5e1" stroke-width="1.6" opacity="0.85" stroke-linecap="round" />
+
             <!-- 每圈一色、细线；下面再叠一条透明宽命中线用于点击隐藏/显示 -->
             <g v-for="p in lapPaths" :key="`lap-${p.lap}`">
               <path :d="p.d" :data-lap="p.lap" fill="none" :stroke="p.color" stroke-width="1.2" opacity="0.95" />
@@ -605,6 +616,9 @@ watch(
           </button>
           <span v-if="stats.spreadM > 0" class="text-caption text-medium-emphasis">
             · 各圈平均半径差 <b>{{ stats.spreadM.toFixed(1) }} m</b>（放大后可看清分层）
+          </span>
+          <span v-if="lapSplit.leadIn.length" class="text-caption text-medium-emphasis" :data-lead-in="lapSplit.leadIn.length">
+            · 另有<b>进场段 {{ lapSplit.leadIn.length }} 点</b>（灰实线，<b>不计圈</b>；第 1 圈从起跑点开始）
           </span>
         </div>
 

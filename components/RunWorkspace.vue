@@ -898,6 +898,7 @@
       :preset-id="presetEntry?.id ?? ''"
       :lapLengthM="run.lapLengthM"
       :lapDriftM="run.lapDriftM"
+      :loopStartIndex="run.loopStartIndex"
     />
 
     <!-- ═══════════════════════════════════════════════════════════════════════
