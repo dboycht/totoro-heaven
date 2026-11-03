@@ -24,6 +24,7 @@ import {
   downsamplePath,
   extractOneLap,
   groupRecordsByDay,
+  nearestLineByGeometry,
   parseArchDetailPoints,
   parseArchRecords,
   parseRealPathMeta,
@@ -82,6 +83,7 @@ test('parseArchRecords：只认事实 —— 缺 scoreId 丢掉、日期非 YYYY
   assert.equal(out.length, 2)
   assert.deepEqual(out[0], {
     scoreId: 'sunrunId202611011234',
+    paperId: '',
     date: '2026-11-01',
     startTime: '08:12:33',
     km: 3.21,
@@ -99,10 +101,10 @@ test('parseArchRecords：只认事实 —— 缺 scoreId 丢掉、日期非 YYYY
 
 test('groupRecordsByDay：按天分组、日期倒序、"日期未知"排最后、同一天按开始时间倒序', () => {
   const days = groupRecordsByDay([
-    { scoreId: 'a', date: '2026-10-31', startTime: '07:00:00', km: 3, usedTime: '', fitDegree: null, passType: 1 },
-    { scoreId: 'b', date: '2026-11-01', startTime: '07:00:00', km: 3, usedTime: '', fitDegree: null, passType: 1 },
-    { scoreId: 'c', date: '2026-11-01', startTime: '18:30:00', km: 3, usedTime: '', fitDegree: null, passType: 1 },
-    { scoreId: 'd', date: '', startTime: '', km: 3, usedTime: '', fitDegree: null, passType: 1 },
+    { scoreId: 'a', paperId: 'P', date: '2026-10-31', startTime: '07:00:00', km: 3, usedTime: '', fitDegree: null, passType: 1 },
+    { scoreId: 'b', paperId: 'P', date: '2026-11-01', startTime: '07:00:00', km: 3, usedTime: '', fitDegree: null, passType: 1 },
+    { scoreId: 'c', paperId: 'P', date: '2026-11-01', startTime: '18:30:00', km: 3, usedTime: '', fitDegree: null, passType: 1 },
+    { scoreId: 'd', paperId: 'P', date: '', startTime: '', km: 3, usedTime: '', fitDegree: null, passType: 1 },
   ])
   assert.deepEqual(days.map((d) => d.date), ['2026-11-01', '2026-10-31', ''])
   assert.deepEqual(days[0]!.records.map((r) => r.scoreId), ['c', 'b'], '同一天里晚间那条排前面')
@@ -279,6 +281,57 @@ test('pickBundleItem：索引越界/非数 ⇒ undefined（界面据此说"没�
   assert.equal(pickBundleItem(items, 1), undefined)
   assert.equal(pickBundleItem(items, -1), undefined)
   assert.equal(pickBundleItem(items, Number.NaN), undefined)
+})
+
+test('extractOneLap：**从场外走进来再开跑**也能切出一圈（2026-11-03 用户实测踩到的那种轨迹）', () => {
+  /**
+   * 现场：真人开跑前从跑道外走进来/站在跑道边调表 ⇒ `p[0]` 根本不在跑道上。
+   * 旧实现只认"回到 `p[0]` 25 m 内"⇒ **永远不命中** ⇒ 退回整条（用户看到"1121 点 → 600 点，只降了采样"）。
+   * 现在从**任意一点**起算 ⇒ 只要跑道上任意一处之后又回到附近，就能切出那一圈。
+   */
+  const walkIn = Array.from({ length: 15 }, (_, i) => ({ latitude: 31.99 - 0.0012 + (i * 1.2) / mLat, longitude: 118.84 - 0.0009 }))
+  const track = multiLap(100, 4) // 4 圈，每圈 48 点
+  const whole = [...walkIn, ...track]
+  const lap = extractOneLap(whole, { tolM: 25, minM: 200 })
+  assert.ok(lap.length < whole.length, `必须切出比整条更短的一段（实际 ${lap.length} / ${whole.length}）`)
+  assert.ok(lap.length >= 40 && lap.length <= 60, `应取回约一圈（40~60 点），实际 ${lap.length}`)
+  const len = pathLengthM(lap)
+  const expect = 2 * Math.PI * 100
+  assert.ok(Math.abs(len - expect) < expect * 0.08, `一圈长度应约 ${expect.toFixed(0)} m，实际 ${len.toFixed(0)} m`)
+  /** 切出来的那一段必须**已经离开**进场段（起点不在入场那 15 个点里） */
+  assert.ok(lap[0]!.latitude > 31.99 - 0.0005, '起点应已经走到跑道上，而不是进场段那几步')
+})
+
+test('nearestLineByGeometry：按轨迹位置认出是哪条线路；差太远 ⇒ null（不硬塞）', () => {
+  /** 东操场（圆心 31.99/118.84，半径 100 m）与西操场（东北 2 km 外，半径 80 m） */
+  const east = { pointId: 'L-east', pointName: '东操场', pointList: circle(100, 24) }
+  const west = { pointId: 'L-west', pointName: '西操场', pointList: circle(80, 24).map((p) => ({ latitude: p.latitude + 0.018, longitude: p.longitude })) }
+  const runOnEast = circle(102, 48)
+  const m = nearestLineByGeometry(runOnEast, [east, west])
+  assert.equal(m?.pointId, 'L-east', JSON.stringify(m))
+  assert.equal(m?.pointName, '东操场')
+  assert.ok((m?.distM ?? 99) < 5, `距离应很小，实际 ${m?.distM}`)
+
+  const runOnWest = circle(78, 48).map((p) => ({ latitude: p.latitude + 0.018, longitude: p.longitude }))
+  assert.equal(nearestLineByGeometry(runOnWest, [east, west])?.pointId, 'L-west')
+
+  /** 离两条线都很远（>150 m）⇒ 返回 null，让用户自己选，绝不硬塞一条错的 */
+  const farAway = circle(100, 24).map((p) => ({ latitude: p.latitude + 0.05, longitude: p.longitude + 0.05 }))
+  assert.equal(nearestLineByGeometry(farAway, [east, west]), null)
+
+  // 退化输入：没点 / 线路没点列 / 空数组 ⇒ null（不抛）
+  assert.equal(nearestLineByGeometry([], [east]), null)
+  assert.equal(nearestLineByGeometry(runOnEast, [{ pointId: 'x', pointList: [] }]), null)
+  assert.equal(nearestLineByGeometry(runOnEast, []), null)
+  // 相同距离时取传入顺序的第一条（稳定可测）
+  const twin = { pointId: 'L-east-2', pointName: '东操场（重复）', pointList: circle(100, 24) }
+  assert.equal(nearestLineByGeometry(runOnEast, [east, twin])?.pointId, 'L-east')
+})
+
+test('parseArchRecords：**保留 paperId**（记录里唯一能指向任务的字，线路只能靠几何匹配）', () => {
+  const [r] = parseArchRecords({ data: [{ scoreId: 's1', paperId: 'sunrunTaskPaper-1', runTime: '2026-11-01' }] })
+  assert.equal(r!.paperId, 'sunrunTaskPaper-1')
+  assert.equal(parseArchRecords({ data: [{ scoreId: 's2', runTime: '2026-11-01' }] })[0]!.paperId, '', '缺 paperId 时给空串，不编')
 })
 
 test('🔄 真 zip 往返：自己写的包能被自己读回来（store 模式，含中文文件名）', async () => {

@@ -18,7 +18,7 @@
  *   · **只碰本人数据**：查询用的学号来自当前登录会话，页面不提供"查别人"的入口。
  */
 import { REAL_PATH_MAX_POINTS, useRealPathExport } from '~/composables/useRealPathExport'
-import { defaultRealPathName } from '~/utils/mp/realPath'
+import { defaultRealPathName, nearestLineByGeometry } from '~/utils/mp/realPath'
 import { LOCAL_FREE_LINE_ID } from '~/utils/mp/trackLibrary'
 
 const showSnackbar = useNotice()
@@ -28,11 +28,18 @@ const lib = useTrackLibrary()
  * 当前生效的任务（真实优先、演示兜底）—— 与「跑道编辑」**同一套取法**（那里也是这两行），
  * 不新造 `useActiveTask`：多一处"任务来源"就多一处会漂移的口径。
  */
-const { task: realTask } = useMpReal()
+const { task: realTask, autoRestoreFromCache } = useMpReal()
 const { task: demoTask } = useMpDemo()
 const activeTask = computed(() => realTask.value ?? demoTask.value)
 onMounted(() => {
   lib.load()
+  /**
+   * ⚠️ **先把本机缓存里的任务恢复回来**（与「跑道编辑」完全同一手法）。
+   * 不恢复的话：用户从「我的场地」直接进本页 ⇒ `activeTask` 是 null ⇒ 「存到哪个地点」只能列出
+   * 本机键一条 ⇒ 他实测看到的就是"没有识别到任务记录的线路"（2026-11-03 反馈）。
+   * 这只是读本机缓存（不发请求），真正的"读任务"仍在工作台。
+   */
+  autoRestoreFromCache()
   // 月份列表是"可选的便利"：读不到不影响"直接读最近成绩"这条路
   if (rp.hasToken.value && !rp.months.value.length) void rp.loadMonths()
 })
@@ -41,6 +48,28 @@ onMounted(() => {
 const taskLines = computed(() =>
   (activeTask.value?.runPointList ?? []).map((l) => ({ value: String(l.pointId), title: String(l.pointName || l.pointId) })),
 )
+/**
+ * 带几何的候选线路（来自当前任务的官方线路）—— 自动匹配用的就是它们的 `pointList`。
+ * ⚠️ 必须定义在 `localLineLabel` / `locationItems` **之前**：那两个 computed 会在 setup 期
+ * 被 `watch(..., { immediate: true })` 立刻求值，引用后面的 `const` 会踩 TDZ 直接报错。
+ */
+const taskLinesWithGeometry = computed(() =>
+  (activeTask.value?.runPointList ?? []).map((l) => ({
+    pointId: String(l.pointId ?? ''),
+    pointName: String(l.pointName ?? l.pointId ?? ''),
+    pointList: (l.pointList ?? []).map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) })),
+  })),
+)
+/**
+ * 本机键那条的说明文字**按实际情况变**（别一律写"本任务未下发线路"）：
+ *   · 读过任务且有线路 ⇒ "不属于任何官方线路"（用户自己描的）；
+ *   · 任务确实没下发线路 ⇒ "本任务未下发线路"（客观事实）；
+ *   · 还没读任务 ⇒ "还没读取任务"（不冒充前两种情况）。
+ */
+const localLineLabel = computed(() => {
+  if (!activeTask.value) return '本机跑道（还没读取任务）'
+  return taskLinesWithGeometry.value.length ? '本机跑道（不属于任何官方线路）' : '本机跑道（本任务未下发线路）'
+})
 /** 「存到哪个地点」的选项 = 任务线路 + 本机键 + 库里已有的地点（去重） */
 const locationItems = computed(() => {
   const out: { value: string; title: string }[] = []
@@ -51,13 +80,30 @@ const locationItems = computed(() => {
     seen.add(v)
     out.push({ value: v, title })
   }
-  push(LOCAL_FREE_LINE_ID, '本机跑道（本任务未下发线路）')
+  /** ⚠️ 本机键放**最后**：有官方线路时，用户要选的多半是线路（自动匹配也会指向线路） */
   for (const l of taskLines.value) push(l.value, l.title)
   for (const e of lib.entries.value) push(String(e.lineId), `${String(e.lineName || e.lineId)}（本机已有）`)
+  push(LOCAL_FREE_LINE_ID, localLineLabel.value)
   return out
 })
-/** 用户选的目标地点（默认：任务只有一条线路时就用它，否则本机键） */
+/**
+ * 🆕 2026-11-03（用户实测反馈"没有正常识别到任务记录的线路"）：
+ * **按轨迹位置自动匹配官方线路**。
+ *
+ * 为什么必须这么做：归档记录里**只有 `paperId`（任务 id），没有线路 id**（字段表见
+ * `_mp-analyze/深挖/D-配置与归档数据模型.md` §4.1）⇒ 服务端没说那次跑的是哪条线。
+ * 而任务里的线路彼此相隔很远（东操场/西操场/图书馆…）⇒ 用"轨迹点到各线路折线的最小距离"判断，
+ * 既准又不需要额外接口。匹配不上（>150 m）就**不硬塞**，让用户自己选。
+ */
+const autoMatch = computed(() => nearestLineByGeometry(rp.selection.value?.points ?? [], taskLinesWithGeometry.value))
+/** 用户选的目标地点（默认：本机键；读到轨迹后会**按位置自动匹配**成对的官方线路） */
 const targetLineId = ref<string>(LOCAL_FREE_LINE_ID)
+/** 读到轨迹后：把下拉自动切到匹配到的线路（用户仍可改）；没匹配上就保持原样并说明 */
+watch(autoMatch, (m) => {
+  if (!m) return
+  if (!locationItems.value.some((i) => i.value === m.pointId)) return
+  targetLineId.value = m.pointId
+})
 watch(
   locationItems,
   (items) => {
@@ -88,12 +134,24 @@ const dayRecords = computed(() => {
 const lapInfo = computed(() => {
   const sel = rp.selection.value
   if (!sel) return null
+  /**
+   * ⚠️ **"切出一圈"与"只降采样"必须分开说**（2026-11-03 用户实测抓到的假话）：
+   * 那一版把 `点数变少` 一律说成"已从整场里切出一圈并降采样"，而实际 1121 点是**切圈失败**、
+   * 只是降采样到 600 —— 界面等于在骗人。现在直接比 `extractOneLap` 的结果与原始长度：
+   * **严格变短才是真切出一圈**（`lap` 是提取结果，`lapPoints` 是它再降采样后的）。
+   */
   return {
     sourcePoints: sel.points.length,
+    lapRawPoints: sel.lap.length,
     lapPoints: sel.lapPoints.length,
-    /** 切出一圈之后点数变少 ⇒ 说明真的切过（如实告诉用户"存的是哪一段"） */
-    sliced: sel.points.length !== sel.lapPoints.length,
+    slicedOneLap: sel.lap.length < sel.points.length,
   }
+})
+/** 自动匹配到的那条线路（界面如实说"按位置匹配的"） */
+const autoMatchNote = computed(() => {
+  const m = autoMatch.value
+  if (!m) return ''
+  return `按轨迹位置自动匹配到「${m.pointName}」（最近距离约 ${Math.round(m.distM)} m）—— 可在下面改`
 })
 
 const doLoadMonths = async () => {
@@ -258,10 +316,23 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
               <div class="text-body-2">
                 原始 <b>{{ lapInfo.sourcePoints }}</b> 点 →
                 存成预设时用 <b>{{ lapInfo.lapPoints }}</b> 点
-                <span v-if="lapInfo.sliced" class="text-medium-emphasis">（已从整场里<b>切出一圈</b>并降采样，最多 {{ REAL_PATH_MAX_POINTS }} 点）</span>
+                <template v-if="lapInfo.slicedOneLap">
+                  （已从整场里<b>切出一圈</b>：那一圈 {{ lapInfo.lapRawPoints }} 点<template v-if="lapInfo.lapRawPoints > REAL_PATH_MAX_POINTS">，再降采样到 {{ REAL_PATH_MAX_POINTS }} 点以内</template>）
+                </template>
+                <template v-else>
+                  （<b class="text-warning">没识别到闭环</b>，按整条轨迹保存<template v-if="lapInfo.sourcePoints > REAL_PATH_MAX_POINTS">（降采样到 {{ REAL_PATH_MAX_POINTS }} 点）</template>）
+                </template>
+              </div>
+              <div v-if="autoMatchNote" class="text-caption text-success mt-1">{{ autoMatchNote }}</div>
+              <div v-else-if="taskLinesWithGeometry.length" class="text-caption text-medium-emphasis mt-1">
+                没能在你当前任务的线路里按位置认出这条轨迹（最近也超过 150 m）—— 请在右边的「存到哪个地点」里自己挑一条。
+              </div>
+              <div v-else class="text-caption text-warning mt-1">
+                当前还没有读到任务（线路列表为空）⇒ 只能先存到「本机跑道」。回「工作台」读一次任务再回本页，就会自动按位置匹配线路。
               </div>
               <div class="text-caption text-medium-emphasis mt-1">
-                为什么要切一圈：整场 3 km 是 5~8 圈，直接当"一圈"存会让跑图与圈数全乱；切不出来（不是闭环）时会<b>原样保留</b>。
+                为什么要切一圈：整场 3 km 是 5~8 圈，直接当"一圈"存会让跑图与圈数全乱；切不出来（不是闭环）时会<b>原样保留</b>并如实说明。
+                <br />⚠️ 真跑常常是"从场外走进来再开跑"，所以切圈是<b>从轨迹上任意一处起算</b>的（不只认起跑那一点）。
               </div>
             </template>
           </v-card-text>

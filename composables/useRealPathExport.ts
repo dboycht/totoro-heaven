@@ -52,6 +52,8 @@ export interface RealPathMonth {
 export interface RealPathSelection {
   record: RealPathRecord
   points: RealPathPoint[]
+  /** `extractOneLap()` 的结果（**可能是整条** —— 切不出闭环时它原样返回） */
+  lap: RealPathPoint[]
   /** 切成"一圈"并降采样之后的点（存预设/分享都用它） */
   lapPoints: RealPathPoint[]
   /** 导出用的元信息 */
@@ -112,7 +114,7 @@ export function useRealPathExport() {
       sourcePoints: points.value.length,
       exportedAt: new Date().toISOString(),
     }
-    return { record, points: points.value, lapPoints, meta }
+    return { record, points: points.value, lap, lapPoints, meta }
   })
 
   /** 清掉"选中的轨迹"（换天/换条时必须清，否则会把上一条的轨迹当成这一条的） */

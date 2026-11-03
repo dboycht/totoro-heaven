@@ -52,6 +52,12 @@ export interface RealPathMeta {
 
 /** 成绩归档里的一条（只取本功能要用的字段；其余原样留着不猜） */export interface RealPathRecord {
   scoreId: string
+  /**
+   * 🆕 任务 id（服务端 `paperId`）—— 记录里**唯一**指向"哪次任务"的字段。
+   * ⚠️ 归档记录**没有线路 id**（字段表见 `_mp-analyze/深挖/D-配置与归档数据模型.md` §4.1），
+   *    所以"这次跑的是哪条线路"只能靠 `nearestLineByGeometry()` 用**轨迹位置**判断。
+   */
+  paperId: string
   /** `YYYY-MM-DD`（读不出 ⇒ 空串，界面据此归到"日期未知"） */
   date: string
   /** 时间部分（`startTmie`，`HH:mm:ss`；读不出 ⇒ 空串） */
@@ -127,6 +133,7 @@ export function parseArchRecords(payload: unknown): RealPathRecord[] {
     if (!scoreId) continue
     out.push({
       scoreId,
+      paperId: str(r.paperId),
       date: isIsoDate(r.runTime) ? str(r.runTime) : '',
       startTime: str(r.startTmie),
       km: num(r.mileage),
@@ -219,32 +226,119 @@ export function pathLengthM(points: RealPathPoint[]): number {
  * 跑图时"一圈"就变成 3 km（`lapLengthM` 报 3000 m、按圈着色只有 1 圈、换圈剖面 n=1）——
  * 那不是用户想要的"用这条路径跑"。
  *
- * ## 判据（**从前往后**找第一段闭合，不是从后往前）
- * 依次检查 `p[i]`：累计长度 ≥ `minM` **且** `distance(p[i], p[0]) ≤ tolM` ⇒ 取 `p[0..i]` 作为一圈。
- *   · 取**第一段**：多圈轨迹里"从后往前找"会落在**最后一圈**（甚至整条），
- *     实测 5 圈 241 点的轨迹被整条返回（`❌ 应取回约一圈，实际 241`）；
+ * ## 判据（**从任意一点起算**，不是只认 `p[0]`）
+ * 对每个起点 `i`：找最小的 `j`，使 `dist(p[i], p[j]) ≤ tolM` 且 `arc(i..j) ≥ minM`；
+ * 取**第一组**（`i` 最小）命中，返回 `p[i..j]`。
+ *
+ * ## 为什么不能用 `p[0]` 当基准（2026-11-03 实测踩到）
+ * 真人开跑前常常**从场外走进来**（进场几步、站在跑道边调表）⇒ `p[0]` 根本不在跑道上，
+ * 于是"回到起点 25 m 内"**永远不会命中**，函数退回整条轨迹 —— 用户看到的就是
+ * "原始 1121 点 → 存成预设时用 600 点"（只是降采样，根本没切圈）。
+ * 改成从任意点起算后，只要**跑道上任意一处**之后又回到附近，就能切出那一圈。
+ *
+ * ## 其它口径
  *   · 找不到（不是闭环 / 跑得歪）⇒ **原样返回整条**（绝不凭空造一个闭合环）；
- *   · 输入不足 3 点 ⇒ 原样返回（调用方自己判"不可用"）。
+ *   · 输入不足 3 点 ⇒ 原样返回（调用方自己判"不可用"）；
+ *   · 返回的片段**首尾都在闭环附近**，因此交给 `freeShape: curve`（首尾自动闭合）语义正确。
  */
 export function extractOneLap(points: RealPathPoint[], opts: { tolM?: number; minM?: number } = {}): RealPathPoint[] {
   const list = Array.isArray(points) ? points.filter((p) => p && Number.isFinite(p.latitude) && Number.isFinite(p.longitude)) : []
   if (list.length < 3) return list
   const tolM = Math.max(5, Number(opts.tolM ?? 25))
   const minM = Math.max(50, Number(opts.minM ?? 200))
-  const start = list[0]!
   /** 累计长度（用于 `minM` 判据） */
   const cum = [0]
   for (let i = 1; i < list.length; i++) cum.push(cum[i - 1]! + distanceM(list[i - 1]!, list[i]!))
-  let best = -1
-  for (let i = 2; i < list.length; i++) {
-    if (cum[i]! < minM) continue
-    if (distanceM(list[i]!, start) <= tolM) {
-      best = i
-      break
+  /**
+   * 全量枚举是 O(n²)（1121 点 ≈ 63 万次比较，纯浮点，毫秒级）；
+   * 为了让长轨迹也不卡，限制**每个起点只看最多 `SCAN_AHEAD` 个后续点**（覆盖到 ~2 圈足够）。
+   */
+  const SCAN_AHEAD = Math.min(list.length - 1, 1200)
+  for (let i = 0; i < list.length - 2; i++) {
+    const a = list[i]!
+    for (let j = i + 2; j <= Math.min(list.length - 1, i + SCAN_AHEAD); j++) {
+      if (cum[j]! - cum[i]! < minM) continue
+      if (distanceM(a, list[j]!) <= tolM) {
+        return list.slice(i, j + 1)
+      }
     }
   }
-  if (best < 0) return list
-  return list.slice(0, best + 1)
+  return list
+}
+
+/**
+ * **按几何位置判断"这一跑属于哪条官方线路"**（2026-11-03，用户实测反馈"没识别到任务记录的线路"）。
+ *
+ * ## 为什么必须靠几何
+ * `getSunrunArch` 的记录里**只有 `paperId`（任务 id），没有线路 id**（字段表见
+ * `_mp-analyze/深挖/D-配置与归档数据模型.md` §4.1）—— 也就是说**服务端不告诉我们那次跑的是哪条线**。
+ * 而任务的线路之间通常相隔很远（东操场/西操场/图书馆…）⇒ 用轨迹与各线路 `pointList` 的**最近距离**
+ * 判断，既准确又不需要额外接口。
+ *
+ * ## 判据
+ * 对每条线路算"轨迹点到该折线的**最小**距离"，取最小者；
+ *   · 若最小距离 > `maxDistM`（默认 150 m）⇒ 认定为"匹配不上"，返回 `null`
+ *     （宁可让用户自己选，也不硬塞一条错的地点）；
+ *   · 相同距离时按传入顺序取第一条（稳定、可测）。
+ * ⚠️ 纯函数、无副作用；只做"建议"，最终存到哪个地点仍由界面上的下拉决定。
+ */
+export function nearestLineByGeometry(
+  points: RealPathPoint[],
+  lines: { pointId: string; pointName?: string; pointList?: RealPathPoint[] }[],
+  opts: { maxDistM?: number; stride?: number } = {},
+): { pointId: string; pointName: string; distM: number } | null {
+  const pts = (Array.isArray(points) ? points : []).filter((p) => p && Number.isFinite(p.latitude) && Number.isFinite(p.longitude))
+  if (pts.length < 3) return null
+  /** 点太多没必要全算（每隔 `stride` 取一个，默认让 1000 点降到 ~200 点） */
+  const stride = Math.max(1, Math.round(Number(opts.stride ?? Math.ceil(pts.length / 200))))
+  const sampled: RealPathPoint[] = []
+  for (let i = 0; i < pts.length; i += stride) sampled.push(pts[i]!)
+  if (sampled[sampled.length - 1] !== pts[pts.length - 1]) sampled.push(pts[pts.length - 1]!)
+  const maxDistM = Math.max(10, Number(opts.maxDistM ?? 150))
+
+  let best: { pointId: string; pointName: string; distM: number } | null = null
+  for (const line of Array.isArray(lines) ? lines : []) {
+    const poly = (Array.isArray(line?.pointList) ? line.pointList : []).filter(
+      (p) => p && Number.isFinite(Number(p.latitude)) && Number.isFinite(Number(p.longitude)),
+    ) as RealPathPoint[]
+    const id = String(line?.pointId ?? '').trim()
+    if (!id || poly.length < 2) continue
+    /** 轨迹点到这条线路折线的**最小距离**（逐段求点到线段距离） */
+    let minD = Number.POSITIVE_INFINITY
+    for (const p of sampled) {
+      for (let k = 1; k < poly.length; k++) {
+        const d = pointToSegmentM(p, poly[k - 1]!, poly[k]!)
+        if (d < minD) minD = d
+      }
+      if (minD <= 1) break
+    }
+    if (!Number.isFinite(minD)) continue
+    if (!best || minD < best.distM) best = { pointId: id, pointName: String(line?.pointName ?? id), distM: minD }
+  }
+  if (!best || best.distM > maxDistM) return null
+  return best
+}
+
+/**
+ * 点到**线段**的距离（米；局部等距近似，够用且便宜）。
+ * 与 `routeSimilarity.pointToSegmentDistance` 同口径（那边是"度"为单位），这里出口是米。
+ */
+export function pointToSegmentM(p: RealPathPoint, a: RealPathPoint, b: RealPathPoint): number {
+  const mLat = 111320
+  const mLng = 111320 * Math.cos((((a.latitude + b.latitude) / 2) * Math.PI) / 180)
+  const px = p.longitude * mLng
+  const py = p.latitude * mLat
+  const ax = a.longitude * mLng
+  const ay = a.latitude * mLat
+  const bx = b.longitude * mLng
+  const by = b.latitude * mLat
+  const dx = bx - ax
+  const dy = by - ay
+  const len2 = dx * dx + dy * dy
+  const t = len2 > 0 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0
+  const qx = ax + t * dx
+  const qy = ay + t * dy
+  return Math.hypot(px - qx, py - qy)
 }
 
 /**
