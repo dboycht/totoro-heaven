@@ -44,6 +44,8 @@ import {
   type TrackSaveResult,
   type TrackStart,
 } from '~/utils/mp/trackLibrary'
+// 🆕 2026-11-03（需求③）：真实路径元信息的类型（结构定义在纯模块里）
+import type { RealPathMeta } from '~/utils/mp/realPath'
 
 export function useTrackLibrary() {
   const { appVersion } = useUpdateCheck()
@@ -258,6 +260,12 @@ export function useTrackLibrary() {
     entry?: TrackEntry | null
     freeShape?: FreePathShape | null
     /**
+     * 🆕 2026-11-03（1.3.6 需求③「真实路径」）：**这条预设来自哪一场真实跑**。
+     * `undefined` = 沿用旧值；`null` = 明确清掉；对象 = 写进去（由 `buildRealPathPresetDraft()` 生成）。
+     * 🔴 里面不含学号/姓名/token（白名单字段见 `utils/mp/realPath.ts`）。
+     */
+    realPath?: RealPathMeta | null
+    /**
      * 🆕 2026-11-03（1.3.6）：**预设名称**（用户原话"保存预设的时候可以输入相关名字进行存储，便于用户区分"）。
      *   · 归一化后非空 ⇒ 用它（**全库不可重名**，撞了直接拒绝，见返回值）；
      *   · 空/没传 ⇒ **自动命名**（`autoPresetName()`：优先取线路名，撞了就叫「东操场 · 预设 2」）。
@@ -301,6 +309,12 @@ export function useTrackLibrary() {
     const keptEntry = input.entry === undefined ? old?.entry : (input.entry ? normalizeTrackEntry(input.entry) : undefined)
     // 🆕 非官方形状：同一个"undefined 沿用 / null 清掉"的口径
     const keptFreeShape = freeShape === undefined ? old?.freeShape : (freeShape ?? undefined)
+    /**
+     * 🆕 2026-11-03（需求③）：真实路径的来源元信息 —— 与 `freeShape` 同一口径
+     * （`undefined` 沿用 / `null` 清掉）。**这里必须透传**，否则"导出成预设"那一步存进去的
+     * `realPath` 会在下一次保存几何时被悄悄丢掉（那就再也说不清"这条是哪天导出的"）。
+     */
+    const keptRealPath = input.realPath === undefined ? old?.realPath : (input.realPath ?? undefined)
     const laneNo = input.laneNo ?? old?.laneNo
     const laneCount = input.laneCount ?? old?.laneCount
     const entry: TrackRouteEntry = {
@@ -321,6 +335,7 @@ export function useTrackLibrary() {
       ...(start ? { start } : {}),
       ...(keptEntry ? { entry: keptEntry } : {}),
       ...(keptFreeShape ? { freeShape: keptFreeShape } : {}),
+      ...(keptRealPath ? { realPath: keptRealPath } : {}),
       updatedAt: nowIso,
       updatedAppVersion: version,
       editCount: (old?.editCount ?? 0) + 1,

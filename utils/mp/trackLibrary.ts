@@ -8,6 +8,8 @@
  * 附**元信息**（创建日期、创建时的软件版本、线路名快照）—— 用户明确要求列表要显示这些。
  */
 import type { LatLng } from './routeSimilarity'
+// 🆕 2026-11-03（1.3.6 需求③「真实路径」）：预设上记录的来源元信息（纯类型 + 一个解码器）
+import { parseRealPathMeta, type RealPathMeta } from './realPath'
 import { laneLoop, laneRatioFor, ringLengthM, startDirectionLabel, type LoopDirection } from './trackEditor'
 import { freePathShapeText, parseFreePathShape, usableFreePathShape, type FreePathShape } from './pathShape'
 import type { TrackEntry } from './pathShape'
@@ -121,6 +123,15 @@ export interface TrackRouteEntry {
    * ⚠️ 它**永远不是官方线路几何**：只进本机路线库，绝不进提交报文（`lineId` 仍是本机键名）。
    */
   freeShape?: FreePathShape
+  /**
+   * 🆕 2026-11-03（1.3.6 需求③「真实路径【测试】」）：**这条预设的来源是某一天的真实跑**。
+   *
+   * 只有"从成绩归档导出"的预设才有这个字段；**没有它 ⇒ 与旧版本逐字一致**（不凭空造）。
+   * 用途：① 界面如实显示"这条是哪天/哪一场导出的"；② 换圈那一步**不参与**
+   *   （判据本来就是"有没有 `freeShape`"——真实路径带 `freeShape: curve`，两者自动一致）。
+   * 🔴 里面**不含**学号/姓名/token（隐私红线，白名单字段见 `utils/mp/realPath.ts`）。
+   */
+  realPath?: RealPathMeta
 }
 
 const isPts = (v: unknown): v is LatLng[] =>
@@ -701,6 +712,8 @@ export function normalizeLibrary(raw: unknown, fallbackVersion = '未知'): Trac
     const editCount = Number(v.editCount)
     /** 非官方形状：不认识的形状/坏数据一律 undefined（= 退回双圈模式），绝不抛 */
     const freeShape = parseFreePathShape(v.freeShape)
+    /** 🆕 2026-11-03（需求③）：真实路径的来源元信息（坏数据/空 ⇒ undefined，老条目不会多出这个键） */
+    const realPath = parseRealPathMeta(v.realPath)
     out.push({
       // 🆕 2026-11-03（1.3.6）：预设主键（旧数据 = lineId ⇒ 既有引用零迁移）
       id: assignId(v, lineId),
@@ -724,6 +737,8 @@ export function normalizeLibrary(raw: unknown, fallbackVersion = '未知'): Trac
       ...(history.length ? { history } : {}),
       // 🆕 只有**合法**的非官方形状才写回；没有这个字段的老条目**不会**多出这个键
       ...(freeShape ? { freeShape } : {}),
+      /** 🆕 同上：只有**看得出是哪一场**的元信息才写回 */
+      ...(realPath ? { realPath } : {}),
     })
   }
   if (Array.isArray(raw)) {
@@ -870,10 +885,29 @@ export function entryDetailRows(e: TrackRouteEntry): { label: string; value: str
     ...(freePathShapeText(e.freeShape) ? [{ label: '研途健行路径', value: String(freePathShapeText(e.freeShape)) }] : []),
     { label: '内外圈点数', value: `外圈 ${e.outer.length} 点 · 内圈 ${e.inner.length} 点` },
     { label: '外圈周长', value: e.outer.length >= 3 ? `${Math.round(ringLengthM(e.outer))} m` : '—' },
-    {
-      label: '道次',
+    { label: '道次',
       value: e.laneNo ? `第 ${e.laneNo} 道${e.laneCount ? `（共 ${e.laneCount} 道）` : ''}` : '未记录',
     },
+    /**
+     * 🆕 2026-11-03（需求③「真实路径」）：**只有这条预设真的是从成绩归档导出时才多出这几行**
+     * （行数由数据决定，旧条目不会凭空多出"真实路径"字样）。
+     */
+    ...(e.realPath
+      ? [
+          { label: '来源', value: '真实路径（从成绩归档导出，测试功能）' },
+          { label: '真实跑日期', value: e.realPath.date || '未记录' },
+          { label: '真实场次号', value: e.realPath.scoreId || '未记录' },
+          {
+            label: '那场里程 / 用时',
+            value: `${e.realPath.km === null ? '未记录' : `${e.realPath.km.toFixed(2)} km`} · ${e.realPath.usedTime || '未记录'}`,
+          },
+          {
+            label: '那场拟合度 / 原始点数',
+            value: `${e.realPath.fitDegree === null ? '未记录' : e.realPath.fitDegree.toFixed(2)} · ${e.realPath.sourcePoints || 0} 点`,
+          },
+          { label: '导出时间', value: e.realPath.exportedAt ? formatLocalDateTime(e.realPath.exportedAt) : '未记录' },
+        ]
+      : []),
     { label: '起跑点', value: startSummaryText(e) },
     ...(e.start?.point
       ? [

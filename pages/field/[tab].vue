@@ -5,13 +5,16 @@
     <MornsignZoneView v-else-if="tab === 'mornsign-zone'" />
     <!-- 2026-09-22 结构调整：非官方路径绘制从「跑道编辑」里搬出来，与上面两个子页**同级** -->
     <FreePathView v-else-if="tab === 'free-path'" />
+    <!-- 2026-11-03（1.3.6 需求③）：「真实路径」【测试】—— 某天真实跑的轨迹 → 本机预设 / 分享包 -->
+    <RealPathView v-else-if="tab === 'real-path'" />
   </TabGroupShell>
 </template>
 
 <script setup lang="ts">
 /**
- * 「我的场地」分组：`/field/track-editor`、`/field/mornsign-zone`、`/field/free-path`
- * （2026-09-20 分组重构；本机路径页 2026-09-22 加；2026-09-29 改名为「研途健行路径编辑器」）
+ * 「我的场地」分组：`/field/track-editor`、`/field/mornsign-zone`、`/field/free-path`、`/field/real-path`
+ * （2026-09-20 分组重构；本机路径页 2026-09-22 加；2026-09-29 改名为「研途健行路径编辑器」；
+ *  🆕 2026-11-03 加「真实路径」【测试】）
  *
  * ⚠️ 为什么是**动态段** `[tab].vue` 而不是 `index.vue + 两个子文件`：
  *    Nuxt 按**文件**生成路由 —— `pages/field/index.vue` 只对应 `/field` 本身，
@@ -31,13 +34,18 @@
  *    **只改显示名**（label + 页面内的标题/文案）——
  *    路由 `/field/free-path`、tab key `free-path`、固定存储键 `local:free` **一律保留**
  *    （用户明确选择"只改显示名，路由与存储键全保留" ⇒ 零迁移风险，旧书签与旧数据都不动）。
+ *
+ * 🆕 2026-11-03（需求③）：新增子页 key `real-path`、组件 `components/RealPathView.vue`，
+ *    标签名「真实路径」，按钮/卡片上标【测试】（用户要求"相关功能标注为「测试」"）。
+ *    同样三处一起改：`validate` 白名单 / `GROUP.tabs` / 模板分支 + import。
  */
 import TrackEditorView from '~/components/TrackEditorView.vue'
 import MornsignZoneView from '~/components/MornsignZoneView.vue'
 import FreePathView from '~/components/FreePathView.vue'
+import RealPathView from '~/components/RealPathView.vue'
 
 definePageMeta({
-  validate: (route) => ['track-editor', 'mornsign-zone', 'free-path'].includes(String(route.params.tab ?? '')),
+  validate: (route) => ['track-editor', 'mornsign-zone', 'free-path', 'real-path'].includes(String(route.params.tab ?? '')),
 })
 
 const route = useRoute()
@@ -47,11 +55,12 @@ const GROUP = {
   base: '/field',
   label: '我的场地',
   icon: 'mdi-map-marker-radius',
-  hint: '与"你描的几何 / 签到落点"有关',
+  hint: '与"你描的几何 / 签到落点 / 真实路径"有关',
   tabs: [
     { key: 'track-editor', label: '跑道编辑', icon: 'mdi-vector-polyline' },
     { key: 'mornsign-zone', label: '签到区域', icon: 'mdi-map-marker-radius-outline' },
     { key: 'free-path', label: '研途健行路径', icon: 'mdi-vector-curve' },
+    { key: 'real-path', label: '真实路径【测试】', icon: 'mdi-map-marker-path' },
   ],
 } as const
 
