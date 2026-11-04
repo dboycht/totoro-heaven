@@ -223,6 +223,16 @@ test('defaultRealPathName：带日期（有时刻就带 HHMM）；日期缺失�
   assert.equal(defaultRealPathName({ date: '', usedTime: '' }), '真实路径 日期未知')
 })
 
+test('defaultRealPathName：🆕 2026-11-04 默认名**携带地点名**（用户口径）；空白地点 = 不带（与旧版一致）', () => {
+  assert.equal(
+    defaultRealPathName({ date: '2026-09-16', usedTime: '', startTime: '21:22:00' }, '天目湖-东操场'),
+    '天目湖-东操场 · 真实路径 2026-09-16 · 2122',
+  )
+  assert.equal(defaultRealPathName({ date: '2026-11-01', usedTime: '' }, '东操场'), '东操场 · 真实路径 2026-11-01')
+  assert.equal(defaultRealPathName({ date: '2026-11-01', usedTime: '' }, '   '), '真实路径 2026-11-01', '空白地点不算名字')
+  assert.equal(defaultRealPathName({ date: '2026-11-01', usedTime: '' }, '本机跑道（还没读取任务）'), '本机跑道（还没读取任务） · 真实路径 2026-11-01')
+})
+
 test('parseRealPathMeta：看得出是哪一场才保留；残缺/垃圾 ⇒ undefined（老条目不会多出这个键）', () => {
   assert.deepEqual(parseRealPathMeta({ date: '2026-11-01', scoreId: 's1', km: '3.2', sourcePoints: '967' }), {
     date: '2026-11-01',

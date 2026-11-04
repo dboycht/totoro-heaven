@@ -116,14 +116,21 @@ const targetLineName = computed(() => locationItems.value.find((i) => i.value ==
 
 /** 预设名（留空 ⇒ 自动命名；这里给个"来自真实路径"的默认值，用户可改） */
 const presetName = ref('')
-watch(
-  () => rp.selection.value?.meta,
-  (meta) => {
-    if (!meta) return
-    const rec = rp.selectedRecord.value
-    presetName.value = defaultRealPathName({ ...meta, startTime: rec?.startTime })
-  },
-)
+/** 最近一次自动生成的名字 —— 换地点时只覆盖"还是自动名（或为空）"的情况，**绝不覆盖用户手改** */
+const lastAutoName = ref('')
+const rebuildAutoName = () => {
+  const meta = rp.selection.value?.meta
+  if (!meta) return
+  const rec = rp.selectedRecord.value
+  /** 🆕 2026-11-04（用户口径"默认名携带路径名称"）：带上「存到哪个地点」的名字，如「天目湖-东操场 · 真实路径 …」 */
+  lastAutoName.value = defaultRealPathName({ ...meta, startTime: rec?.startTime }, targetLineName.value)
+  presetName.value = lastAutoName.value
+}
+watch(() => rp.selection.value?.meta, rebuildAutoName)
+/** 换了「存到哪个地点」⇒ 默认名跟着换地点前缀（手改过就不动） */
+watch(targetLineName, () => {
+  if (!presetName.value.trim() || presetName.value === lastAutoName.value) rebuildAutoName()
+})
 
 /** 当前选中那天的记录（点"某一天"之后列出来） */
 const dayRecords = computed(() => {

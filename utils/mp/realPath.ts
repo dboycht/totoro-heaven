@@ -368,14 +368,21 @@ export function downsamplePath(points: RealPathPoint[], maxPoints = 600): RealPa
 }
 
 /**
- * 拟一个**默认的预设名**（用户可改）：`真实路径 2026-11-01`（同一天多条时带时刻 `· 0812`）。
+ * 拟一个**默认的预设名**（用户可改）：`东操场 · 真实路径 2026-11-01 · 0812`。
+ * 🆕 2026-11-04（用户口径"默认名携带路径名称"）：`lineName` 非空时**前缀地点名**（如「天目湖-东操场」）；
+ * 空白/缺省 = 不带（与旧版逐字一致）。
  * ⚠️ 名字的**唯一性不在这里判**（那是 `autoPresetName` / `findNameConflict` 的事），
  *    本函数只负责"给一个像样的起点"。
  */
-export function defaultRealPathName(meta: Pick<RealPathMeta, 'date' | 'usedTime'> & { startTime?: string }): string {
+export function defaultRealPathName(
+  meta: Pick<RealPathMeta, 'date' | 'usedTime'> & { startTime?: string },
+  lineName = '',
+): string {
   const d = isIsoDate(meta.date) ? meta.date : '日期未知'
   const t = String(meta.startTime ?? '').replace(/:/g, '').slice(0, 4)
-  return t ? `真实路径 ${d} · ${t}` : `真实路径 ${d}`
+  const base = t ? `真实路径 ${d} · ${t}` : `真实路径 ${d}`
+  const loc = String(lineName ?? '').trim()
+  return loc ? `${loc} · ${base}` : base
 }
 
 /** 生成预设草稿需要的输入（组合层从"选中的那天那条记录 + 它的点列"组装） */
