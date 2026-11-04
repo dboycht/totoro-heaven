@@ -174,17 +174,17 @@ export const createRunState = (): DemoRunState => ({
  * 🆕 2026-11-03（1.3.6 需求②）：**GPS 抖动度**的取值范围、默认值与唯一归一化出口。
  *
  * 用户口径："增加新的操作变量，用户当然可以设置相关**GPS 抖动度**"（滑杆 0~2 m，步长 0.1）。
- * 默认 **0.6 m** —— 与 `generateCorridorRoute` 原有的 `jitterSigmaM` 默认值**同一个数**，
- * 所以"没动过滑杆"时轨迹与旧版逐点一致（这是本功能的回归保证）。
+ * 默认 **0.2 m**（🆕 2026-11-04 用户口径"默认 σ=0.2"；旧版默认 0.6 仍可手动调回）——
+ * 与 `generateCorridorRoute` 的 `jitterSigmaM` 默认值**同一个数**（单一来源 `DEFAULT_JITTER_SIGMA_M`）。
  */
 export const JITTER_SIGMA_MIN_M = 0
 export const JITTER_SIGMA_MAX_M = 2
 export const JITTER_SIGMA_STEP_M = 0.1
-export const DEFAULT_JITTER_SIGMA_M = 0.6
+export const DEFAULT_JITTER_SIGMA_M = 0.2
 
 /**
  * 抖动度的**唯一归一化出口**（界面/引擎都走它）：非数/越界一律夹回区间，保留一位小数。
- * 判据：`clampJitterSigmaM('0.66') === 0.7`、`clampJitterSigmaM(-5) === 0`、`clampJitterSigmaM(NaN) === 0.6`。
+ * 判据：`clampJitterSigmaM('0.66') === 0.7`、`clampJitterSigmaM(-5) === 0`、`clampJitterSigmaM(NaN) === 0.2`。
  */
 export function clampJitterSigmaM(raw: unknown): number {
   const v = Number(raw)
@@ -412,7 +412,7 @@ export function useDemoState(hooks: DemoStateHooks) {
 
   /**
    * 🆕 2026-11-03（需求②）**GPS 抖动度**（米，σ）：用户在跑步页用滑杆调（0~2，步长 0.1）。
-   * ⚠️ 同样**不落盘**（与换圈图同一条口径）；默认 0.6 = 生成器原默认值 ⇒ 不动滑杆时行为与旧版一致。
+   * ⚠️ 同样**不落盘**（与换圈图同一条口径）；默认 0.2（用户 2026-11-04 口径，单一来源 DEFAULT_JITTER_SIGMA_M，与生成器默认同一个数）。
    */
   const jitterSigmaM = useState<number>('mpJitterSigmaM', () => DEFAULT_JITTER_SIGMA_M)
 

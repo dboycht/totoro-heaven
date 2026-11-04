@@ -263,7 +263,7 @@ const degLngPerMeter = (lat: number) => 1 / (M_PER_DEG_LAT * Math.cos((lat * Mat
 export function generateCorridorRoute(officialRoute: LatLng[], options: CorridorOptions): GeneratedRoute {
   const {
     targetKm,
-    jitterSigmaM = 0.6,
+    jitterSigmaM = 0.2,
     jitterRho = 0.92,
     stepM = 2,
     loop = true,

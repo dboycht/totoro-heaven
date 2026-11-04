@@ -421,7 +421,7 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
         seed: newRunSeed(),
         smoothRoute: smoothRouteForThisRun,
         /**
-         * 🆕 2026-11-03（需求②）：**GPS 抖动度**由跑步页滑杆给（0~2 m，默认 0.6 =
+         * 🆕 2026-11-03（需求②）：**GPS 抖动度**由跑步页滑杆给（0~2 m，默认 0.2 =
          * 生成器原默认值 ⇒ 没动滑杆时轨迹与旧版逐点一致）。
          */
         jitterSigmaM: clampJitterSigmaM(state.jitterSigmaM.value),

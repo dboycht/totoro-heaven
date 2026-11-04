@@ -354,7 +354,7 @@
             跑步 GPS 抖动
             <v-chip v-if="isRealPathRun" size="x-small" variant="tonal">不适用</v-chip>
             <v-spacer />
-            <v-btn v-if="!isRealPathRun" size="x-small" variant="text" :disabled="isBusy" @click="jitterModel = clampJitterSigmaM(0.6)">恢复默认 0.6</v-btn>
+            <v-btn v-if="!isRealPathRun" size="x-small" variant="text" :disabled="isBusy" @click="jitterModel = clampJitterSigmaM(DEFAULT_JITTER_SIGMA_M)">恢复默认 {{ DEFAULT_JITTER_SIGMA_M.toFixed(1) }}</v-btn>
           </v-card-title>
           <v-card-text>
             <div v-if="isRealPathRun" class="text-caption text-medium-emphasis">
@@ -377,7 +377,7 @@
                 <v-chip size="small" variant="tonal" color="secondary">σ = {{ jitterModel.toFixed(1) }} m</v-chip>
               </div>
               <div class="text-caption text-medium-emphasis mt-1">
-                0 = 完全平滑（不像真机）；0.6 = 与旧版默认一致；2.0 = 明显漂。它只改<b>逐点高频噪声</b>，不改车道与里程算法。
+                0 = 完全平滑（不像真机）；0.2 = 默认（更贴线）；0.6 = 旧版默认；2.0 = 明显漂。它只改<b>逐点高频噪声</b>，不改车道与里程算法。
               </div>
             </template>
           </v-card-text>
@@ -1364,7 +1364,7 @@ import {
   normalizeLanePoints,
 } from '~/utils/mp/laneProfile'
 // 🆕 2026-11-03（需求②）：GPS 抖动度的滑杆范围与唯一归一化出口
-import { JITTER_SIGMA_MAX_M, JITTER_SIGMA_MIN_M, JITTER_SIGMA_STEP_M, clampJitterSigmaM } from '~/composables/demo/state'
+import { DEFAULT_JITTER_SIGMA_M, JITTER_SIGMA_MAX_M, JITTER_SIGMA_MIN_M, JITTER_SIGMA_STEP_M, clampJitterSigmaM } from '~/composables/demo/state'
 // 🆕 2026-11-03（用户要求）：本地拟合度质量闸（< 0.6 判"本地校验不通过"，要求重新生成）
 import { evaluateLocalFitGate, localFitServerNote } from '~/utils/mp/localFitGate'
 
