@@ -899,16 +899,6 @@ test('🔴 闸门复验(第二轮)：记录环节抛错**不影响上游返回**
   assert.ok(src.includes('TOTORO_FAULT_RECORD'), '缺故障注入开关 ⇒ "记录抛错不影响响应"无法实测')
 })
 
-/** 与其它源码级守卫共用的小工具 */
-function existsSyncCompat(p: string): boolean {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require('node:fs').existsSync(p) as boolean
-  } catch {
-    return false
-  }
-}
-
 test('🔴 闸门(N5)：无字段名的裸凭证三类形态（36 位混合 / 40 位纯小写 / 64 位十六进制）都要掩', () => {
   const fixtures: [string, number, string][] = [
     // 用 `.slice()` 构造精确位数（手数过的字面量改错过两次 —— 夹具要准，否则测的不是目标形态）

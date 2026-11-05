@@ -320,9 +320,3 @@ export function mulberry32(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
 }
-
-/** 跳跃最高点（供测试/调参参考）：v²/(2g) */
-export function jumpApex(): number {
-  const v = Math.abs(GAME.initialJumpVelocity)
-  return (v * v) / (2 * GAME.gravity)
-}

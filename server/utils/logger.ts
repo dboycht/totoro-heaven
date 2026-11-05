@@ -43,9 +43,6 @@ const dateTag = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(
  */
 export const logDateTag = dateTag
 
-/** 日志保留天数（自动清理与「诊断导出」的"最近几天"口径必须一致） */
-export const LOG_KEEP_DAYS = KEEP_DAYS
-
 export function logFilePath(d = new Date()): string {
   return join(LOG_DIR, `app-${dateTag(d)}.log`)
 }

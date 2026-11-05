@@ -30,6 +30,8 @@ import { laneLoop, laneRatioFor, pointAtArcM, type TrackRings } from '~/utils/mp
 import { freePathPoints, type FreePathShape } from '~/utils/mp/pathShape'
 // 🆕 2026-11-03（用户要求"轨迹第 1 圈必须从起跑点开始"）：切圈判据抽成纯函数（有单测）
 import { splitLapsByLength } from '~/utils/mp/lapSplit'
+// 🆕 2026-11-05（整理轮）：Web Mercator 投影单一来源（与跑道编辑/自由跑共用同一份实现）
+import { TILE, lng2x, lat2y, x2lng, y2lat } from '~/utils/mp/webMercator'
 
 /** 本机路线库里的一条（只取画面要用的字段，避免组件依赖整个 TrackRouteEntry） */
 type TrackEntryLike = {
@@ -80,8 +82,7 @@ type P0 = { latitude: number; longitude: number }
 const W = 900
 /** 画布高度（视口高度；不是内容高度 —— 内容随缩放/平移变） */
 const H = 460
-/** 与跑道编辑页一致：瓦片尺寸与缩放区间 */
-const TILE = 256
+/** 与跑道编辑页一致：缩放区间（瓦片尺寸 `TILE` 统一从 `utils/mp/webMercator` 取） */
 const Z_MIN = 13
 const Z_MAX = 22
 
@@ -116,17 +117,7 @@ const LAP_COLORS = ['#38bdf8', '#a78bfa', '#22c55e', '#f59e0b', '#f472b6', '#fac
 const OTHER_COLOR = '#94a3b8'
 const lapColorOf = (lap0: number) => (lap0 < LAP_COLORS.length ? LAP_COLORS[lap0]! : OTHER_COLOR)
 
-// ---------------------------------------------------------------- 投影（与「跑道编辑」同一套）
-const lng2x = (lng: number, z: number) => ((lng + 180) / 360) * 2 ** z
-const lat2y = (lat: number, z: number) => {
-  const s = Math.sin((lat * Math.PI) / 180)
-  return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * 2 ** z
-}
-const x2lng = (x: number, z: number) => (x / 2 ** z) * 360 - 180
-const y2lat = (y: number, z: number) => {
-  const n = Math.PI - (2 * Math.PI * y) / 2 ** z
-  return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)))
-}
+// ---------------------------------------------------------------- 投影（与「跑道编辑」同一份实现，见 `utils/mp/webMercator.ts`）
 
 /** 视图状态：中心经纬度 + 瓦片缩放（小数也能用 ⇒ 滚轮很顺） */
 const center = ref<P>({ latitude: 0, longitude: 0 })

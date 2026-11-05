@@ -17,7 +17,7 @@
  * - **失败只吞掉或 warn**：端点不可用（dev 没起、HMR 中）时静默；只有"HTTP 明确失败"才记一条 warn，
  *   而且**用原生 fetch 记**（不能再走 `logs.log`，否则形成"上报失败 → 再入队 → 再失败"的自激循环）。
  */
-import type { DiagEvent, DiagEventSource } from '~/utils/mp/diagnostics'
+import type { DiagEvent } from '~/utils/mp/diagnostics'
 import { DIAG_EVENT_BATCH_MAX, DIAG_EVENT_PATH, DIAG_HEARTBEAT_INTERVAL_MS, DIAG_HEARTBEAT_PATH } from '~/utils/mp/diagnostics'
 
 /** localStorage 键：客户端事件的**离线兜底**（导出时作为第三来源） */
@@ -32,7 +32,6 @@ const QUEUE_MAX = 500
 /** 进程内队列 + 定时器（单例；与 `useEventLog` 的环形缓冲分开，职责不同） */
 let queue: DiagEvent[] = []
 let flushTimer: ReturnType<typeof setTimeout> | null = null
-let droppedFromQueue = 0
 let installed = false
 
 /** 生成稳定 id（**去重的唯一依据**）：`c<36 进制时间>-<随机>`，只含白名单字符 */
@@ -135,7 +134,6 @@ export function reportDiagEvent(e: DiagEvent): void {
   appendStored(e)
   queue.push(e)
   if (queue.length > QUEUE_MAX) {
-    droppedFromQueue += queue.length - QUEUE_MAX
     queue = queue.slice(-QUEUE_MAX)
   }
   installLifecycleHooks()
@@ -155,11 +153,6 @@ function installLifecycleHooks(): void {
   } catch {
     /* 环境不支持就算了（定时器那条路仍在） */
   }
-}
-
-/** 事件队列的当前状态（**只给界面/测试看**，不参与导出内容） */
-export function diagEventQueueState(): { queued: number; dropped: number } {
-  return { queued: queue.length, dropped: droppedFromQueue }
 }
 
 /**
@@ -239,14 +232,6 @@ export function reportBlocked(reason: string, text: string, data?: Record<string
   })
 }
 
-/** 给导出用：把浏览器侧两个来源（内存 + localStorage）都拿出来（**去重交给契约层的纯函数**） */
-export function collectClientEventSources(inMemory: DiagEvent[]): { source: DiagEventSource; events: DiagEvent[] }[] {
-  return [
-    { source: 'localStorage', events: readStoredEvents() },
-    { source: 'client', events: inMemory },
-  ]
-}
-
 // ---------------------------------------------------------------------------
 // 🆕 2026-09-23（用户要求 1️⃣）**心跳快照**：把"此刻的内存态摘要"定期 + 关键操作后上报一份
 // ---------------------------------------------------------------------------
@@ -254,8 +239,6 @@ export function collectClientEventSources(inMemory: DiagEvent[]): { source: Diag
 /** 心跳的节流状态（进程内；只在客户端用） */
 let lastHeartbeatAt = 0
 let hbTimer: ReturnType<typeof setInterval> | null = null
-let hbSent = 0
-let hbRejected = 0
 
 /**
  * 采集一份"当前内存态摘要"（**由调用方给数据**，本函数只负责形状与脱敏；纯、可测）。
@@ -331,7 +314,6 @@ export function sendHeartbeat(data: Record<string, string | number | boolean | n
   const now = Date.now()
   if (!force && now - lastHeartbeatAt < DIAG_HEARTBEAT_INTERVAL_MS) return
   lastHeartbeatAt = now
-  hbSent++
   try {
     void fetch(DIAG_HEARTBEAT_PATH, {
       method: 'POST',
@@ -340,7 +322,6 @@ export function sendHeartbeat(data: Record<string, string | number | boolean | n
     })
       .then((res) => {
         if (res.ok) return
-        hbRejected++
         /** ⚠️ 只用原生 console（**不走 logs.log** ⇒ 不形成"上报失败→再记事件→再失败"的自激） */
         if (import.meta.dev) console.warn('[diag] 心跳上报被拒（不影响界面）', res.status)
       })
@@ -380,11 +361,6 @@ export function installHeartbeat(provider: () => Record<string, string | number 
   }
 }
 
-/** 心跳发送/被拒计数（**只给界面/测试看**，不参与导出内容） */
-export function heartbeatState(): { sent: number; rejected: number; lastAt: number } {
-  return { sent: hbSent, rejected: hbRejected, lastAt: lastHeartbeatAt }
-}
-
 /**
  * 🆕 2026-09-23（复验 B2 修）：**停掉心跳**（幂等）。
  *
@@ -399,9 +375,4 @@ export function stopHeartbeat(): void {
   }
   /** 复位"上次发送时刻"⇒ 下一轮开始记录时能**立刻**发一份基线（否则会被节流挡掉） */
   lastHeartbeatAt = 0
-}
-
-/** 🆕 心跳定时器是否在跑（界面/验收用；`installHeartbeat()` 幂等的判据就是它） */
-export function heartbeatIsRunning(): boolean {
-  return hbTimer !== null
 }

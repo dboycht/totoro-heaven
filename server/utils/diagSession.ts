@@ -49,8 +49,6 @@ import { RUNTIME_DIR, logWarn } from './logger'
 export const DIAG_SESSION_DIR = process.env.TOTORO_DIAG_DIR?.trim() || join(RUNTIME_DIR, 'diagnostics')
 /** 窗口文件名（单一来源：单测与排障脚本都引它） */
 export const DIAG_SESSION_NAME = 'session.json'
-/** 窗口文件的完整路径（生产用；单测请用各函数的 `dir` 参数注入临时目录） */
-export const DIAG_SESSION_FILE = join(DIAG_SESSION_DIR, DIAG_SESSION_NAME)
 
 /**
  * 🔒 本进程实例的标识：`<进程启动 epoch ms>-<随机 hex>`。

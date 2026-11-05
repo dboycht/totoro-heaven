@@ -27,7 +27,7 @@ import { looksLikeTokenExpired } from '~/src/mp/envelope'
 // 🆕 2026-09-22：成功读取后写一份「最近已知状态」（**纯诊断证据，不参与放行**，见该模块文件头）
 import { buildLastKnown, clearLastKnown, saveLastKnown } from '~/utils/mp/diagLastKnown'
 // 🆕 2026-09-23（用户要求 2️⃣）：门禁/本地判定拦下提交时**显式上报**（诊断包里"明写的事实"）
-import { reportBlocked } from '~/composables/useDiagEventReporter'
+import { clearStoredEvents, reportBlocked } from '~/composables/useDiagEventReporter'
 import {
   evaluateRunGate,
   findVerifiedSchool,
@@ -35,7 +35,7 @@ import {
   nonSharedDomainMessage,
   unverifiedSchoolNotice,
 } from '~/utils/mp/schoolGate'
-import { logError, logInfo, logWarn } from '../useEventLog'
+import { logError, logInfo, logWarn, useEventLog } from '../useEventLog'
 import { TASK_CACHE_KEY, useRealState } from './state'
 
 /**
@@ -745,6 +745,15 @@ export function useMpRealData() {
      * 清空后导出的包里不该还带着清空前的**响应原文**）。同样尽力而为，失败不影响清空流程。
      */
     void clearServerCaptures('clearAll')
+    /**
+     * 🆕 2026-11-05（整理轮，健壮性）：**事件日志的两处本机存储一并清** ——
+     * ① 界面事件环形缓冲（`useEventLog` 单例，`totoro_event_logs_v1`）；
+     * ② 上报离线兜底队列（`useDiagEventReporter` 的 localStorage）。
+     * 以前这两处不在"清空"范围内 ⇒ 清空后导出的包里还带着清空前的事件
+     * （判据同 B8/B2 审计："清空"两字必须名副其实；`clearStoredEvents` 一直为此而建、此前从未被接线）。
+     */
+    useEventLog().clear()
+    clearStoredEvents()
   }
 
   /** 是否存在"可恢复的上次任务"（界面据此显示恢复入口） */

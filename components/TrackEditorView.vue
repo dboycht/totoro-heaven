@@ -46,6 +46,8 @@ import type { LatLng } from '~/utils/mp/routeSimilarity'
 import type { MpRunLine } from '~/src/mp/types'
 // 🆕 2026-09-22（issue #12）：判"任务到底有没有下发线路"（纯函数，与跑步页/门禁同源）
 import { routeRequirementOf } from '~/utils/mp/taskShape'
+// 🆕 2026-11-05（整理轮）：Web Mercator 投影单一来源（与轨迹预览/自由跑共用同一份实现）
+import { TILE, lng2x, lat2y, x2lng, y2lat } from '~/utils/mp/webMercator'
 
 /** 契约层坐标（latitude/longitude 可能是字符串） */
 type P = LatLng
@@ -81,18 +83,6 @@ const Z_MIN = 13
 const Z_MAX = 19
 const center = ref<N>({ latitude: 31.3735, longitude: 119.4808 }) // 默认：天目湖校区
 const zoom = ref(17)
-const TILE = 256
-
-const lng2x = (lng: number, z: number) => ((lng + 180) / 360) * 2 ** z
-const lat2y = (lat: number, z: number) => {
-  const s = Math.sin((lat * Math.PI) / 180)
-  return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * 2 ** z
-}
-const x2lng = (x: number, z: number) => (x / 2 ** z) * 360 - 180
-const y2lat = (y: number, z: number) => {
-  const n = Math.PI - (2 * Math.PI * y) / 2 ** z
-  return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)))
-}
 
 const viewport = ref({ w: 900, h: 560 })
 /**

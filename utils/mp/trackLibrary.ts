@@ -375,11 +375,6 @@ export function resolvePresetForLine(
   return { entry: usable ?? list[0], preferredUnavailable }
 }
 
-/** 一个地点下有几条预设（跑步页/编辑器显示"这个地点有几条"用） */
-export function presetCountOfLine(entries: TrackRouteEntry[] | null | undefined, lineId: unknown): number {
-  return presetsOfLine(entries, lineId).length
-}
-
 /**
  * 🆕 **同名预设的检测**（只报不改）：返回"显示名相同"的分组。
  * 用途：**旧数据**里可能本来就有两条同名（那时没有唯一性约束，我们**绝不自动改名**）

@@ -61,6 +61,8 @@ import {
 import { buildFreeShapeSave, startClearedNote } from '~/utils/mp/freePathSave'
 // 「改回内外双圈」要判"记录上现存的这两圈到底合不合法" ⇒ 复用跑道编辑页同一套纯函数判据
 import { validateRings } from '~/utils/mp/trackEditor'
+// 🆕 2026-11-05（整理轮）：Web Mercator 投影单一来源（与跑道编辑/轨迹预览共用同一份实现）
+import { TILE, lng2x, lat2y, x2lng, y2lat } from '~/utils/mp/webMercator'
 // 🆕 2026-09-29（用户口径："老版本路径文件提示需要更新"）：老数据的识别与那句提示都在纯模块里（有单测）
 import { LOCAL_FREE_LINE_ID, LOCAL_FREE_LINE_NAME, legacyFreePathUpdate, localFreeTrackLine, resolveEntryName } from '~/utils/mp/trackLibrary'
 // 🆕 2026-09-22（真实用户实测）：本页对"有官方线路的任务"不生效 ⇒ 给一条直达「跑道编辑」的出路
@@ -160,18 +162,6 @@ const Z_MIN = 13
 const Z_MAX = 19
 const center = ref<N>({ latitude: 31.3735, longitude: 119.4808 }) // 默认：天目湖校区
 const zoom = ref(17)
-const TILE = 256
-
-const lng2x = (lng: number, z: number) => ((lng + 180) / 360) * 2 ** z
-const lat2y = (lat: number, z: number) => {
-  const s = Math.sin((lat * Math.PI) / 180)
-  return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * 2 ** z
-}
-const x2lng = (x: number, z: number) => (x / 2 ** z) * 360 - 180
-const y2lat = (y: number, z: number) => {
-  const n = Math.PI - (2 * Math.PI * y) / 2 ** z
-  return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)))
-}
 
 const viewport = ref({ w: 900, h: 560 })
 /**

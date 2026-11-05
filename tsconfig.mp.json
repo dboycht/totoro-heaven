@@ -2,6 +2,7 @@
   "//": "小程序线（1.1.x）纯逻辑模块类型检查：不 extends 根配置，保持独立、可离线跑通（不依赖 nuxt prepare）。",
   "//2": "allowImportingTsExtensions：让 tests/mp 的测试能被 `node --test` 直接执行（Node ESM 需要显式 .ts 扩展名）。",
   "//3": "Nuxt 耦合文件（MpApiWrapper / server/api/mp / useMpSession）由 `npm run build` 把关。",
+  "//4": "noUnusedLocals：与 typecheck:ui 同一档 —— 死局部变量当场报错（2026-11-05 整理轮开启，当时清掉了 4 处存量）。",
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
@@ -9,6 +10,7 @@
     "lib": ["ES2022", "DOM"],
     "strict": true,
     "noImplicitAny": false,
+    "noUnusedLocals": true,
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
     "noEmit": true,

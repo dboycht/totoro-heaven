@@ -179,16 +179,6 @@ export function valueLooksLikePersonName(v: unknown): boolean {
   return HAN_NAME_RE.test(s) || PINYIN_NAME_RE.test(s)
 }
 
-/** 键名是否像人名（**不含**值判定；调用方通常还需配 `valueLooksLikePersonName`） */
-export function looksLikePersonNameKey(k: string): boolean {
-  const s = String(k ?? '').trim()
-  if (!s) return false
-  if (BUSINESS_KEY_WHITELIST.has(s.toLowerCase()) || BUSINESS_KEY_WHITELIST.has(s)) return false
-  if (BUSINESS_CAMEL_TAIL_RE.test(s)) return false
-  if (HAN_NAME_RE.test(s)) return true
-  return PINYIN_NAME_RE.test(s)
-}
-
 /**
  * 一对"键值"是否构成"人名键"。**两条分支的判据不同**（第三轮 N10 修正的关键）：
  *

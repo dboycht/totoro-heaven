@@ -300,16 +300,6 @@ export function getRunSubmitJobView(): RunSubmitJobView {
   return { ...state.view, progress: [...state.view.progress] }
 }
 
-export function isRunSubmitJobActive(): boolean {
-  ensurePersistedJobLoaded()
-  return state.view.active
-}
-
-export function resetRunSubmitJob(): void {
-  if (state.timer) clearInterval(state.timer)
-  state = freshState()
-}
-
 /**
  * 演练模式：`TOTORO_RUN_DRYRUN=1` 时**不发真实请求**（用假 IO），等待时长也压到 3 秒。
  * 用途：验证 "启动 → 轮询 → 完成" 这条链与终端进度，不碰厂商、不产生任何真记录。

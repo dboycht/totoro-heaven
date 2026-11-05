@@ -37,10 +37,10 @@
  * 只记 `content-type` 等于把这些线索全丢掉。512 字符的上限保证它不会让日志失控。
  */
 import {
-  REDACTED_MARK,
   SENSITIVE_KEYS,
   isPersonNameEntry,
   knownValuePairs,
+  markRedacted,
   maskKeysPreservingUniqueness,
   maskTokenLike,
   redactFreeText,
@@ -261,8 +261,9 @@ export function redactForRecordWithStats(
    * 🔒 打上"**已经脱敏过**"的标记（非枚举 Symbol，不进 JSON）：`server/utils/logger.ts` 的
    * `redactObject()` 看到它就不再二次降深度（审计 B2：否则 `respBody` 在日志行根之下只剩 ~6 层，
    * `depth≥6` 的值被塌成 `[deep]`，"全记录"名不副实）。
+   * 2026-11-05（整理轮）：改走 `markRedacted()`（标记的唯一写入实现收口到 `logFormat`，此前这里内联了一份）。
    */
-  if (isObj(out)) Object.defineProperty(out, REDACTED_MARK, { value: true, enumerable: false })
+  markRedacted(out)
   return { value: out, droppedItems, trimmedPaths }
 }
 

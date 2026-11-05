@@ -111,7 +111,6 @@ test('findNameConflict：**全库**判重（含别的地点），比的是显示
 
 test('conflictOwnerText：跨地点时补上"地点"，同地点/名字即地点名时不重复啰嗦', () => {
   const east = mk({ id: 'p1', lineId: 'L-east', lineName: '东操场', customName: '内道' })
-  const west = mk({ id: 'p2', lineId: 'L-west', lineName: '西操场', customName: '内道' })
   assert.equal(conflictOwnerText(east, 'L-west'), '内道（地点：东操场）', '别的地点占用时要报地点')
   assert.equal(conflictOwnerText(east, 'L-east'), '内道', '同一地点内不必重复地点')
   const plain = mk({ id: 'L-west', lineId: 'L-west', lineName: '西操场' })

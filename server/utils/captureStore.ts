@@ -27,7 +27,7 @@
  * 「当天不删」与"时间窗"策略沿用日志那一套（窗口只影响**导出**，不影响本机留存）。
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 import {
   DIAG_CAPTURE_DAYS,
   DIAG_CAPTURE_MAX_BYTES,
@@ -358,7 +358,3 @@ export function clearCaptures(): { files: number; dir: string } {
   return { files: before, dir: CAPTURE_DIR }
 }
 
-/** 台账文件绝对路径（单测/文档用） */
-export const CAPTURE_LEDGER_PATH = (): string => join(CAPTURE_DIR, EVICTED_FILE)
-/** 正文文件名（调试用） */
-export const capturePath = (name: string): string => join(CAPTURE_DIR, basename(name))

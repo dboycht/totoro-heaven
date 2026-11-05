@@ -10,7 +10,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  VERIFIED_SCHOOLS,
   SHARED_DOMAIN_HOST,
   LINE_NOT_REQUIRED_REASON,
   RELAX_GATE_FOR_CAPTURE,

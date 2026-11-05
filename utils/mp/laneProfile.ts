@@ -31,18 +31,6 @@ export interface LanePoint {
   lane: number
 }
 
-/** 换圈剖面的完整规格（界面/引擎共用；`points` 一定至少 2 个、按 `u` 升序） */
-export interface LaneProfile {
-  /** 抽到的圈数 n（向上取整，≥1） */
-  laps: number
-  /** 这个预设一共几道（来自预设的 `laneCount`，缺省 6） */
-  laneCount: number
-  /** 起点道次 y0（来自预设的 `laneNo`，缺省 3） */
-  baseLane: number
-  /** 控制点（u = 0..laps 的整圈边界；允许只有部分边界有拐点） */
-  points: LanePoint[]
-}
-
 /** 道次缺省值（与跑道编辑页的默认一致：6 道、第 3 道） */
 export const DEFAULT_LANE_COUNT = 6
 export const DEFAULT_LANE_NO = 3

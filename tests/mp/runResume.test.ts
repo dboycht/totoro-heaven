@@ -25,7 +25,6 @@ import {
   resumeSummaryText,
   serializePendingResume,
   stripForbiddenKeysDeep,
-  stripVerdictIdentity,
   toPersistedSubmitJob,
   withLinePoints,
   withVerdictIdentity,

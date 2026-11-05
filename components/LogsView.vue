@@ -132,6 +132,7 @@
 
 <script setup lang="ts">
 import { useEventLog } from '~/composables/useEventLog'
+import { clearStoredEvents } from '~/composables/useDiagEventReporter'
 import type { LogEntry, LogLevel } from '~/utils/mp/logFormat'
 
 const logs = useEventLog()
@@ -190,6 +191,8 @@ const copyText = async (text: string, okMsg: string) => {
 const copyEvents = () => copyText(logs.asText(filtered.value), `已复制 ${filtered.value.length} 条事件日志`)
 const clearEvents = () => {
   logs.clear()
+  // 🆕 2026-11-05（整理轮）：离线兜底队列与这里是同一批事件的两份存储，只清一份 ⇒ 导出包里仍带着旧事件
+  clearStoredEvents()
   showSnackbar('已清空本机事件日志', 'info')
 }
 
