@@ -9,8 +9,11 @@
  *   · 写入器仍是同一份实现（一处口径）。
  *
  * ## 入参 / 出参
- * · body：`{ fileName?: string, json: string }` —— `json` 是**已经序列化好的分享包**
+ * · body：`{ fileName?: string, json: string }` —— 单条：`json` 是**已经序列化好的分享包**
  *   （由纯模块 `utils/mp/realPath.ts` 的 `buildShareBundle()` 生成，白名单字段在那边收口）；
+ *   🆕 批量：`{ fileName?: string, files: { name: string, json: string }[] }` ——
+ *   **每条路径一个独立 JSON**（用户口径："大压缩包的内部就是相关的各个路径"），
+ *   条目名由客户端给（`sanitizeEntryName()` 先清洗），重名由服务端拒绝而不是静默覆盖。
  * · 响应：`application/zip` 字节流；`X-Totoro-File` 头回带最终文件名（界面拿来当下载名）。
  *
  * ## 安全
@@ -20,12 +23,12 @@
  */
 import { assertLocalRequest } from '../../../utils/tokenScanState'
 import { createZip } from '../../../utils/zip'
-import { REAL_PATH_BUNDLE_FILE } from '../../../../utils/mp/realPath'
+import { REAL_PATH_BUNDLE_FILE, sanitizeZipEntryName } from '../../../../utils/mp/realPath'
 
-/** 单个请求体上限（路径包再大也只有几十 KB；给到 4 MB 足够，防被塞大包打爆内存） */
-const MAX_BODY_BYTES = 4 * 1024 * 1024
+/** 单个请求体上限（路径包再大也只有几十 KB；批量给到 16 MB 足够，防被塞大包打爆内存） */
+const MAX_BODY_BYTES = 16 * 1024 * 1024
 
-/** 包内 JSON 条目名：固定名（与 `REAL_PATH_BUNDLE_FILE` 同一口径，便于人肉排查） */
+/** 包内 JSON 条目名：单条走固定名（与 `REAL_PATH_BUNDLE_FILE` 同一口径，便于人肉排查） */
 const ENTRY_NAME = REAL_PATH_BUNDLE_FILE
 
 /** 下载文件名清洗（去路径分隔符 / 控制字符 / 保留中文；限长 80 码点） */
@@ -41,19 +44,46 @@ function safeFileName(raw: unknown): string {
 
 export default defineEventHandler(async (event) => {
   assertLocalRequest(event)
-  const body = (await readBody(event)) as { fileName?: unknown; json?: unknown } | null
-  const json = typeof body?.json === 'string' ? body.json : ''
-  if (!json) {
-    setResponseStatus(event, 400)
-    return { ok: false, message: '缺少 json（分享包内容）' }
+  const body = (await readBody(event)) as { fileName?: unknown; json?: unknown; files?: unknown } | null
+
+  /**
+   * 收集要进包的条目。
+   *   · 单条（老口径）：`json` ⇒ 一个固定名 `totoro-real-path.json`；
+   *   · 批量（2026-11-10）：`files[]` ⇒ **每条路径一个独立 JSON**，条目名由客户端给（先清洗）。
+   * 两种可以同时出现（客户端不会这么做，但不必为此报错）。
+   */
+  const wanted: { name: string; json: string }[] = []
+  const single = typeof body?.json === 'string' ? body.json : ''
+  if (single) wanted.push({ name: ENTRY_NAME, json: single })
+  if (Array.isArray(body?.files)) {
+    for (const raw of body.files) {
+      const f = raw as { name?: unknown; json?: unknown } | null
+      const json = typeof f?.json === 'string' ? f.json : ''
+      if (!json) continue
+      wanted.push({ name: sanitizeZipEntryName(f?.name), json })
+    }
   }
-  if (Buffer.byteLength(json, 'utf8') > MAX_BODY_BYTES) {
+  if (!wanted.length) {
+    setResponseStatus(event, 400)
+    return { ok: false, message: '缺少 json（分享包内容）或 files（批量分享包）' }
+  }
+  /** 条目名去重：重名一律拒绝（`createZip` 自己也会拒，但这里能给出更好的人话） */
+  const seen = new Set<string>()
+  for (const w of wanted) {
+    if (seen.has(w.name)) {
+      setResponseStatus(event, 400)
+      return { ok: false, message: `包内条目重名：${w.name} —— 请先把重名的路径改名再导出` }
+    }
+    seen.add(w.name)
+  }
+  const totalBytes = wanted.reduce((n, w) => n + Buffer.byteLength(w.json, 'utf8'), 0)
+  if (totalBytes > MAX_BODY_BYTES) {
     setResponseStatus(event, 413)
-    return { ok: false, message: `分享包过大（> ${Math.round(MAX_BODY_BYTES / 1024)} KB）` }
+    return { ok: false, message: `分享包过大（> ${Math.round(MAX_BODY_BYTES / 1024 / 1024)} MB）` }
   }
   let zip: Buffer
   try {
-    zip = createZip([{ name: ENTRY_NAME, data: Buffer.from(json, 'utf8') }])
+    zip = createZip(wanted.map((w) => ({ name: w.name, data: Buffer.from(w.json, 'utf8') })))
   } catch (err) {
     setResponseStatus(event, 500)
     return { ok: false, message: err instanceof Error ? err.message : '打包失败' }

@@ -385,6 +385,72 @@ export function defaultRealPathName(
   return loc ? `${loc} · ${base}` : base
 }
 
+/** 随机后缀的字符集（只用小写字母 + 数字：好念、好打进搜索框、不会有大小写歧义） */
+const SUFFIX_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'
+
+/**
+ * 造一段**短随机后缀**（默认 4 位，如 `2b9c`）—— 用户口径："生成的路径名称后加上一段随机字符防止相同导致异常"。
+ *
+ * 为什么需要：同一场成绩在不同机器上导出、或同一天跑两场、或好友把包发回来再导，
+ * 默认名会**逐字相同**；而本项目"预设名称全库不可重复"是硬判据 ⇒ 后到的那个会被直接拒收。
+ * 加上随机后缀，同名概率降到 36^4 ≈ 1/168 万，正常使用不会再撞。
+ *
+ * @param rand 注入随机源（单测用；默认 `Math.random`）
+ */
+export function randomNameSuffix(len = 4, rand: () => number = Math.random): string {
+  /** 非法长度（0/负数/NaN）⇒ 回默认 4；上限 12（再长就不是"短后缀"了） */
+  const wanted = Math.trunc(Number(len))
+  const n = Number.isFinite(wanted) && wanted >= 1 ? Math.min(12, wanted) : 4
+  let out = ''
+  for (let i = 0; i < n; i++) {
+    const r = Number(rand())
+    const idx = Math.trunc((Number.isFinite(r) ? Math.abs(r) % 1 : 0) * SUFFIX_ALPHABET.length)
+    out += SUFFIX_ALPHABET[Math.min(idx, SUFFIX_ALPHABET.length - 1)]
+  }
+  return out
+}
+
+/**
+ * 给一个名字**追加随机后缀**（用户口径：只加在**自动生成**的名字上，手打的保留原样）。
+ *
+ * 判据：`withRandomSuffix('东操场 · 真实路径 2026-09-17 · 1910', () => 0)` → `'… · 1910-2b9c'` 形状
+ *      （后缀与主干之间用 `-` 连接，读起来像版本号/批号，不干扰主干的可读性）。
+ * ⚠️ 限长由 `sanitizeLineName()` 在落库那一步统一处理；这里只保证"后缀在最尾部、不会被自己挤掉"。
+ */
+export function withRandomSuffix(name: string, rand: () => number = Math.random): string {
+  const base = String(name ?? '').trim()
+  if (!base) return base
+  const suffix = randomNameSuffix(4, rand)
+  /** 已经带过后缀形状（`-xxxx`，4 位小写字母数字）就别再叠一层 */
+  if (/-[a-z0-9]{4}$/.test(base)) return base
+  return `${base}-${suffix}`
+}
+
+/**
+ * 清洗 zip **包内条目名**（批量导出的每条路径一个 JSON）。
+ *
+ * 判据（与 `server/api/local/real-path/share.post.ts` 同一口径，那边也调它）：
+ *   · 去掉 `/`、`\`、控制字符与 Windows 保留字符（`createZip` 只收"以 / 分隔的相对路径"）；
+ *   · 保留中文与空格；折叠连续空白；
+ *   · 收尾补 `.json`；空白输入 ⇒ 兜底名；
+ *   · 按**码点**限长 80（ZIP 条目名上限是 65535 **字节**，80 码点远够用，也免得一个超长名把包撑怪）。
+ */
+export function sanitizeZipEntryName(raw: unknown): string {
+  const s = String(raw ?? '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const cps = Array.from(s || '真实路径')
+  const clipped = cps.length > 80 ? cps.slice(0, 80).join('') : cps.join('')
+  return /\.json$/i.test(clipped) ? clipped : `${clipped}.json`
+}
+
+/** 把一条路径的**分享包**序列化出来（批量导出时每条一个文件；与单条导出的结构逐字相同） */
+export function bundleJsonOf(item: RealPathBundleItem, exportedAt = new Date().toISOString()): string {
+  return JSON.stringify(buildShareBundle([item], exportedAt))
+}
+
 /**
  * 读归档时**当前生效的月份**：给了 `monthId` 就用它；没给就选「当前月份」。
  *
@@ -679,12 +745,11 @@ export function summarizeBatch(outcomes: BatchOutcome[]): BatchSummary {
 }
 
 /**
- * 从 zip 解析结果出发，**为每一条**算出"能不能导入"（批量导入的预检；纯函数、可单测）。
+ * 按索引挑出要导入的那几条（**老口径**：单条导入时"只要包里第 N 条"）。
  *
- * 与真正落库那一步共用同一组判据（点数 ≥ 3、坐标合法由 `parseShareBundle` 保证），
- * 所以界面能在**动手写库之前**就把"这条为什么不行"列出来。
- * `lineId` 为空代表"还没选地点"——那样落库必然失败（`useTrackLibrary.upsert` 会拒绝），
- * 这里**不**替它判，交给落库返回真实原因（避免两处判据漂移）。
+ * ⚠️ 批量导入**不走它** —— 批量口径是"包里每条都收"（见 `readAllShareItemsFromZip` 与
+ *    `importManyShareZips`），那样"包 A 1 条 + 包 B 2 条 ⇒ 3 条"才对得上。
+ *    这里保留给"指定第几条"的单入口场景（`pickBundleItem` 的复数版），索引越界/重复都安全。
  */
 export function batchImportCandidates(items: RealPathBundleItem[], index?: number[]): RealPathBundleItem[] {
   const list = Array.isArray(items) ? items : []
@@ -789,4 +854,61 @@ export async function readShareBundleFromZip(bytes: Uint8Array): Promise<ParsedB
   if (!entry) return { ok: false, error: '压缩包里没有文件', items: [] }
   const text = new TextDecoder('utf-8').decode(entry.data)
   return parseShareBundle(text)
+}
+
+/** 一个 zip 里解析出来的**一条**路径（带它是从哪个包内文件来的，便于逐条报错） */
+export interface ZipBundleItem {
+  /** 包内条目名（`totoro-real-path.json` 或批量包里的 `某路径.json`） */
+  entryName: string
+  item: RealPathBundleItem
+}
+
+/** 读**一个 zip 里的全部路径**的结果（批量导入用；坏条目只跳它自己） */
+export interface ParsedZipItems {
+  /** 这个包整体能不能读（读不了 ⇒ `error` 非空，`items` 为空） */
+  ok: boolean
+  /** 包级失败原因（人话；能读出条目时为空串） */
+  error: string
+  /** 读出来的路径（可能来自包内多个 JSON 文件） */
+  items: ZipBundleItem[]
+  /** 被跳过的条目及其原因（**必须回报**，否则"包里 3 条只进来 2 条"没人知道） */
+  skipped: { entryName: string; reason: string }[]
+}
+
+/**
+ * **读一个 zip 里的全部路径**（2026-11-10 用户口径：批量导出"大压缩包的内部就是相关的各个路径"，
+ * 所以导入一个包可能拿到**多条**）。
+ *
+ * 与 `readShareBundleFromZip()` 的区别：后者只认**第一个** JSON（单条口径，保持旧行为不变），
+ * 本函数遍历包内**所有** `.json` 条目，逐个 `parseShareBundle()`：
+ *   · 某个条目不是路径包 / 坐标全坏 ⇒ **只跳它自己**，原因进 `skipped`；
+ *   · 一个包几条路径都读不出来 ⇒ 包级 `ok:false` 并说明（这才是真的坏包）。
+ */
+export async function readAllShareItemsFromZip(bytes: Uint8Array): Promise<ParsedZipItems> {
+  let entries: ZipReadEntry[]
+  try {
+    entries = await readZip(bytes)
+  } catch (err) {
+    return { ok: false, error: `读不了这个压缩包：${err instanceof Error ? err.message : '未知错误'}`, items: [], skipped: [] }
+  }
+  /** 只认 `.json`；一个都没有 ⇒ 拿第一个条目兜底试一次（好友可能把 JSON 改过名） */
+  const jsonEntries = entries.filter((e) => /\.json$/i.test(e.name))
+  const targets = jsonEntries.length ? jsonEntries : entries.slice(0, 1)
+  if (!targets.length) return { ok: false, error: '压缩包里没有文件', items: [], skipped: [] }
+  const decoder = new TextDecoder('utf-8')
+  const items: ZipBundleItem[] = []
+  const skipped: { entryName: string; reason: string }[] = []
+  for (const entry of targets) {
+    const parsed = parseShareBundle(decoder.decode(entry.data))
+    if (!parsed.ok) {
+      skipped.push({ entryName: entry.name, reason: parsed.error })
+      continue
+    }
+    for (const item of parsed.items) items.push({ entryName: entry.name, item })
+  }
+  if (!items.length) {
+    const why = skipped[0]?.reason || '包里没有可用的路径'
+    return { ok: false, error: why, items: [], skipped }
+  }
+  return { ok: true, error: '', items, skipped }
 }

@@ -32,12 +32,17 @@ import {
   parseShareBundle,
   pathLengthM,
   batchImportCandidates,
+  bundleJsonOf,
   pickBundleItem,
   pickMonthId,
+  randomNameSuffix,
+  readAllShareItemsFromZip,
   readShareBundleFromZip,
+  sanitizeZipEntryName,
   setSelection,
   summarizeBatch,
   toggleSelection,
+  withRandomSuffix,
   type RealPathMeta,
   type RealPathPoint,
 } from '../../utils/mp/realPath.ts'
@@ -521,4 +526,111 @@ test('🔴 批量分享包：多条装一个包、能整包读回来（每条的
   assert.deepEqual(back.items.map((x) => x.meta.scoreId), ['s1', 's2'])
   /** 逐条落库的候选 = 整包（批量导入默认全收） */
   assert.equal(batchImportCandidates(back.items).length, 2)
+})
+
+// ---------------------------------------------------------------- ⑨ 随机后缀 / 包内多文件（2026-11-10 二次改版）
+
+test('randomNameSuffix：定长、只用小写字母数字、注入随机源可复现', () => {
+  const s = randomNameSuffix(4, () => 0)
+  assert.equal(s.length, 4, '默认 4 位')
+  assert.equal(s, 'aaaa', 'rand()=0 ⇒ 全落在字符集第一位')
+  assert.match(randomNameSuffix(6), /^[a-z0-9]{6}$/, '默认随机源也只出小写字母数字')
+  /** 长度夹在 1~12：传 0 / 负数 / 巨大值都不会炸，也不会造出超长名字 */
+  assert.equal(randomNameSuffix(0).length, 4, '0 视为非法 ⇒ 回默认 4')
+  assert.equal(randomNameSuffix(-3).length, 4)
+  assert.equal(randomNameSuffix(999).length, 12, '上限 12')
+})
+
+test('withRandomSuffix：自动名末尾追加 -xxxx；已经带过后缀的不再叠一层', () => {
+  const base = '天目湖-西操场 · 真实路径 2026-09-17 · 1910'
+  const once = withRandomSuffix(base, () => 0)
+  assert.equal(once, `${base}-aaaa`)
+  assert.equal(withRandomSuffix(once, () => 0), once, '已经有 -xxxx 形状 ⇒ 原样返回（不叠第二层）')
+  assert.equal(withRandomSuffix('   ', () => 0), '', '空白输入 ⇒ 空白（不造出光秃秃的后缀）')
+  /** 用户手打的名字**不该**被这个函数碰到 —— 界面只对自动名调它（见 RealPathView 的 rebuildAutoName） */
+  assert.match(withRandomSuffix('我的外道', () => 0), /^我的外道-[a-z0-9]{4}$/)
+})
+
+test('sanitizeZipEntryName：去掉路径分隔符与控制字符、补 .json、按码点限长', () => {
+  assert.equal(sanitizeZipEntryName('东操场 2026-09-17'), '东操场 2026-09-17.json')
+  assert.equal(sanitizeZipEntryName('a/b\\c'), 'abc.json', '分隔符一律删掉（ZIP 不许以 / 开头的绝对路径）')
+  assert.equal(sanitizeZipEntryName('a:b*c?d"e<f>g|h'), 'abcdefgh.json')
+  assert.equal(sanitizeZipEntryName('  多   空白  '), '多 空白.json', '折叠连续空白')
+  assert.equal(sanitizeZipEntryName('已带.json'), '已带.json', '已有 .json 不再补')
+  assert.equal(sanitizeZipEntryName(''), '真实路径.json', '空白 ⇒ 兜底名（绝不产生空条目名）')
+  assert.equal(Array.from(sanitizeZipEntryName('名'.repeat(200))).length, 80 + '.json'.length, '按码点限长 80 再补后缀')
+})
+
+test('🔴 批量包：**每条路径一个独立 JSON**，逐个能读回来、条数与内容都不串（用户口径）', async () => {
+  const items = [
+    { name: '路径甲-aaaa', lineId: '', lineName: '', points: circle(100, 8), meta: { date: '2026-11-01', scoreId: 's1', km: 3.1, usedTime: '00:20:00', fitDegree: 0.9, sourcePoints: 8, lapLengthM: 600, exportedAt: '2026-11-10T00:00:00.000Z' } },
+    { name: '路径乙-bbbb', lineId: '', lineName: '', points: circle(120, 12), meta: { date: '2026-11-02', scoreId: 's2', km: 4.2, usedTime: '00:25:00', fitDegree: 0.95, sourcePoints: 12, lapLengthM: 700, exportedAt: '2026-11-10T00:00:00.000Z' } },
+    { name: '路径丙-cccc', lineId: '', lineName: '', points: circle(90, 20), meta: { date: '2026-11-03', scoreId: 's3', km: 5.0, usedTime: '00:30:00', fitDegree: 0.99, sourcePoints: 20, lapLengthM: 800, exportedAt: '2026-11-10T00:00:00.000Z' } },
+  ]
+  /** 客户端就是这么装的：每条一个文件，条目名 = 清洗过的路径名 */
+  const zip = createZip(items.map((it) => ({ name: sanitizeZipEntryName(it.name), data: Buffer.from(bundleJsonOf(it), 'utf8') })))
+  const back = await readAllShareItemsFromZip(new Uint8Array(zip))
+  assert.equal(back.ok, true, back.error)
+  assert.equal(back.items.length, 3, '包内 3 条路径都要读出来')
+  assert.deepEqual(back.items.map((x) => x.item.name), ['路径甲-aaaa', '路径乙-bbbb', '路径丙-cccc'])
+  assert.deepEqual(back.items.map((x) => x.item.meta.scoreId), ['s1', 's2', 's3'])
+  assert.deepEqual(back.items.map((x) => x.item.points.length), [8, 12, 20])
+  assert.deepEqual(back.items.map((x) => x.entryName), ['路径甲-aaaa.json', '路径乙-bbbb.json', '路径丙-cccc.json'])
+  assert.equal(back.skipped.length, 0, '没有坏条目')
+})
+
+test('🔴 多包遍历：包 A 装 1 条 + 包 B 装 2 条 ⇒ 合计 3 条（用户举例）', async () => {
+  const mk = (name, scoreId, n) => ({
+    name,
+    lineId: '',
+    lineName: '',
+    points: circle(100, n),
+    meta: { date: '2026-11-01', scoreId, km: 3, usedTime: '00:20:00', fitDegree: 0.9, sourcePoints: n, lapLengthM: 600, exportedAt: '2026-11-10T00:00:00.000Z' },
+  })
+  const zipA = createZip([{ name: sanitizeZipEntryName('包A唯一一条'), data: Buffer.from(bundleJsonOf(mk('包A唯一一条', 'a1', 10)), 'utf8') }])
+  const zipB = createZip([
+    { name: sanitizeZipEntryName('包B第一条'), data: Buffer.from(bundleJsonOf(mk('包B第一条', 'b1', 11)), 'utf8') },
+    { name: sanitizeZipEntryName('包B第二条'), data: Buffer.from(bundleJsonOf(mk('包B第二条', 'b2', 12)), 'utf8') },
+  ])
+  /** 显式标注元素类型：空数组字面量会被推断成 `never[]`（TS 会因此拦下 push） */
+  const all: { entryName: string; item: { meta: { scoreId: string } } }[] = []
+  for (const buf of [zipA, zipB]) {
+    const parsed = await readAllShareItemsFromZip(new Uint8Array(buf))
+    assert.equal(parsed.ok, true, parsed.error)
+    all.push(...parsed.items)
+  }
+  assert.equal(all.length, 3, '1 + 2 = 3')
+  assert.deepEqual(all.map((x) => x.item.meta.scoreId), ['a1', 'b1', 'b2'])
+})
+
+test('多文件包：坏条目只跳它自己（不拖垮同包里的好条目），原因如实回报', async () => {
+  const good = {
+    name: '好的那条',
+    lineId: '',
+    lineName: '',
+    points: circle(100, 10),
+    meta: { date: '2026-11-01', scoreId: 'g1', km: 3, usedTime: '00:20:00', fitDegree: 0.9, sourcePoints: 10, lapLengthM: 600, exportedAt: '2026-11-10T00:00:00.000Z' },
+  }
+  const zip = createZip([
+    { name: '好的.json', data: Buffer.from(bundleJsonOf(good), 'utf8') },
+    { name: '不是路径包.json', data: Buffer.from(JSON.stringify({ hello: 'world' }), 'utf8') },
+    /** 坐标全坏 ⇒ parseShareBundle 会拒它 */
+    { name: '坐标全坏.json', data: Buffer.from(JSON.stringify({ kind: 'totoro-real-path', version: 1, items: [{ name: 'x', points: [{ latitude: 1, longitude: 2 }], meta: {} }] }), 'utf8') },
+  ])
+  const back = await readAllShareItemsFromZip(new Uint8Array(zip))
+  assert.equal(back.ok, true, '有好的就整体 ok')
+  assert.equal(back.items.length, 1, '只收下好的那条')
+  assert.equal(back.items[0]!.item.meta.scoreId, 'g1')
+  assert.equal(back.skipped.length, 2, '两个坏条目都要被记下（不许静默丢）')
+  assert.ok(back.skipped.every((s) => s.reason.trim()), '每个跳过项都要有原因')
+  assert.ok(back.skipped.some((s) => /缺少 kind 标记/.test(s.reason)), JSON.stringify(back.skipped))
+})
+
+test('多文件包：全部条目都坏 ⇒ 包级失败并说明原因（不假装成功）', async () => {
+  const zip = createZip([{ name: 'x.json', data: Buffer.from(JSON.stringify({ nope: 1 }), 'utf8') }])
+  const back = await readAllShareItemsFromZip(new Uint8Array(zip))
+  assert.equal(back.ok, false)
+  assert.equal(back.items.length, 0)
+  assert.ok(back.error.length > 0, '必须给出人话原因')
+  assert.match(back.error, /缺少 kind 标记|没有可用/)
 })

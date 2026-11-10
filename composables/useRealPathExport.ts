@@ -28,9 +28,9 @@ import { MpApiWrapper } from '~/src/wrappers/MpApiWrapper'
 import { logInfo, logWarn } from '~/composables/useEventLog'
 import {
   REAL_PATH_BUNDLE_FILE,
-  batchImportCandidates,
   buildRealPathPresetDraft,
   buildShareBundle,
+  bundleJsonOf,
   defaultRealPathName,
   extractOneLap,
   groupRecordsByDay,
@@ -39,8 +39,11 @@ import {
   pathLengthM,
   pickBundleItem,
   pickMonthId,
+  readAllShareItemsFromZip,
   readShareBundleFromZip,
+  sanitizeZipEntryName,
   summarizeBatch,
+  withRandomSuffix,
   type BatchOutcome,
   type BatchSummary,
   type RealPathBundle,
@@ -349,9 +352,7 @@ export function useRealPathExport() {
       meta: sel.meta,
     }
     return buildShareBundle([item], new Date().toISOString())
-  }
-
-  /**
+  }  /**
    * **导出分享给好友**：把分享包交给本机端点打成 zip，再触发浏览器下载。
    * @returns `{ ok, message }`（成功时 `message` 里有文件名与字节数）
    */
@@ -431,11 +432,14 @@ export function useRealPathExport() {
   /**
    * **批量：把选中的若干条成绩逐条读回轨迹，打包成一个分享包下载**（2026-11-10 用户需求①）。
    *
-   * 与单条分享的区别只有"装几条"：**每条都要单独发一次 `getSunrunArchDetail`**
-   * （服务端一次只给一条的 pointList），所以这里是一个串行循环 —— 串行而不是并发，
-   * 是为了让进度可见、也避免同一条链路上并发打服务端（本项目全程的读请求都是串行的）。
+   * 与单条分享的区别：**每条都要单独发一次 `getSunrunArchDetail`**（服务端一次只给一条的 pointList），
+   * 所以这里是串行循环 —— 串行而不是并发，是为了让进度可见，也避免同一条链路上并发打服务端。
    *
-   * 逐条结果**全部留档**：某一条读不到轨迹不能把整批拖垮，也不能悄悄少装几条。
+   * 🆕 包内结构（用户口径："大压缩包的内部就是相关的各个路径"）：
+   * **每条路径一个独立的 JSON 文件**，条目名 = 这条的预设名（`.json`）。
+   * 于是"第一个包 1 条 + 第二个包 2 条 ⇒ 导入 3 条"的对应关系在包内是自明的。
+   *
+   * 逐条结果**全部留档**：某一条读不到轨迹不能把整批拖垮（跳过即可），也不能悄悄少装几条。
    */
   const downloadBatchZip = async (
     entries: { scoreId: string; presetName?: string }[],
@@ -450,8 +454,10 @@ export function useRealPathExport() {
     busy.value = 'share'
     batchProgress.value = { done: 0, total: wanted.length }
     try {
-      const items: RealPathBundleItem[] = []
+      const files: { name: string; json: string }[] = []
       const outcomes: BatchOutcome[] = []
+      const usedNames = new Set<string>()
+      const exportedAt = new Date().toISOString()
       for (const [i, want] of wanted.entries()) {
         const scoreId = String(want.scoreId).trim()
         const record = records.value.find((r) => r.scoreId === scoreId)
@@ -460,7 +466,8 @@ export function useRealPathExport() {
           const res = await MpApiWrapper.getSunrunArchDetail(scoreId, apiOptions.value)
           const pts = parseArchDetailPoints(res.data)
           if (!pts.length) {
-            outcomes.push({ name: label, ok: false, message: '这条成绩读不到轨迹（云端 pointList 为空）—— 可能当初提交时明细没交上' })
+            /** 读不到就**跳过**（用户口径），但如实记账，最后在汇总里说明 */
+            outcomes.push({ name: label, ok: false, message: '这条成绩读不到轨迹（云端 pointList 为空）—— 已跳过' })
             continue
           }
           const lap = extractOneLap(pts, { tolM: 25, minM: 200 })
@@ -472,31 +479,42 @@ export function useRealPathExport() {
             fitDegree: record?.fitDegree ?? null,
             sourcePoints: pts.length,
             lapLengthM: lap.length < pts.length ? pathLengthM(lap) : null,
-            exportedAt: new Date().toISOString(),
+            exportedAt,
           }
-          const name = String(want.presetName || '').trim() || defaultRealPathName({ ...meta, startTime: record?.startTime })
-          items.push({ name, lineId: '', lineName: '', points: pts, meta })
+          /** 批量里用户没填名字 ⇒ 默认名 + 随机后缀（避免与别人/别次的同名撞车） */
+          const typed = String(want.presetName ?? '').trim()
+          const rawName = typed || withRandomSuffix(defaultRealPathName({ ...meta, startTime: record?.startTime }))
+          const item: RealPathBundleItem = { name: rawName, lineId: '', lineName: '', points: pts, meta }
+          /** 包内条目名去重：同名的加序号（ZIP 不允许重名条目） */
+          let entryName = sanitizeZipEntryName(rawName)
+          if (usedNames.has(entryName)) {
+            const stem = entryName.replace(/\.json$/i, '')
+            let n = 2
+            while (usedNames.has(`${stem}-${n}.json`)) n++
+            entryName = `${stem}-${n}.json`
+          }
+          usedNames.add(entryName)
+          files.push({ name: entryName, json: bundleJsonOf(item, exportedAt) })
           outcomes.push({ name: label, ok: true, message: `已装入（${pts.length} 点）` })
         } catch (err) {
-          outcomes.push({ name: label, ok: false, message: `读轨迹失败：${err instanceof Error ? err.message : '未知错误'}` })
+          outcomes.push({ name: label, ok: false, message: `读轨迹失败：${err instanceof Error ? err.message : '未知错误'} —— 已跳过` })
         } finally {
           batchProgress.value = { done: i + 1, total: wanted.length }
         }
       }
       const summary = summarizeBatch(outcomes)
-      if (!items.length) {
+      if (!files.length) {
         logWarn('realpath', '批量导出：一条都没装上', { total: wanted.length })
         return { ok: false, message: `一条都没能导出：${summary.failCount} 条都读不到轨迹（原因见下面逐条说明）`, summary }
       }
-      const bundle = buildShareBundle(items, new Date().toISOString())
-      const first = items[0]!
-      const fileName = items.length === 1
-        ? `真实路径-${first.meta.date || '未记录'}-${first.name}`
-        : `真实路径-批量${items.length}条-${first.meta.date || '未记录'}`
+      const firstOk = outcomes.find((o) => o.ok)?.name.split(' ')[0] || '未记录'
+      const fileName = files.length === 1
+        ? `真实路径-${firstOk}-${outcomes.find((o) => o.ok)?.name || ''}`
+        : `真实路径-批量${files.length}条-${firstOk}`
       const res = await fetch('/api/local/real-path/share', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fileName, json: JSON.stringify(bundle) }),
+        body: JSON.stringify({ fileName, files }),
       })
       if (!res.ok) {
         const text = await res.text().catch(() => '')
@@ -513,9 +531,13 @@ export function useRealPathExport() {
       a.click()
       a.remove()
       setTimeout(() => URL.revokeObjectURL(url), 10_000)
-      logInfo('realpath', '批量导出分享压缩包', { name, bytes: blob.size, items: items.length, failed: summary.failCount })
-      const tail = summary.failCount ? `；另有 ${summary.failCount} 条没装上（原因见下面逐条说明）` : ''
-      return { ok: true, message: `已生成压缩包「${name}」（${Math.round(blob.size / 1024)} KB，含 ${items.length} 条路径）${tail}`, summary }
+      logInfo('realpath', '批量导出分享压缩包', { name, bytes: blob.size, files: files.length, failed: summary.failCount })
+      const tail = summary.failCount ? `；另有 ${summary.failCount} 条读不到已跳过（原因见下面逐条说明）` : ''
+      return {
+        ok: true,
+        message: `已生成压缩包「${name}」（${Math.round(blob.size / 1024)} KB，内含 ${files.length} 个路径文件）${tail}`,
+        summary,
+      }
     } catch (err) {
       return { ok: false, message: `导出失败：${err instanceof Error ? err.message : '未知错误'}`, summary: summarizeBatch([]) }
     } finally {
@@ -599,10 +621,12 @@ export function useRealPathExport() {
   /**
    * **批量：一次选多个压缩包导入**（2026-11-10 用户需求②）。
    *
-   * 每个文件逐个解析、逐个落库；**任何一条失败都要留住原因**（文件读不了 / 不是路径包 /
-   * 包内坐标全坏 / 撞名 / 存不进本机库），最后用 `summarizeBatch()` 汇总。
+   * 按用户口径**遍历每个包里的每一条路径**："第一个压缩包 1 个路径，第二个压缩包 2 个路径，
+   * 那么导入的就是 3 个路径" —— 所以是两层循环（包 × 包内条目），逐条落库、逐条记结果。
    *
-   * @param index 选包里的第几条；不给 ⇒ **包里有几条就全导**（批量口径：一次把好友给的都收下）
+   * 🔴 任何一条失败都要留住原因（文件读不了 / 不是路径包 / 包内坐标全坏 / 撞名 / 存不进本机库），
+   *    最后用 `summarizeBatch()` 汇总。`opts.index` 只用于"只想要包里第 N 条"的老口径，
+   *    批量导入默认**全收**（不传 index）。
    */
   const importManyShareZips = async (
     files: File[],
@@ -620,19 +644,25 @@ export function useRealPathExport() {
         const fileName = String(file.name || `第 ${i + 1} 个文件`)
         try {
           const bytes = new Uint8Array(await file.arrayBuffer())
-          const parsed = await readShareBundleFromZip(bytes)
+          const parsed = await readAllShareItemsFromZip(bytes)
           if (!parsed.ok) {
             outcomes.push({ name: fileName, ok: false, message: parsed.error })
             continue
           }
-          const picked = batchImportCandidates(parsed.items, opts.index === undefined ? undefined : [opts.index])
+          /** 老口径（只取第 N 条）仍然保留；批量默认全收 */
+          const picked = opts.index === undefined
+            ? parsed.items
+            : parsed.items.filter((_, idx) => idx === Math.trunc(Number(opts.index)))
           if (!picked.length) {
             outcomes.push({ name: fileName, ok: false, message: `包里没有第 ${(opts.index ?? 0) + 1} 条路径（共 ${parsed.items.length} 条）` })
             continue
           }
-          /** 同一个包里可能有多条：逐条落库，**分别**记结果（一条撞名不拖累同包里的其它条） */
-          for (const item of picked) {
-            const label = picked.length > 1 ? `${fileName} · ${item.name || '未命名'}` : fileName
+          /** 同包内被跳过的坏条目也要回报（"包里 3 条只进来 2 条"必须看得见） */
+          for (const s of parsed.skipped) {
+            outcomes.push({ name: `${fileName} · ${s.entryName}`, ok: false, message: s.reason })
+          }
+          for (const { entryName, item } of picked) {
+            const label = picked.length > 1 || parsed.skipped.length ? `${fileName} · ${entryName}` : fileName
             try {
               const draft = buildRealPathPresetDraft({
                 meta: item.meta,
