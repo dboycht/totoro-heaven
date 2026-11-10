@@ -163,51 +163,51 @@ const autoMatchNote = computed(() => {
 /** 一条归档记录的形状（与 `utils/mp/realPath.ts` 的 `RealPathRecord` 同源，这里只取用到的字段） */
 type RealPathRecord = (typeof rp.records.value)[number]
 /**
- * 批量勾选的场次号集合（增删切换走纯函数 `toggleSelection`，界面不自己拼 Set）。
- *
- * 🔴 2026-11-10 二次验收修正（Bug 2）：**勾选跨月份保持**。
- * 用户口径："选中 9 月的全部路径，再点开 10 月选中全部，那么只能导出 10 月的、9 月的勾选消失了"——
- * 那是"读归档时清空勾选"造成的。场次号（`scoreId`）本身**全局唯一**，跨月也不会撞，
- * 所以勾选没有理由被清掉；只有"用户自己点清空"或"退出页面"才该没。
- */
-const pickedIds = ref<Set<string>>(new Set())
-/**
  * **已经读过的月份**（`monthId` → 那个月的成绩）。
  * 用户口径："已经读取过的就没有必要重复读取，每一次点击月份都要重新读取一遍有点浪费"。
  * 点回读过的月份 ⇒ **直接用缓存**，不再打服务端；只有没读过的月份才真发请求。
  */
 const monthCache = ref<Map<string, RealPathRecord[]>>(new Map())
-/** 当前在读成绩里的**全部**场次号（"全选"用）—— 跨月份累积 */
-const allScoreIds = computed(() => rp.records.value.map((r) => String(r.scoreId)))
-/** 选中的那几条（导出顺序 = 归档顺序，不按点击顺序 —— 便于对照列表） */
-const pickedRecords = computed(() => rp.records.value.filter((r) => pickedIds.value.has(String(r.scoreId))))
+/** 当前生效月份的显示名（列表标题用；读不出就叫"当前月份"） */
+const activeMonthName = computed(() => {
+  const id = String(rp.activeMonthId.value ?? '')
+  return rp.months.value.find((m) => m.monthId === id)?.monthName || (id ? id : '当前月份')
+})
+/** 当前月份的列表（"全选""反选"只作用于它 —— 用户口径："这个选择只针对你选择的月份下面的"） */
+const monthRecords = computed(() => rp.records.value)
+/** 跨月累计已选（跨月保持；汇总块显示它） */
+const pickedRecords = computed(() => rp.pickedRecords.value)
 const pickedCount = computed(() => pickedRecords.value.length)
-/** 勾选摘要（日期 + 时刻；最多列 4 条，多余的用"…"），只为了让用户一眼认出勾了哪些天 */
+const pickedIds = computed(() => new Set(pickedRecords.value.map((r) => String(r.scoreId))))
+/** 勾选摘要（最多列 4 条，多余的用"…"） */
 const pickedDatesText = computed(() => {
   const shown = pickedRecords.value.slice(0, 4).map((r) => `${r.date || '日期未知'}${r.startTime ? ` ${r.startTime.slice(0, 5)}` : ''}`)
   return shown.join('、') + (pickedCount.value > shown.length ? `…（共 ${pickedCount.value} 条）` : '')
 })
 const isPicked = (scoreId: string) => pickedIds.value.has(String(scoreId))
 const togglePick = (scoreId: string) => {
-  pickedIds.value = toggleSelection(pickedIds.value, scoreId)
+  const rec = [...monthRecords.value, ...pickedRecords.value].find((r) => String(r.scoreId) === String(scoreId))
+  if (rec) rp.togglePickRecord(rec)
 }
-/**
- * 「全选」= 把**当前列表里的**全部勾上（并保留其它月份已勾的）。
- * ⚠️ 不用"清空再选"：那样第二次点某个"全选"会把别的月份的勾选洗掉 —— 正是 Bug 2 的同一类错误。
- */
-const pickAll = () => {
-  pickedIds.value = setSelection(pickedIds.value, allScoreIds.value, true)
+/** 当前月是否已全部选中（「全选」要显示成"已全选"） */
+const monthAllPicked = computed(
+  () => monthRecords.value.length > 0 && monthRecords.value.every((r) => pickedIds.value.has(String(r.scoreId))),
+)
+/** 当前月有多少条已选 */
+const monthPickedCount = computed(() => monthRecords.value.filter((r) => pickedIds.value.has(String(r.scoreId))).length)
+/** 「全选」：把**当前月份**的记录全加入已选（增量，不洗掉别的月份） */
+const pickAll = () => rp.pickManyRecords(monthRecords.value)
+/** 「反选」：把**当前月份**里已选的拿掉（其余月份的已选一律不动） */
+const invertPicks = () => rp.unpickManyRecords(monthRecords.value.filter((r) => pickedIds.value.has(String(r.scoreId))))
+/** 「清空已选」：清掉**全部**跨月已选 */
+const clearPicks = () => rp.clearPickedRecords()
+/** 从汇总块里逐条取消 */
+const unpickOne = (scoreId: string) => {
+  const rec = pickedRecords.value.find((r) => String(r.scoreId) === String(scoreId))
+  if (rec) rp.togglePickRecord(rec)
 }
-const clearPicks = () => {
-  pickedIds.value = new Set()
-}
-/** 勾选里有多少条**不在当前列表**（跨月份勾选时如实提示，免得用户以为丢了） */
-const pickedOffListCount = computed(() => {
-  const onList = new Set(allScoreIds.value)
-  let n = 0
-  for (const id of pickedIds.value) if (!onList.has(id)) n++
-  return n
-})
+/** 已选里有多少条不在当前月份（如实提示，免得用户以为丢了） */
+const pickedOffMonthCount = computed(() => pickedRecords.value.filter((r) => !monthRecords.value.some((m) => String(m.scoreId) === String(r.scoreId))).length)
 
 /** 批量动作的逐条结果（`null` = 还没跑过；界面据此决定显不显示"失败原因"那一栏） */
 const batchSummary = ref<BatchSummaryLike | null>(null)
@@ -417,26 +417,23 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
             <v-alert v-if="rp.error.value" type="error" variant="tonal" density="compact" class="mb-2">{{ rp.error.value }}</v-alert>
             <v-alert v-else-if="rp.notice.value" type="success" variant="tonal" density="compact" class="mb-2">{{ rp.notice.value }}</v-alert>
 
-            <div v-if="!rp.records.value.length" class="text-caption text-medium-emphasis mb-2">
-              还没有数据：先点上面的「读取最近成绩」。
+            <div v-if="!monthRecords.length" class="text-caption text-medium-emphasis mb-2">
+              这个月还没有数据：先点上面的「读取最近成绩」，或点另一个月份。
             </div>
             <template v-else>
-              <!-- 🆕 2026-11-10 二次改版（用户口径）：记录平铺成一张列表（每行自带日期），
-                   不再需要先点某一天；工具条在列表上方，读到成绩就可用 -->
+              <!-- 🔴 2026-11-10 三次改版（用户口径）：列表只显示当前月份的记录；
+                   「全选 / 反选」只作用于这个月的列表 -->
               <div class="d-flex flex-wrap align-center ga-2 mb-2">
-                <div class="text-subtitle-2">成绩记录（{{ rp.records.value.length }} 条）</div>
+                <div class="text-subtitle-2">
+                  {{ activeMonthName }} 的成绩（{{ monthRecords.length }} 条，已选 {{ monthPickedCount }}）
+                </div>
                 <v-spacer />
-                <v-btn size="x-small" variant="tonal" @click="pickAll">全选本列表（{{ allScoreIds.length }}）</v-btn>
-                <v-btn size="x-small" variant="tonal" :disabled="!pickedCount" @click="clearPicks">清空勾选</v-btn>
-              </div>
-              <div class="text-caption mb-2" :class="pickedCount ? 'text-primary' : 'text-medium-emphasis'">
-                {{ pickedCount
-                  ? `已选 ${pickedCount} 条${pickedOffListCount ? `（其中 ${pickedOffListCount} 条在别的月份里，导出时会一起带上）` : ''} —— 单条读取已锁定，请用右侧「批量操作」`
-                  : '勾选左侧复选框可批量导出；不勾选时，点一条读它的轨迹（单条导出）。换月份不会丢掉已勾选的。' }}
+                <v-btn size="x-small" variant="tonal" @click="pickAll">全选</v-btn>
+                <v-btn size="x-small" variant="tonal" :disabled="!monthPickedCount" @click="invertPicks">反选</v-btn>
               </div>
               <v-list density="compact" class="pa-0">
                 <v-list-item
-                  v-for="r in rp.records.value"
+                  v-for="r in monthRecords"
                   :key="r.scoreId"
                   :active="rp.selectedScoreId.value === r.scoreId"
                   @click="rp.pickRecord(r.scoreId)"
@@ -455,8 +452,7 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
                   </v-list-item-title>
                   <v-list-item-subtitle class="text-caption">场次号：{{ r.scoreId }}</v-list-item-subtitle>
                   <template #append>
-                    <!-- 🔴 单条/批量互斥（用户口径）：勾了任何一条 ⇒ 单条读取变灰；
-                         单条已读到时 ⇒ 勾选框也变灰（避免两套入口同时开着分不清） -->
+                    <!-- 单条/批量互斥（用户口径）：勾了任何一条 ⇒ 单条读取变灰；清空勾选后恢复 -->
                     <v-btn
                       size="x-small"
                       variant="text"
@@ -467,6 +463,38 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
                     >
                       读取轨迹
                     </v-btn>
+                  </template>
+                </v-list-item>
+              </v-list>
+              <div class="text-caption text-medium-emphasis mt-1">
+                {{ monthAllPicked ? '这个月已全选。' : '勾选框只影响"已选汇总"；不勾选时点一条读它的轨迹（单条导出）。' }}
+                换月份<b>不会</b>丢掉已选的。
+              </div>
+            </template>
+
+            <!-- 🆕 2026-11-10（用户口径）：已选汇总（常驻）—— 跨月累计选中的都列在这儿，可逐条取消 -->
+            <v-divider class="my-3" />
+            <div class="d-flex flex-wrap align-center ga-2 mb-2">
+              <div class="text-subtitle-2">已选汇总（{{ pickedCount }} 条）</div>
+              <v-spacer />
+              <v-btn size="x-small" variant="tonal" :disabled="!pickedCount" @click="clearPicks">清空已选</v-btn>
+            </div>
+            <div v-if="!pickedCount" class="text-caption text-medium-emphasis">
+              还没选任何成绩：在上面勾选，或点「全选」（只选当前月份）；选中后这里会列出全部。
+            </div>
+            <template v-else>
+              <div v-if="pickedOffMonthCount" class="text-caption text-primary mb-1">
+                其中 {{ pickedOffMonthCount }} 条不在当前月份 —— 导出时会一起带上。
+              </div>
+              <v-list density="compact" class="pa-0 selected-summary">
+                <v-list-item v-for="r in pickedRecords" :key="`pick-${r.scoreId}`" class="px-0">
+                  <v-list-item-title class="text-body-2">
+                    <span class="text-medium-emphasis">{{ r.date || '日期未知' }}</span> ·
+                    {{ r.startTime || '时间未知' }} · {{ r.km === null ? '里程未知' : `${r.km.toFixed(2)} km` }}
+                    · {{ r.usedTime || '用时未知' }}
+                  </v-list-item-title>
+                  <template #append>
+                    <v-btn size="x-small" variant="text" color="error" @click="unpickOne(r.scoreId)">取消</v-btn>
                   </template>
                 </v-list-item>
               </v-list>

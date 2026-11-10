@@ -96,6 +96,14 @@ export function useRealPathExport() {
    */
   const batchProgress = useState<{ done: number; total: number } | null>('mpRealPathBatchProgress', () => null)
   const records = useState<RealPathRecord[]>('mpRealPathRecords', () => [])
+  /**
+   * **跨月累计已选**的成绩（用户口径里的"已选汇总"）。
+   *
+   * 为什么按**整条记录**存而不是只存 id：换月份后 `records` 只剩当月那批，
+   * 只存 id 的话汇总块就渲染不出"9 月选了哪几条"（拿不到日期/里程/场次号）。
+   * 存整条也只是几十条小对象，换来的是"跨月选择可见、可逐条取消"。
+   */
+  const pickedRecords = useState<RealPathRecord[]>('mpRealPathPicked', () => [])
   /** 选中的那一天（`''` = 全部/没选） */
   const selectedDate = useState<string>('mpRealPathDate', () => '')
   /** 选中的那条成绩的场次号（`''` = 没选） */
@@ -223,22 +231,16 @@ export function useRealPathExport() {
       )
       const list = parseArchRecords(arch.data)
       /**
-       * 🔴 2026-11-10 二次验收修正（Bug 2）：**并入**现有列表，而不是整体替换。
+       * 🔄 2026-11-10 三次验收修正（用户口径）：`records` 只放**当前月份**的记录。
        *
-       * 用户口径："选中 9 月的全部路径，再点开 10 月选中全部，那么只能导出 10 月的、9 月的勾选消失了"。
-       * 根因有两层：① 界面在"读归档"时清空勾选；② 这里把 9 月的记录**顶掉**了 ——
-       * 于是即使不清勾选，9 月的那些 id 也已经不在列表里，批量导出根本打不到它们。
-       * 场次号（`scoreId`）全局唯一，跨月合并不会串味；去重后**保持先来后到**的顺序。
+       * 上一版为了"跨月勾选不丢"把各月记录并进同一个列表，结果列表变成"全部月份堆在一起"
+       * —— 用户明确说："图二应该是一个选项卡下只有一个月相关的，而不是全部的"。
+       * 现在分层：
+       *   · `records`        = **当前选中月份**的记录（列表只显示它）；
+       *   · `pickedRecords`  = **跨月累计已选**（汇总块显示它）—— 换月份不影响它。
+       * 于是"跨月勾选不丢"与"列表只显示当月"两件事可以同时成立。
        */
-      const seen = new Set(records.value.map((r) => String(r.scoreId)))
-      const merged = [...records.value]
-      for (const r of list) {
-        const id = String(r?.scoreId ?? '')
-        if (!id || seen.has(id)) continue
-        seen.add(id)
-        merged.push(r)
-      }
-      records.value = merged
+      records.value = list
       /** 界面高亮跟着**真正用过的那一个月**走（图 1：读的是 9 月、高亮却停在"本月"） */
       activeMonthId.value = useMonth
       selectedDate.value = ''
@@ -476,7 +478,8 @@ export function useRealPathExport() {
       const exportedAt = new Date().toISOString()
       for (const [i, want] of wanted.entries()) {
         const scoreId = String(want.scoreId).trim()
-        const record = records.value.find((r) => r.scoreId === scoreId)
+        /** 跨月已选优先（列表只剩当月，从它查会漏掉别的月份） */
+        const record = pickedRecords.value.find((r) => r.scoreId === scoreId) ?? records.value.find((r) => r.scoreId === scoreId)
         const label = record ? `${record.date || '日期未知'} ${record.startTime || ''}`.trim() : scoreId
         try {
           const res = await MpApiWrapper.getSunrunArchDetail(scoreId, apiOptions.value)
@@ -585,7 +588,8 @@ export function useRealPathExport() {
       const outcomes: BatchOutcome[] = []
       for (const [i, want] of wanted.entries()) {
         const scoreId = String(want.scoreId).trim()
-        const record = records.value.find((r) => r.scoreId === scoreId)
+        /** 跨月已选优先（列表只剩当月，从它查会漏掉别的月份） */
+        const record = pickedRecords.value.find((r) => r.scoreId === scoreId) ?? records.value.find((r) => r.scoreId === scoreId)
         const label = record ? `${record.date || '日期未知'} ${record.startTime || ''}`.trim() : scoreId
         try {
           const res = await MpApiWrapper.getSunrunArchDetail(scoreId, apiOptions.value)
@@ -712,6 +716,33 @@ export function useRealPathExport() {
     }
   }
 
+  /** 加/remove 一条到已选（跨月累计；同一条再点一次就取消） */
+  const togglePickRecord = (record: RealPathRecord) => {
+    const id = String(record?.scoreId ?? '')
+    if (!id) return
+    pickedRecords.value = pickedRecords.value.some((r) => String(r.scoreId) === id)
+      ? pickedRecords.value.filter((r) => String(r.scoreId) !== id)
+      : [...pickedRecords.value, record]
+  }
+  /** 批量加入（「全选」：只作用于传进来的这批 —— 界面传**当前月份**的列表） */
+  const pickManyRecords = (list: RealPathRecord[]) => {
+    const have = new Set(pickedRecords.value.map((r) => String(r.scoreId)))
+    const add = (Array.isArray(list) ? list : []).filter((r) => r && !have.has(String(r.scoreId)))
+    if (add.length) pickedRecords.value = [...pickedRecords.value, ...add]
+  }
+  /** 批量移除（「反选」= 把传进来的这批里"已在已选"的拿掉） */
+  const unpickManyRecords = (list: RealPathRecord[]) => {
+    const drop = new Set((Array.isArray(list) ? list : []).map((r) => String(r?.scoreId ?? '')))
+    pickedRecords.value = pickedRecords.value.filter((r) => !drop.has(String(r.scoreId)))
+  }
+  /**
+   * 清空已选。
+   * ⚠️ 只清"已选"、**不清"已读月份缓存"** —— 用户点了清空勾选不代表要重新联网读一遍。
+   */
+  const clearPickedRecords = () => {
+    pickedRecords.value = []
+  }
+
   return {
     // 状态
     months,
@@ -728,7 +759,14 @@ export function useRealPathExport() {
     snCode,
     selectedRecord,
     selection,
+    /** 🆕 跨月累计已选（"已选汇总"块用） */
+    pickedRecords,
     batchProgress,
+    // 🆕 已选集合的增删（跨月累计；判据走纯函数 `toggleSelection`/`setSelection`）
+    togglePickRecord,
+    pickManyRecords,
+    unpickManyRecords,
+    clearPickedRecords,
     // 动作
     loadMonths,
     loadRecords,

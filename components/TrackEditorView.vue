@@ -266,6 +266,16 @@ const setRing = (which: 'outer' | 'inner', pts: N[]) => {
 watch(lineId, (id) => loadDraft(String(lib.presetResolutionFor(String(id ?? '')).entry?.id ?? '')))
 
 /**
+ * 🔴 2026-11-10（用户口径"两种路径不是同一类"）：把库拆成**手绘跑道**与**真实路径**两组。
+ * 判据在纯函数里（`splitRealPathEntries`），界面不自己写 `e.realPath` —— 那样两处口径会漂。
+ */
+const splitEntries = computed(() => splitRealPathEntries(libEntries.value))
+const drawnEntries = computed(() => splitEntries.value.drawn)
+const realEntries = computed(() => splitEntries.value.real)
+/** 真实路径那一组是否展开（默认收起：它们常常一堆，全铺开会把跑道预设挤没） */
+const realOpen = ref(false)
+
+/**
  * 🆕 2026-11-03（1.3.6）：**"预设"下拉 + 名称输入**（用户要求"一个点位可以创建多个预设"、
  * "保存预设的时候可以输入相关名字进行存储，便于用户区分"）。
  *
@@ -273,7 +283,15 @@ watch(lineId, (id) => loadDraft(String(lib.presetResolutionFor(String(id ?? ''))
  * 选中它 ⇒ 只清空"正在编辑的是哪条"，草稿与名称框**保留**（用户常常是"照着这条改一版"，别把手上的点清掉）。
  */
 const presetOptions = computed(() => [
-  ...libEntries.value
+  /**
+   * 🔴 2026-11-10 二次验收修正：**真实路径不进这个下拉**。
+   *
+   * 用户反馈："为什么我还是可以选择我之前导入的真实路径进行编辑？"——
+   * 上一轮只改了下面的「本地路线库」列表，**这个下拉漏了**：它列的是"这个地点的全部预设"，
+   * 真实路径也在其中，选中它就等于把真实跑出来的点列载进编辑器、存一下就改写了原始几何。
+   * 判据与列表同源（`isRealPathEntry`），不再各写一套。
+   */
+  ...drawnEntries.value
     .filter((e) => String(e.lineId) === String(lineId.value))
     .map((e) => ({ title: `${resolveEntryName(e)} —— ${entrySummaryText(e)}`, value: String(e.id) })),
   { title: '＋ 新建一条预设（保存后出现在上面）', value: '' },
@@ -324,14 +342,6 @@ const onPresetPick = (v: unknown) => {
 /** 这个地点**同名预设**的检测结果（旧数据可能本来就有同名 —— 只提示，绝不自动改名） */
 const dupNames = computed(() => duplicateNameGroups(libEntries.value))
 /**
- * 🔴 2026-11-10（用户口径"两种路径不是同一类"）：把库拆成**手绘跑道**与**真实路径**两组。
- * 判据在纯函数里（`splitRealPathEntries`），界面不自己写 `e.realPath` —— 那样两处口径会漂。
- */
-const splitEntries = computed(() => splitRealPathEntries(libEntries.value))
-const drawnEntries = computed(() => splitEntries.value.drawn)
-const realEntries = computed(() => splitEntries.value.real)
-/** 真实路径那一组是否展开（默认收起：它们常常一堆，全铺开会把跑道预设挤没） */
-const realOpen = ref(false)
 /** 正在编辑的那条预设（`presetId` 为空 = 还没保存过 / 正在新建） */
 const editingEntry = computed(() => (presetId.value ? lib.get(presetId.value) : undefined))
 
