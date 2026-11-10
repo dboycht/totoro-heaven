@@ -28,6 +28,7 @@ import {
 import {
   LOCAL_FREE_LINE_ID,
   TRACK_HISTORY_MAX,
+  TRACK_NAME_MAX,
   duplicateNameGroups,
   entryDetailRows,
   entrySummaryText,
@@ -1153,8 +1154,8 @@ const lineOptions = computed(() =>
               v-model="presetName"
               label="预设名称（留空 = 自动命名）"
               density="compact"
-              :counter="24"
-              maxlength="24"
+              :counter="TRACK_NAME_MAX"
+              :maxlength="TRACK_NAME_MAX"
               hide-details="auto"
               class="mb-2"
             />
@@ -1438,14 +1439,14 @@ const lineOptions = computed(() =>
                 label="新名字"
                 density="compact"
                 autofocus
-                :counter="24"
-                maxlength="24"
+                :counter="TRACK_NAME_MAX"
+                :maxlength="TRACK_NAME_MAX"
                 hide-details="auto"
                 class="mb-2"
                 @keyup.enter="confirmRename"
               />
               <div class="text-caption text-medium-emphasis">
-                当前输入 {{ renameLen }} / 24 字。<b>名称全库不可重复</b>（撞了会被拒绝，并告诉你被谁占了）；
+                当前输入 {{ renameLen }} / {{ TRACK_NAME_MAX }} 字。<b>名称全库不可重复</b>（撞了会被拒绝，并告诉你被谁占了）；
                 留空会自动命名。改的是<b>这条预设的名字</b>，只影响这台电脑上的列表；
                 厂商线路名与提交用的线路 id 都不变。
                 <template v-if="renameEntry">地点：<b>{{ renameEntry.lineName || renameEntry.lineId }}</b></template>

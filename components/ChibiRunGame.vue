@@ -37,10 +37,17 @@
  *    （67 / 325 / 350）跨阈值发 `emit('achieve')`，350 定格通关发 `emit('win')`
  *    （换算与阈值收口在 `utils/game/achievements.ts`，有单测）；toast 由 `app.vue` 全局渲染，
  *    面板开合走 `pause()` / `resume()`（原版 `stop()` / `play()`）。
+ *
+ * ⑦ **整局开局与退出**（原版进入可开局状态的方法，这里补上）：
+ *    · 「再来一局」= `startGame()`（把画面切回初始宽度、挂回可见性监听）+ `restart()`
+ *      （距离/时间/撞死位归零、障碍与速度复位）。两者都要：单用 `restart()` 会留下
+ *      "画面还宽着"的状态，单用 `startGame()` 则上一局的障碍与速度会带进新一局；
+ *    · 离开本页（作弊码跳走 / 切到别的页面）时 `dispose()`：停主循环、移除原版挂在 document 上的
+ *      按键与鼠标监听、**挂起并关闭 AudioContext**（否则离开页面后音效仍然继续响）。
  */
 import { isWinScore, scoreFromDistance, THRESHOLD_ACHIEVEMENTS } from '~/utils/game/achievements'
 const emit = defineEmits<{
-  /** 作弊码输入完成（解锁真实功能 + 成就「黑暗中的响指」的触发点） */
+  /** 作弊码输入完成（解锁真实功能 + 成就「黑暗中的响指」的触发点；随后本页会跳走） */
   (e: 'unlock'): void
   /** 分数里程碑成就跨过阈值（payload 是成就 id；同一局同一枚只发一次） */
   (e: 'achieve', id: string): void
@@ -59,22 +66,36 @@ interface TrexRunner {
   clearCanvas?: () => void
   /** 本局逻辑距离（原版每帧累加；HUD 分数 = Math.round(distanceRan * 0.025)） */
   distanceRan?: number
-  /** 原版停止主循环（通关定格用） */
+  /** 本局累计时间（`restart()` 归零；一度累积到 `CLEAR_TIME` 才允许复活） */
+  runningTime?: number
+  /** 是否已撞死（`restart()` 会把它置回 false） */
+  crashed?: boolean
+  /** 原版停止主循环（通关定格 / 离开页面用） */
   stop?: () => void
-  /** 原版整局重开（重置 distanceRan、回到待机；原版 game over 后复活走的就是它） */
+  /** 原版撞死复活（只在**停止中**时生效；见文件头 ⑦） */
   restart?: () => void
   /** 原版原地恢复（`play()`：撤销 `stop()` 的暂停态并续跑，不重置任何进度） */
   play?: () => void
+  /** 原版"从头开始一局"（首屏 → 可跑态，见文件头 ⑦） */
+  startGame?: () => void
+  /** 原版移除 document 上的 keydown/keyup（以及鼠标）监听 */
+  stopListening?: () => void
+  /** 原版音效上下文（首次开局才创建；见 `public/trex/runner.js` 的 `loadSounds`） */
+  audioContext?: AudioContext | null
 }
 
 const hostEl = ref<HTMLElement | null>(null)
 let cleanup: (() => void) | null = null
+/** 原版实例（离开页面时 `teardownRunner()` 要关它的音效上下文与监听） */
+let liveRunner: TrexRunner | null = null
+/** 立刻按当前视口重算一次布局（"再来一局"回到首屏时用；见 `goToStartScreen`） */
+let applyGameScaleNow: (() => void) | null = null
 
 // ── 分数监听状态（1.3.5 第二批：里程碑成就 + 通关）──
 let currentRunner: TrexRunner | null = null
 let winFired = false
 let winRaf = 0
-/** 本局已发过 `achieve` 的成就 id（restart 复位；是否"新解锁"由 play.vue 的持久状态判） */
+/** 本局已发过 `achieve` 的成就 id（`restartGame` 复位；是否"新解锁"由 play.vue 的持久状态判） */
 const firedAch = new Set<string>()
 
 /**
@@ -83,7 +104,7 @@ const firedAch = new Set<string>()
  *      同一局同一枚只发一次（是否弹 toast 由 play.vue 的持久解锁状态决定）；
  *   ② 达到 `WIN_SCORE`（350）当帧调原版 `stop()` 定格并 `emit('win')`。
  * rAF 每帧检查 ⇒ 超调不超过一帧（约 0.15 分），HUD 定格在 350，不会涨过头。
- * ⚠️ 原版逻辑一行未改：只读 `distanceRan` 与调用 `stop`/`restart`/`play` 这四个原版公开成员。
+ * ⚠️ 原版逻辑一行未改：只读 `distanceRan` 与调用 `stop`/`startGame`/`play` 这几个原版公开成员。
  */
 const watchScore = () => {
   winRaf = requestAnimationFrame(watchScore)
@@ -108,16 +129,30 @@ const startWatchScore = () => {
   winRaf = requestAnimationFrame(watchScore)
 }
 
-/** 通关结算后的「再来一局」：复位 win/里程碑状态并让原版整局重开 */
+/**
+ * 回到**首屏**：原版 `startGame()` 把画面切回初始宽度（本页布局按视口重算）并挂回可见性监听。
+ * 通关遮罩的「再来一局」与按空格重开走的是这里。
+ */
+function goToStartScreen(): void {
+  const runner = currentRunner
+  if (!runner) return
+  applyGameScaleNow?.()
+  /** `startGame` 在"已开局"状态下会重挂可见性监听（重复挂同一函数 = 同一监听，不会叠加） */
+  runner.startGame?.()
+  /** 重开一局：距离/时间/撞死位归零，障碍与速度复位（原版 `restart()` 干的就是这件事） */
+  runner.restart?.()
+}
+
+/** 通关结算后的「再来一局」：复位我们自己的比分状态，再让原版重开一局（距离/障碍/速度都归零） */
 function restartGame(): void {
-  if (!currentRunner) return
   winFired = false
   firedAch.clear()
   if (winRaf) {
     cancelAnimationFrame(winRaf)
     winRaf = 0
   }
-  currentRunner.restart?.()
+  if (!currentRunner) return
+  goToStartScreen()
   startWatchScore()
 }
 
@@ -131,12 +166,32 @@ function resumeGame(): void {
   if (!winFired) currentRunner?.play?.()
 }
 
+/**
+ * 离开本页前把原版**彻底停住**（文件头 ⑦）：否则它挂在 document 上的监听、滚动的主循环、
+ * 已经打开的 `AudioContext` 都会跟到下一个页面，表现为"人已经跳到工作台，后台还在响/还在跑"。
+ */
+function teardownRunner(): void {
+  const runner = liveRunner
+  if (!runner) return
+  try {
+    runner.stop?.()
+    runner.stopListening?.()
+    const ctx = runner.audioContext
+    if (ctx && ctx.state !== 'closed') void ctx.close().catch(() => {})
+    runner.audioContext = null
+  } catch {
+    /** 关不掉也要继续卸载：错误不能把整页摘除流程带崩 */
+  }
+}
+
 defineExpose({
   /** 通关遮罩的「再来一局」按钮调用（play.vue） */
   restart: restartGame,
   /** 成就面板打开时暂停 / 关闭时恢复（play.vue） */
   pause: pauseGame,
   resume: resumeGame,
+  /** 离开页面前的收尾（本组件卸载时自己也会调，这里也开放给调用方） */
+  dispose: teardownRunner,
 })
 
 const KONAMI = ['up', 'up', 'down', 'down', 'left', 'right', 'left', 'right', 'b', 'a'] as const
@@ -379,11 +434,17 @@ function applyGameScale(host: HTMLElement, runner: TrexRunner): () => void {
 
   layout()
   placeTrex()
+  /** 供"再来一局回首屏"时立即重算（不等下一帧） */
+  applyGameScaleNow = () => {
+    appliedKey = ''
+    layout()
+  }
   window.addEventListener('resize', schedule)
   return () => {
     window.removeEventListener('resize', schedule)
     if (raf) cancelAnimationFrame(raf)
     if (nativeClear) runner.clearCanvas = nativeClear
+    applyGameScaleNow = null
   }
 }
 
@@ -443,6 +504,7 @@ async function boot(): Promise<void> {
 
     // ⑥ 分数监听（1.3.5 第二批）：里程碑成就 + 通关定格，见文件头 ⑥ 与 watchScore 的注释
     currentRunner = runner
+    liveRunner = runner
     startWatchScore()
     // 仅用于端到端验证（`_mp-analyze/scratch/verify_game_guide.mjs` 注入 distanceRan
     // 直接触发通关，省去真跑 300 分的一分多钟）；不承载敏感信息、不影响外观。
@@ -524,6 +586,9 @@ async function boot(): Promise<void> {
 }
 
 onBeforeUnmount(() => {
+  // 先让原版停下并关掉音效上下文，再摘掉我们自己的监听（顺序无所谓，但两件都要做，见文件头 ⑦）
+  teardownRunner()
+  liveRunner = null
   cleanup?.()
 })
 </script>

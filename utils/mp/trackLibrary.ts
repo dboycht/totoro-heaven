@@ -173,8 +173,14 @@ export function isValidTrackEntry(v: { outer?: unknown; inner?: unknown; freeSha
   return hasValidRings(v) || usableFreePathShape(parseFreePathShape(v.freeShape))
 }
 
-/** 自定义路名长度上限（按**码点**算，别把 emoji 截成半个 —— 用户可能起「🏃 西操场」这种名字） */
-export const TRACK_NAME_MAX = 24
+/**
+ * 自定义路名长度上限（按**码点**算，别把 emoji 截成半个 —— 用户可能起「🏃 西操场」这种名字）。
+ *
+ * 2026-11-10（用户反馈"导出/导入真实路径时名称过长被截断"）：24 → **48**。
+ * 格式化后的默认名（`东操场 · 真实路径 2026-11-01 · 0812`）本来就会顶到 24 码点，地点名稍长
+ * （「天目湖校区-东操场」）就被削掉尾巴、两条预设因此撞名。48 码点 = 96 字节，存储与分享包都放得下。
+ */
+export const TRACK_NAME_MAX = 48
 
 /**
  * 自定义路名**归一化**（纯函数，唯一入口）：折叠空白、去掉控制字符（含零宽字符）、按码点截断、限长。
@@ -266,7 +272,7 @@ export function entryIdOf(e: { id?: unknown; lineId?: unknown } | null | undefin
 /**
  * 用户没填名字时**自动起一个不重名的预设名**（唯一入口）。
  * 形状：先试 `lineName`（多数情况就是「东操场」）→ 撞了就 `东操场 · 预设 2` → `… 3` → …
- * ⚠️ 名称有 24 码点上限（`TRACK_NAME_MAX`）⇒ 先按后缀长度给基名留位，再截断，
+ * ⚠️ 名称有码点上限（`TRACK_NAME_MAX`）⇒ 先按后缀长度给基名留位，再截断，
  *    否则长线路名会让后缀被截掉、候选名与基名相同 ⇒ 死循环（有上限计数兜底，绝不无限循环）。
  */
 export function autoPresetName(

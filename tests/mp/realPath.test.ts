@@ -31,8 +31,13 @@ import {
   parseRealPathMeta,
   parseShareBundle,
   pathLengthM,
+  batchImportCandidates,
   pickBundleItem,
+  pickMonthId,
   readShareBundleFromZip,
+  setSelection,
+  summarizeBatch,
+  toggleSelection,
   type RealPathMeta,
   type RealPathPoint,
 } from '../../utils/mp/realPath.ts'
@@ -401,4 +406,119 @@ test('🔄 真 zip 往返：自己写的包能被自己读回来（store 模式�
   const bad = await readShareBundleFromZip(new Uint8Array([1, 2, 3, 4, 5]))
   assert.equal(bad.ok, false)
   assert.match(bad.error, /读不了这个压缩包/)
+})
+
+// ---------------------------------------------------------------- ⑦ 月份高亮（读哪个月就亮哪个月）
+
+const MONTHS = [
+  { monthId: '202609', monthName: '2026年9月', isCurrent: false },
+  { monthId: '202610', monthName: '2026年10月', isCurrent: false },
+  { monthId: '202611', monthName: '2026年11月', isCurrent: true },
+  { monthId: '202612', monthName: '2026年12月', isCurrent: false },
+]
+
+test('pickMonthId：点名哪个月就用哪个月（点 9 月读数据，界面不能还亮着本月）', () => {
+  assert.equal(pickMonthId(MONTHS, '202609'), '202609')
+  assert.equal(pickMonthId(MONTHS, ' 202612 '), '202612', '首尾空白不算另一个月份')
+})
+
+test('pickMonthId：没点名 ⇒ 用「当前月份」；服务端没标 ifCurrent ⇒ 按今天推出来对名字', () => {
+  assert.equal(pickMonthId(MONTHS), '202611', '有唯一 ifCurrent 就用它')
+  assert.equal(pickMonthId(MONTHS), '202611')
+  const noFlag = MONTHS.map((m) => ({ ...m, isCurrent: false }))
+  const at = new Date(2026, 9, 3)
+  assert.equal(pickMonthId(noFlag, '', at), '202610', '十月（`2026年10月` 形态对得上）')
+  const dashed = noFlag.map((m) => (m.monthId === '202611' ? { ...m, monthName: '2026-11' } : m))
+  assert.equal(pickMonthId(dashed, '', new Date(2026, 10, 10)), '202611', '`2026-11` 形态也认')
+})
+
+test('pickMonthId：月份列表为空 / 对不上 ⇒ 空串（不猜，界面据此拦下并提示先读月份）', () => {
+  assert.equal(pickMonthId([]), '', '列表为空又没点名 ⇒ 不猜')
+  assert.equal(pickMonthId([], '202609'), '202609', '点名了就直接用（列表没读到也不影响指定月份）')
+  /** 今天（2025 年）在列表里没有对应月份；而唯一那条 `ifCurrent` 就是服务端的"当前" ⇒ 按第 ① 条用它 */
+  assert.equal(pickMonthId(MONTHS, '', new Date(2025, 0, 1)), '202611')
+  assert.equal(pickMonthId(MONTHS.map((m) => ({ ...m, isCurrent: false })), '', new Date(2025, 0, 1)), '')
+  const two = [...MONTHS, { monthId: '202611b', monthName: '2026年11月', isCurrent: true }]
+  assert.equal(pickMonthId(two, '', new Date(2026, 10, 10)), '202611', '标了两条 ifCurrent 时按今天那一月挑')
+})
+
+// ---------------------------------------------------------------- ⑧ 批量选择与批量结果
+
+test('toggleSelection：点一下加、再点一下拿掉；空 id 不进集合（也不影响已有勾选）', () => {
+  const s0 = new Set(['a'])
+  const s1 = toggleSelection(s0, 'b')
+  assert.deepEqual([...s1].sort(), ['a', 'b'])
+  assert.deepEqual([...s0], ['a'], '必须返回新集合，不改入参')
+  const s2 = toggleSelection(s1, 'a')
+  assert.deepEqual([...s2], ['b'], '再点一次 = 拿掉')
+  assert.deepEqual([...toggleSelection(s2, '   ')], ['b'], '空白 id 不算一次勾选')
+  assert.deepEqual([...toggleSelection(s2, '')], ['b'])
+  /** 传进来的历史数据里混了空串/undefined ⇒ 顺手清掉（老状态可能是界面直接塞的） */
+  assert.deepEqual([...toggleSelection(['a', '', '  '], 'c')].sort(), ['a', 'c'])
+})
+
+test('setSelection：全选 / 清空只动传进来的那批 id（跨天勾选不会被"清空"误伤别天）', () => {
+  const all = setSelection(new Set<string>(), ['a', 'b', 'c'], true)
+  assert.deepEqual([...all].sort(), ['a', 'b', 'c'])
+  const partial = setSelection(all, ['a', 'c'], false)
+  assert.deepEqual([...partial], ['b'], '只拿掉 a/c，b 保留')
+  /** 清空时传空数组 ⇒ 什么都不动（不是"清空全部"，那是另一个语义） */
+  assert.deepEqual([...setSelection(partial, [], false)], ['b'])
+})
+
+test('🔴 summarizeBatch：成功 + 失败必须等于总数，且失败项都带人话原因（"导入失败要有提示"的机械保证）', () => {
+  const s = summarizeBatch([
+    { name: 'A.zip', ok: true, message: '已导入 12 点' },
+    { name: 'B.zip', ok: false, message: '这不是「龙猫天堂」导出的路径包（缺少 kind 标记）' },
+    { name: 'C.zip', ok: true, message: '已导入 30 点' },
+    { name: 'D.zip', ok: false, message: '已有一个预设叫「东操场」' },
+  ])
+  assert.equal(s.total, 4)
+  assert.equal(s.okCount + s.failCount, s.total, '一条都不许被吞掉')
+  assert.equal(s.ok.length, 2)
+  assert.equal(s.failed.length, 2)
+  assert.ok(s.failed.every((f) => f.message.trim()), '失败项必须写明原因')
+  assert.match(s.text, /成功 2 条/)
+  assert.match(s.text, /失败 2 条/)
+
+  const allOk = summarizeBatch([{ name: 'A.zip', ok: true, message: 'ok' }])
+  assert.match(allOk.text, /全部成功/)
+  assert.doesNotMatch(allOk.text, /失败/)
+
+  const allBad = summarizeBatch([{ name: 'A.zip', ok: false, message: '坏包' }])
+  assert.match(allBad.text, /全部失败/)
+  assert.equal(allBad.okCount, 0)
+
+  const empty = summarizeBatch([])
+  assert.equal(empty.total, 0)
+  assert.match(empty.text, /没有可处理/)
+})
+
+test('batchImportCandidates：不传 index = 包里几条就全要；传了就只挑那几条（越界/非数字都安全）', () => {
+  const items = [
+    { name: 'a', lineId: '', lineName: '', points: [{ latitude: 1, longitude: 2 }], meta: {} as never },
+    { name: 'b', lineId: '', lineName: '', points: [], meta: {} as never },
+    { name: 'c', lineId: '', lineName: '', points: [], meta: {} as never },
+  ]
+  assert.equal(batchImportCandidates(items).length, 3, '不传 = 全导（批量口径）')
+  assert.deepEqual(batchImportCandidates(items, [0, 2]).map((x) => x.name), ['a', 'c'])
+  assert.deepEqual(batchImportCandidates(items, [9, -1]).map((x) => x.name), [], '越界一律不要')
+  assert.deepEqual(batchImportCandidates(items, [0, 0]).map((x) => x.name), ['a'], '去重')
+})
+
+test('🔴 批量分享包：多条装一个包、能整包读回来（每条的点数与场次号都不串）', async () => {
+  const bundle = buildShareBundle([
+    { name: '第一天', lineId: '', lineName: '', points: circle(100, 8), meta: { date: '2026-11-01', scoreId: 's1', km: 3.1, usedTime: '00:20:00', fitDegree: 0.9, sourcePoints: 8, lapLengthM: 600, exportedAt: '2026-11-10T00:00:00.000Z' } },
+    { name: '第二天', lineId: '', lineName: '', points: circle(120, 12), meta: { date: '2026-11-02', scoreId: 's2', km: 4.2, usedTime: '00:25:00', fitDegree: 0.95, sourcePoints: 12, lapLengthM: 700, exportedAt: '2026-11-10T00:00:00.000Z' } },
+  ])
+  assert.equal(bundle.items.length, 2)
+  const zip = createZip([{ name: REAL_PATH_BUNDLE_FILE, data: Buffer.from(JSON.stringify(bundle), 'utf8') }])
+  const back = await readShareBundleFromZip(new Uint8Array(zip))
+  assert.equal(back.ok, true, back.error)
+  assert.equal(back.items.length, 2, '两条都要在')
+  assert.deepEqual(back.items.map((x) => x.name), ['第一天', '第二天'])
+  assert.deepEqual(back.items.map((x) => x.points.length), [8, 12])
+  assert.deepEqual(back.items.map((x) => x.meta.scoreId), ['s1', 's2'])
+  /** 逐条落库的候选 = 整包（批量导入默认全收） */
+  assert.equal(batchImportCandidates(back.items).length, 2)
 })

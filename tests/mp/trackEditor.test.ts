@@ -226,7 +226,9 @@ test('sanitizeLineName：折空白 / 去控制字符 / 按码点限长，空结�
   // 限长：中文按码点截断
   assert.equal(Array.from(sanitizeLineName('跑'.repeat(80))).length, TRACK_NAME_MAX)
   // emoji 是代理对，不能被截成半个（否则界面出现乱码方块）
-  const emoji = sanitizeLineName('🏃'.repeat(40))
+  const HYPER = 120 // 保证远大于 `TRACK_NAME_MAX`（夹具跟着上限走，别写死 40 之类的魔数）
+  assert.ok(HYPER > TRACK_NAME_MAX)
+  const emoji = sanitizeLineName('🏃'.repeat(HYPER))
   assert.equal(Array.from(emoji).length, TRACK_NAME_MAX)
   assert.ok(!emoji.includes('\ufffd'), emoji)
   assert.equal(emoji, '🏃'.repeat(TRACK_NAME_MAX))

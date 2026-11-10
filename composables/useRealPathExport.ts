@@ -28,6 +28,7 @@ import { MpApiWrapper } from '~/src/wrappers/MpApiWrapper'
 import { logInfo, logWarn } from '~/composables/useEventLog'
 import {
   REAL_PATH_BUNDLE_FILE,
+  batchImportCandidates,
   buildRealPathPresetDraft,
   buildShareBundle,
   defaultRealPathName,
@@ -37,7 +38,11 @@ import {
   parseArchRecords,
   pathLengthM,
   pickBundleItem,
+  pickMonthId,
   readShareBundleFromZip,
+  summarizeBatch,
+  type BatchOutcome,
+  type BatchSummary,
   type RealPathBundle,
   type RealPathBundleItem,
   type RealPathDay,
@@ -76,6 +81,17 @@ export function useRealPathExport() {
   const real = useMpReal()
 
   const months = useState<RealPathMonth[]>('mpRealPathMonths', () => [])
+  /**
+   * **最近一次读归档用的月份**（`monthId`；`''` = 还没读过）。
+   * 界面的月份高亮只认它 —— 原来是"`ifCurrent` 那条永远高亮"，于是点 10 月或用「读取最近成绩」
+   * 读到 9 月的数据时，上面高亮的还是本月（图 1 那个现象）。取值判据见 `pickMonthId()`。
+   */
+  const activeMonthId = useState<string>('mpRealPathMonthId', () => '')
+  /**
+   * **批量动作的进度**（`{done,total}`；`null` = 没有批量在跑）。
+   * 批量要串行读多条轨迹，几十秒都可能 —— 没有进度用户只会以为卡死了。
+   */
+  const batchProgress = useState<{ done: number; total: number } | null>('mpRealPathBatchProgress', () => null)
   const records = useState<RealPathRecord[]>('mpRealPathRecords', () => [])
   /** 选中的那一天（`''` = 全部/没选） */
   const selectedDate = useState<string>('mpRealPathDate', () => '')
@@ -147,6 +163,12 @@ export function useRealPathExport() {
         out.push({ monthId, monthName: String(m?.monthName ?? monthId), isCurrent: String(m?.ifCurrent) === '1' })
       }
       months.value = out
+      /**
+       * 读回月份表后**先按当前月预置高亮**（`pickMonthId()` 的第二条判据）：
+       * 不预置的话，"只点了「读月份」、还没读成绩"时整个月份条一个都不亮，
+       * 用户看不出"再点一下就是读这个月"。
+       */
+      if (!activeMonthId.value) activeMonthId.value = pickMonthId(out)
       logInfo('realpath', '读到月份列表', { count: out.length })
       if (!out.length) error.value = '服务端没给月份列表 —— 可以先点「读取最近成绩」用当前学期/月份试一次'
       return out
@@ -176,12 +198,12 @@ export function useRealPathExport() {
       const terms = await MpApiWrapper.getTermList(apiOptions.value)
       const termList = (terms.data as { id?: string; isActive?: string | number }[] | undefined) ?? []
       const activeTerm = termList.find((t) => String(t.isActive) === '1') ?? termList[0]
-      /** 月份：调用方给了就用它；否则用"当前月份"（`ifCurrent === '1'`） */
-      let useMonth = String(monthId ?? '').trim()
+      /** 月份：调用方给了就用它；否则用「当前月份」（判据只在纯函数 `pickMonthId()` 里，别在这里另写一套） */
+      if (!months.value.length) await loadMonths()
+      const useMonth = pickMonthId(months.value, monthId)
       if (!useMonth) {
-        if (!months.value.length) await loadMonths()
-        const cur = months.value.find((m) => m.isCurrent) ?? months.value[0]
-        useMonth = String(cur?.monthId ?? '')
+        error.value = '没能确定要读哪个月份：请先点右上角「读月份」，再点某个月份读取'
+        return []
       }
       const arch = await MpApiWrapper.getSunrunArch(
         {
@@ -198,6 +220,8 @@ export function useRealPathExport() {
       )
       const list = parseArchRecords(arch.data)
       records.value = list
+      /** 界面高亮跟着**真正用过的那一个月**走（图 1：读的是 9 月、高亮却停在"本月"） */
+      activeMonthId.value = useMonth
       selectedDate.value = ''
       selectedScoreId.value = ''
       logInfo('realpath', '读到成绩归档', { count: list.length, monthId: useMonth })
@@ -404,9 +428,248 @@ export function useRealPathExport() {
     }
   }
 
+  /**
+   * **批量：把选中的若干条成绩逐条读回轨迹，打包成一个分享包下载**（2026-11-10 用户需求①）。
+   *
+   * 与单条分享的区别只有"装几条"：**每条都要单独发一次 `getSunrunArchDetail`**
+   * （服务端一次只给一条的 pointList），所以这里是一个串行循环 —— 串行而不是并发，
+   * 是为了让进度可见、也避免同一条链路上并发打服务端（本项目全程的读请求都是串行的）。
+   *
+   * 逐条结果**全部留档**：某一条读不到轨迹不能把整批拖垮，也不能悄悄少装几条。
+   */
+  const downloadBatchZip = async (
+    entries: { scoreId: string; presetName?: string }[],
+  ): Promise<{ ok: boolean; message: string; summary: BatchSummary }> => {
+    const wanted = (Array.isArray(entries) ? entries : []).filter((e) => String(e?.scoreId ?? '').trim())
+    if (!wanted.length) {
+      return { ok: false, message: '还没选任何成绩：先在上面勾选要导出的那几条', summary: summarizeBatch([]) }
+    }
+    if (!hasToken.value) {
+      return { ok: false, message: '还没有登录态：请先回「工作台」点「一键获取 token」', summary: summarizeBatch([]) }
+    }
+    busy.value = 'share'
+    batchProgress.value = { done: 0, total: wanted.length }
+    try {
+      const items: RealPathBundleItem[] = []
+      const outcomes: BatchOutcome[] = []
+      for (const [i, want] of wanted.entries()) {
+        const scoreId = String(want.scoreId).trim()
+        const record = records.value.find((r) => r.scoreId === scoreId)
+        const label = record ? `${record.date || '日期未知'} ${record.startTime || ''}`.trim() : scoreId
+        try {
+          const res = await MpApiWrapper.getSunrunArchDetail(scoreId, apiOptions.value)
+          const pts = parseArchDetailPoints(res.data)
+          if (!pts.length) {
+            outcomes.push({ name: label, ok: false, message: '这条成绩读不到轨迹（云端 pointList 为空）—— 可能当初提交时明细没交上' })
+            continue
+          }
+          const lap = extractOneLap(pts, { tolM: 25, minM: 200 })
+          const meta: RealPathMeta = {
+            date: record?.date ?? '',
+            scoreId,
+            km: record?.km ?? null,
+            usedTime: record?.usedTime ?? '',
+            fitDegree: record?.fitDegree ?? null,
+            sourcePoints: pts.length,
+            lapLengthM: lap.length < pts.length ? pathLengthM(lap) : null,
+            exportedAt: new Date().toISOString(),
+          }
+          const name = String(want.presetName || '').trim() || defaultRealPathName({ ...meta, startTime: record?.startTime })
+          items.push({ name, lineId: '', lineName: '', points: pts, meta })
+          outcomes.push({ name: label, ok: true, message: `已装入（${pts.length} 点）` })
+        } catch (err) {
+          outcomes.push({ name: label, ok: false, message: `读轨迹失败：${err instanceof Error ? err.message : '未知错误'}` })
+        } finally {
+          batchProgress.value = { done: i + 1, total: wanted.length }
+        }
+      }
+      const summary = summarizeBatch(outcomes)
+      if (!items.length) {
+        logWarn('realpath', '批量导出：一条都没装上', { total: wanted.length })
+        return { ok: false, message: `一条都没能导出：${summary.failCount} 条都读不到轨迹（原因见下面逐条说明）`, summary }
+      }
+      const bundle = buildShareBundle(items, new Date().toISOString())
+      const first = items[0]!
+      const fileName = items.length === 1
+        ? `真实路径-${first.meta.date || '未记录'}-${first.name}`
+        : `真实路径-批量${items.length}条-${first.meta.date || '未记录'}`
+      const res = await fetch('/api/local/real-path/share', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fileName, json: JSON.stringify(bundle) }),
+      })
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        return { ok: false, message: `打包失败（HTTP ${res.status}）${text ? `：${text.slice(0, 120)}` : ''}`, summary }
+      }
+      const blob = await res.blob()
+      const encoded = res.headers.get('x-totoro-file') || ''
+      const name = encoded ? decodeURIComponent(encoded) : `${fileName}.zip`
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = name
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 10_000)
+      logInfo('realpath', '批量导出分享压缩包', { name, bytes: blob.size, items: items.length, failed: summary.failCount })
+      const tail = summary.failCount ? `；另有 ${summary.failCount} 条没装上（原因见下面逐条说明）` : ''
+      return { ok: true, message: `已生成压缩包「${name}」（${Math.round(blob.size / 1024)} KB，含 ${items.length} 条路径）${tail}`, summary }
+    } catch (err) {
+      return { ok: false, message: `导出失败：${err instanceof Error ? err.message : '未知错误'}`, summary: summarizeBatch([]) }
+    } finally {
+      busy.value = ''
+      batchProgress.value = null
+    }
+  }
+
+  /**
+   * **批量：把选中的多条成绩逐条读回轨迹，并按「存到哪个地点」逐条落库**（2026-11-10 用户需求①）。
+   *
+   * 逐条独立：某一条存不进去（撞名 / 几何不合法）不影响其它条，而且**每一条的结果都回报**。
+   */
+  const saveBatchAsPresets = async (
+    entries: { scoreId: string; presetName?: string }[],
+    lineId: string,
+    lineName: string,
+  ): Promise<{ ok: boolean; message: string; summary: BatchSummary }> => {
+    const wanted = (Array.isArray(entries) ? entries : []).filter((e) => String(e?.scoreId ?? '').trim())
+    if (!wanted.length) {
+      return { ok: false, message: '还没选任何成绩：先在上面勾选要导出的那几条', summary: summarizeBatch([]) }
+    }
+    if (!hasToken.value) {
+      return { ok: false, message: '还没有登录态：请先回「工作台」点「一键获取 token」', summary: summarizeBatch([]) }
+    }
+    busy.value = 'save'
+    batchProgress.value = { done: 0, total: wanted.length }
+    try {
+      const outcomes: BatchOutcome[] = []
+      for (const [i, want] of wanted.entries()) {
+        const scoreId = String(want.scoreId).trim()
+        const record = records.value.find((r) => r.scoreId === scoreId)
+        const label = record ? `${record.date || '日期未知'} ${record.startTime || ''}`.trim() : scoreId
+        try {
+          const res = await MpApiWrapper.getSunrunArchDetail(scoreId, apiOptions.value)
+          const pts = parseArchDetailPoints(res.data)
+          if (!pts.length) {
+            outcomes.push({ name: label, ok: false, message: '这条成绩读不到轨迹（云端 pointList 为空）' })
+            continue
+          }
+          const lap = extractOneLap(pts, { tolM: 25, minM: 200 })
+          const meta: RealPathMeta = {
+            date: record?.date ?? '',
+            scoreId,
+            km: record?.km ?? null,
+            usedTime: record?.usedTime ?? '',
+            fitDegree: record?.fitDegree ?? null,
+            sourcePoints: pts.length,
+            lapLengthM: lap.length < pts.length ? pathLengthM(lap) : null,
+            exportedAt: new Date().toISOString(),
+          }
+          const draft = buildRealPathPresetDraft({
+            meta,
+            points: pts,
+            lineId,
+            lineName,
+            presetName: want.presetName ?? '',
+          })
+          const saved = lib.upsert(draft)
+          if (!saved.ok) {
+            outcomes.push({ name: label, ok: false, message: saved.message })
+            continue
+          }
+          outcomes.push({ name: label, ok: true, message: `已存为「${saved.entry.customName || label}」（${pts.length} 点）` })
+        } catch (err) {
+          outcomes.push({ name: label, ok: false, message: `保存失败：${err instanceof Error ? err.message : '未知错误'}` })
+        } finally {
+          batchProgress.value = { done: i + 1, total: wanted.length }
+        }
+      }
+      const summary = summarizeBatch(outcomes)
+      logInfo('realpath', '批量存为预设', { total: wanted.length, ok: summary.okCount, failed: summary.failCount })
+      const tail = summary.failCount ? '（失败原因见下面逐条说明）' : ''
+      return { ok: summary.okCount > 0, message: `批量存预设：${summary.text}${tail}`, summary }
+    } finally {
+      busy.value = ''
+      batchProgress.value = null
+    }
+  }
+
+  /**
+   * **批量：一次选多个压缩包导入**（2026-11-10 用户需求②）。
+   *
+   * 每个文件逐个解析、逐个落库；**任何一条失败都要留住原因**（文件读不了 / 不是路径包 /
+   * 包内坐标全坏 / 撞名 / 存不进本机库），最后用 `summarizeBatch()` 汇总。
+   *
+   * @param index 选包里的第几条；不给 ⇒ **包里有几条就全导**（批量口径：一次把好友给的都收下）
+   */
+  const importManyShareZips = async (
+    files: File[],
+    opts: { index?: number; lineId: string; lineName: string; presetName?: string },
+  ): Promise<{ ok: boolean; message: string; summary: BatchSummary }> => {
+    const list = (Array.isArray(files) ? files : []).filter(Boolean)
+    if (!list.length) {
+      return { ok: false, message: '还没选文件：先点「选择一个或多个压缩包」', summary: summarizeBatch([]) }
+    }
+    busy.value = 'share'
+    batchProgress.value = { done: 0, total: list.length }
+    try {
+      const outcomes: BatchOutcome[] = []
+      for (const [i, file] of list.entries()) {
+        const fileName = String(file.name || `第 ${i + 1} 个文件`)
+        try {
+          const bytes = new Uint8Array(await file.arrayBuffer())
+          const parsed = await readShareBundleFromZip(bytes)
+          if (!parsed.ok) {
+            outcomes.push({ name: fileName, ok: false, message: parsed.error })
+            continue
+          }
+          const picked = batchImportCandidates(parsed.items, opts.index === undefined ? undefined : [opts.index])
+          if (!picked.length) {
+            outcomes.push({ name: fileName, ok: false, message: `包里没有第 ${(opts.index ?? 0) + 1} 条路径（共 ${parsed.items.length} 条）` })
+            continue
+          }
+          /** 同一个包里可能有多条：逐条落库，**分别**记结果（一条撞名不拖累同包里的其它条） */
+          for (const item of picked) {
+            const label = picked.length > 1 ? `${fileName} · ${item.name || '未命名'}` : fileName
+            try {
+              const draft = buildRealPathPresetDraft({
+                meta: item.meta,
+                points: item.points,
+                lineId: opts.lineId,
+                lineName: opts.lineName,
+                presetName: opts.presetName ?? item.name,
+              })
+              const saved = lib.upsert(draft)
+              if (!saved.ok) {
+                outcomes.push({ name: label, ok: false, message: saved.message })
+                continue
+              }
+              outcomes.push({ name: label, ok: true, message: `已导入「${saved.entry.customName || item.name}」（${item.points.length} 点）` })
+            } catch (err) {
+              outcomes.push({ name: label, ok: false, message: `导入失败：${err instanceof Error ? err.message : '未知错误'}` })
+            }
+          }
+        } catch (err) {
+          outcomes.push({ name: fileName, ok: false, message: `读文件失败：${err instanceof Error ? err.message : '未知错误'}` })
+        } finally {
+          batchProgress.value = { done: i + 1, total: list.length }
+        }
+      }
+      const summary = summarizeBatch(outcomes)
+      logInfo('realpath', '批量导入压缩包', { files: list.length, ok: summary.okCount, failed: summary.failCount })
+      return { ok: summary.okCount > 0, message: `批量导入：${summary.text}`, summary }
+    } finally {
+      busy.value = ''
+      batchProgress.value = null
+    }
+  }
+
   return {
     // 状态
     months,
+    activeMonthId,
     records,
     days,
     selectedDate,
@@ -419,6 +682,7 @@ export function useRealPathExport() {
     snCode,
     selectedRecord,
     selection,
+    batchProgress,
     // 动作
     loadMonths,
     loadRecords,
@@ -428,5 +692,9 @@ export function useRealPathExport() {
     saveAsPreset,
     downloadShareZip,
     importShareZip,
+    // 🆕 2026-11-10：批量（勾选多条 → 一次导出 / 一次导入多个包）
+    downloadBatchZip,
+    saveBatchAsPresets,
+    importManyShareZips,
   }
 }

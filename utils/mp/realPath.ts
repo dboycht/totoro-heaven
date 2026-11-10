@@ -385,6 +385,35 @@ export function defaultRealPathName(
   return loc ? `${loc} · ${base}` : base
 }
 
+/**
+ * 读归档时**当前生效的月份**：给了 `monthId` 就用它；没给就选「当前月份」。
+ *
+ * 判据（按顺序，取第一个命中）：
+ *   ① 列表里 `isCurrent` 的那一条；
+ *   ② 没有（服务端没标 / 标了两条以上）⇒ 用 `now` 推出 `YYYYMM`，按 `monthId` **或** `monthName`
+ *      （`2026年11月` / `2026-11` 都认）对上那一条；
+ *   ③ 还选不出 ⇒ 空串（**不猜月份**：猜错了界面上会"高亮一个月份、读的却是另一个月份的成绩"）。
+ *
+ * 返回值就是发给 `getSunrunArch` 的 `monthId`，界面据此高亮，两边同源。
+ */
+export function pickMonthId(
+  months: { monthId: string; monthName: string; isCurrent: boolean }[],
+  monthId?: string,
+  now: Date = new Date(),
+): string {
+  const picked = String(monthId ?? '').trim()
+  if (picked) return picked
+  const list = (Array.isArray(months) ? months : []).filter((m) => m && String(m.monthId ?? '').trim())
+  const nameOf = (m: { monthName?: unknown }) => String(m.monthName ?? '').trim()
+  const marked = list.filter((m) => m.isCurrent)
+  if (marked.length === 1) return String(marked[0]!.monthId).trim()
+  const yearMonth = `${now.getFullYear()}年${now.getMonth() + 1}月`
+  const alt = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  const byName = (m: { monthName?: unknown }) => nameOf(m) === yearMonth || nameOf(m) === alt
+  const hit = (marked.length > 1 ? marked.find(byName) : undefined) ?? list.find(byName)
+  return hit ? String(hit.monthId).trim() : ''
+}
+
 /** 生成预设草稿需要的输入（组合层从"选中的那天那条记录 + 它的点列"组装） */
 export interface RealPathPresetDraftInput {
   meta: RealPathMeta
@@ -567,6 +596,101 @@ export function pickBundleItem(items: RealPathBundleItem[], index: number): Real
   const i = Math.trunc(Number(index))
   if (!Number.isFinite(i) || i < 0 || i >= list.length) return undefined
   return list[i]
+}
+
+// ---------------------------------------------------------------- 批量选择与批量结果（2026-11-10）
+
+/**
+ * **批量选择**的开关（纯函数，界面只读它的返回值）：加进去 / 拿掉 / 全选 / 清空。
+ *
+ * 为什么要有它：批量导出与批量导入都要"点一条加一条、再点一下拿掉"，若各写一遍
+ * `Set` 操作，两处对"重复点、点了不存在的项"的行为迟早不一致。
+ *
+ * 判据：返回的是**新集合**（不改入参）；`ids` 里的空串/空白一律忽略（界面可能把 `undefined` 传进来）。
+ */
+export function toggleSelection(current: Iterable<string>, id: string): Set<string> {
+  const out = new Set<string>()
+  for (const x of current) {
+    const s = String(x ?? '').trim()
+    if (s) out.add(s)
+  }
+  const key = String(id ?? '').trim()
+  if (!key) return out
+  if (out.has(key)) out.delete(key)
+  else out.add(key)
+  return out
+}
+
+/** 把一批 id **整体**加入或移出选择（全选/全不选用；同样忽略空串） */
+export function setSelection(current: Iterable<string>, ids: Iterable<string>, on: boolean): Set<string> {
+  const out = new Set<string>()
+  for (const x of current) {
+    const s = String(x ?? '').trim()
+    if (s) out.add(s)
+  }
+  for (const raw of ids) {
+    const s = String(raw ?? '').trim()
+    if (!s) continue
+    if (on) out.add(s)
+    else out.delete(s)
+  }
+  return out
+}
+
+/** 一次批量动作里**单条**的结果（成功或失败都要留名，绝不静默丢） */
+export interface BatchOutcome {
+  /** 这一条的显示名（失败时用它指出"是哪个包/哪一天出的问题"） */
+  name: string
+  ok: boolean
+  /** 人话原因（成功时是"已导入…"，失败时是拒绝的理由） */
+  message: string
+}
+
+/** 批量动作的汇总（界面据此给一句话 + 可展开的逐条清单） */
+export interface BatchSummary {
+  total: number
+  okCount: number
+  failCount: number
+  /** 成功的那几条（顺序与调用方给的一致） */
+  ok: BatchOutcome[]
+  /** 失败的那几条（**必须在界面上列出来**，否则用户以为都成功了） */
+  failed: BatchOutcome[]
+  /** 一句话总结（成功 + 失败数都在里面；全成功时不提失败） */
+  text: string
+}
+
+/**
+ * 把逐条结果收敛成**一句总结 + 两份清单**。
+ *
+ * 🔴 判据（这是"导入失败要有提示"的机械保证）：`okCount + failCount === total`，
+ *    且失败项的 `message` 非空 —— 任何一条被吞掉都会让这个等式不成立。
+ */
+export function summarizeBatch(outcomes: BatchOutcome[]): BatchSummary {
+  const list = Array.isArray(outcomes) ? outcomes : []
+  const ok = list.filter((o) => o.ok)
+  const failed = list.filter((o) => !o.ok)
+  const total = list.length
+  let text: string
+  if (!total) text = '没有可处理的条目'
+  else if (!failed.length) text = `全部成功：${ok.length} 条`
+  else if (!ok.length) text = `全部失败：${failed.length} 条（原因见下面逐条说明）`
+  else text = `成功 ${ok.length} 条，失败 ${failed.length} 条（失败原因见下面逐条说明）`
+  return { total, okCount: ok.length, failCount: failed.length, ok, failed, text }
+}
+
+/**
+ * 从 zip 解析结果出发，**为每一条**算出"能不能导入"（批量导入的预检；纯函数、可单测）。
+ *
+ * 与真正落库那一步共用同一组判据（点数 ≥ 3、坐标合法由 `parseShareBundle` 保证），
+ * 所以界面能在**动手写库之前**就把"这条为什么不行"列出来。
+ * `lineId` 为空代表"还没选地点"——那样落库必然失败（`useTrackLibrary.upsert` 会拒绝），
+ * 这里**不**替它判，交给落库返回真实原因（避免两处判据漂移）。
+ */
+export function batchImportCandidates(items: RealPathBundleItem[], index?: number[]): RealPathBundleItem[] {
+  const list = Array.isArray(items) ? items : []
+  if (!index || !index.length) return list
+  const want = new Set(index.map((i) => Math.trunc(Number(i))).filter((i) => Number.isFinite(i) && i >= 0))
+  return list.filter((_, i) => want.has(i))
 }
 
 // ---------------------------------------------------------------- zip 读取（store + deflate）

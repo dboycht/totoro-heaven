@@ -18,8 +18,8 @@
  *   · **只碰本人数据**：查询用的学号来自当前登录会话，页面不提供"查别人"的入口。
  */
 import { useRealPathExport } from '~/composables/useRealPathExport'
-import { defaultRealPathName, nearestLineByGeometry } from '~/utils/mp/realPath'
-import { LOCAL_FREE_LINE_ID } from '~/utils/mp/trackLibrary'
+import { defaultRealPathName, nearestLineByGeometry, setSelection, toggleSelection } from '~/utils/mp/realPath'
+import { LOCAL_FREE_LINE_ID, TRACK_NAME_MAX } from '~/utils/mp/trackLibrary'
 
 const showSnackbar = useNotice()
 const rp = useRealPathExport()
@@ -157,6 +157,67 @@ const autoMatchNote = computed(() => {
   return `按轨迹位置自动匹配到「${m.pointName}」（最近距离约 ${Math.round(m.distM)} m）—— 可在下面改`
 })
 
+// ── 🆕 2026-11-10 批量选择（用户需求①②：勾选多条 → 一次导出 / 一次导入多个包）──
+/** 批量勾选的场次号集合（增删切换走纯函数 `toggleSelection`，界面不自己拼 Set） */
+const pickedIds = ref<Set<string>>(new Set())
+/** 当前在读成绩里的**全部**场次号（"全选"用） */
+const allScoreIds = computed(() => rp.records.value.map((r) => String(r.scoreId)))
+/** 选中的那几条（导出顺序 = 归档顺序，不按点击顺序 —— 便于对照列表） */
+const pickedRecords = computed(() => rp.records.value.filter((r) => pickedIds.value.has(String(r.scoreId))))
+const pickedCount = computed(() => pickedRecords.value.length)
+/** 勾选摘要（日期 + 时刻；最多列 4 条，多余的用"…"），只为了让用户一眼认出勾了哪些天 */
+const pickedDatesText = computed(() => {
+  const shown = pickedRecords.value.slice(0, 4).map((r) => `${r.date || '日期未知'}${r.startTime ? ` ${r.startTime.slice(0, 5)}` : ''}`)
+  return shown.join('、') + (pickedCount.value > shown.length ? `…（共 ${pickedCount.value} 条）` : '')
+})
+const isPicked = (scoreId: string) => pickedIds.value.has(String(scoreId))
+const togglePick = (scoreId: string) => {
+  pickedIds.value = toggleSelection(pickedIds.value, scoreId)
+}
+const pickAll = () => {
+  pickedIds.value = setSelection(pickedIds.value, allScoreIds.value, true)
+}
+const clearPicks = () => {
+  pickedIds.value = setSelection(pickedIds.value, allScoreIds.value, false)
+}
+/**
+ * 换月份 / 重新读归档 ⇒ 清空勾选：场次号是**跨月唯一**的，留着上个月的勾选会让
+ * "选中的条数"与"这次读到的数据"对不上（批量导出就会去打已经不在列表里的 id）。
+ */
+watch(
+  () => rp.records.value,
+  () => {
+    pickedIds.value = new Set()
+    batchSummary.value = null
+  },
+)
+
+/** 批量动作的逐条结果（`null` = 还没跑过；界面据此决定显不显示"失败原因"那一栏） */
+const batchSummary = ref<BatchSummaryLike | null>(null)
+type BatchSummaryLike = { total: number; okCount: number; failCount: number; text: string; ok: { name: string; message: string }[]; failed: { name: string; message: string }[] }
+
+/** 批量导出的进度文案（`null` = 没有批量在跑） */
+const batchProgressText = computed(() => {
+  const p = rp.batchProgress.value
+  if (!p) return ''
+  return `正在逐条读取轨迹 ${p.done}/${p.total} …（每条都要单独问一次服务端，请稍候）`
+})
+
+const doBatchSave = async () => {
+  const out = await rp.saveBatchAsPresets(
+    pickedRecords.value.map((r) => ({ scoreId: r.scoreId })),
+    targetLineId.value,
+    targetLineName.value,
+  )
+  batchSummary.value = out.summary
+  showSnackbar(out.message, out.summary.failCount ? (out.summary.okCount ? 'warning' : 'error') : 'success')
+}
+const doBatchShare = async () => {
+  const out = await rp.downloadBatchZip(pickedRecords.value.map((r) => ({ scoreId: r.scoreId })))
+  batchSummary.value = out.summary
+  showSnackbar(out.message, out.summary.failCount ? (out.summary.okCount ? 'warning' : 'error') : 'info')
+}
+
 const doLoadMonths = async () => {
   const list = await rp.loadMonths()
   if (list.length) showSnackbar(`读到 ${list.length} 个月份`, 'info')
@@ -185,11 +246,17 @@ const doShare = async () => {
 const fileInput = ref<HTMLInputElement | null>(null)
 const doImport = async (ev: Event) => {
   const input = ev.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
-  const out = await rp.importShareZip(file, { lineId: targetLineId.value, lineName: targetLineName.value })
-  showSnackbar(out.message, out.ok ? 'success' : 'error')
-  /** 清空选择，便于同一个文件再导一次（例如换个地点） */
+  /**
+   * 🆕 2026-11-10（用户需求②）：**支持一次选多个压缩包**。
+   * 逐条结果由组合层汇总（`importManyShareZips`），失败原因写在 `batchSummary` 里逐条列出 ——
+   * 这里不再只弹一个"成功/失败"就完事（那样多个文件时说不清是哪个出的问题）。
+   */
+  const files = [...(input.files ?? [])]
+  if (!files.length) return
+  const out = await rp.importManyShareZips(files, { lineId: targetLineId.value, lineName: targetLineName.value })
+  batchSummary.value = out.summary
+  showSnackbar(out.message, out.summary.failCount ? (out.summary.okCount ? 'warning' : 'error') : 'success')
+  /** 清空选择，便于同一批文件再导一次（例如换个地点） */
   input.value = ''
 }
 
@@ -252,12 +319,13 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
               <span class="text-caption text-medium-emphasis">（不选月份＝用当前月份）</span>
             </div>
             <div v-if="rp.months.value.length" class="d-flex flex-wrap ga-1 mb-3">
+              <!-- 高亮 = 最近一次真正读过的那个月（activeMonthId），不是"永远是本月"：否则读 9 月、界面却亮着本月 -->
               <v-btn
                 v-for="m in rp.months.value"
                 :key="m.monthId"
                 size="x-small"
                 variant="tonal"
-                :color="m.isCurrent ? 'primary' : undefined"
+                :color="m.monthId === rp.activeMonthId.value ? 'primary' : undefined"
                 @click="doLoadRecords(m.monthId)"
               >
                 {{ m.monthName }}{{ m.isCurrent ? '（当前）' : '' }}
@@ -271,21 +339,32 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
             <div v-if="!rp.days.value.length" class="text-caption text-medium-emphasis mb-2">
               还没有数据：先点上面的「读取最近成绩」。
             </div>
-            <div v-else class="d-flex flex-wrap ga-1 mb-3">
-              <v-btn
-                v-for="d in rp.days.value"
-                :key="`day-${d.date || 'unknown'}`"
-                size="small"
-                variant="tonal"
-                :color="rp.selectedDate.value === d.date ? 'primary' : undefined"
-                @click="rp.pickDate(d.date)"
-              >
-                {{ d.date || '日期未知' }}（{{ d.records.length }}）
-              </v-btn>
-            </div>
+            <template v-else>
+              <!-- 🆕 2026-11-10（用户需求①）：批量勾选工具条 —— 放在「按天」这一层，
+                   读到成绩就可用（不必先点某一天；勾选本身是跨天的） -->
+              <div class="d-flex flex-wrap align-center ga-2 mb-2">
+                <v-btn size="x-small" variant="tonal" @click="pickAll">全选（{{ allScoreIds.length }}）</v-btn>
+                <v-btn size="x-small" variant="tonal" :disabled="!pickedCount" @click="clearPicks">清空勾选</v-btn>
+                <span class="text-caption" :class="pickedCount ? 'text-primary' : 'text-medium-emphasis'">
+                  已勾选 {{ pickedCount }} 条{{ pickedCount ? '（右侧可批量导出）' : '（勾选后可在右侧批量导出）' }}
+                </span>
+              </div>
+              <div class="d-flex flex-wrap ga-1 mb-3">
+                <v-btn
+                  v-for="d in rp.days.value"
+                  :key="`day-${d.date || 'unknown'}`"
+                  size="small"
+                  variant="tonal"
+                  :color="rp.selectedDate.value === d.date ? 'primary' : undefined"
+                  @click="rp.pickDate(d.date)"
+                >
+                  {{ d.date || '日期未知' }}（{{ d.records.length }}）
+                </v-btn>
+              </div>
+            </template>
 
             <template v-if="rp.selectedDate.value !== '' || dayRecords.length">
-              <div class="text-subtitle-2 mb-1">这一天跑了几次 —— 点一条读它的轨迹</div>
+              <div class="text-subtitle-2 mb-1">这一天跑了几次 —— 点一条读它的轨迹，或勾选多条批量导出</div>
               <v-list density="compact" class="pa-0">
                 <v-list-item
                   v-for="r in dayRecords"
@@ -293,6 +372,16 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
                   :active="rp.selectedScoreId.value === r.scoreId"
                   @click="rp.pickRecord(r.scoreId)"
                 >
+                  <template #prepend>
+                    <!-- 勾选与"选中看轨迹"是两件事：勾选只进批量集合，不改预览（@click.stop 免得顺带选中） -->
+                    <v-checkbox-btn
+                      :model-value="isPicked(r.scoreId)"
+                      density="compact"
+                      class="mr-1"
+                      :aria-label="`勾选 ${r.scoreId}`"
+                      @click.stop="togglePick(r.scoreId)"
+                    />
+                  </template>
                   <v-list-item-title class="text-body-2">{{ recordLabel(r) }}</v-list-item-title>
                   <v-list-item-subtitle class="text-caption">场次号：{{ r.scoreId }}</v-list-item-subtitle>
                   <template #append>
@@ -347,7 +436,8 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
           </v-card-title>
           <v-card-text>
             <v-select v-model="targetLineId" :items="locationItems" item-title="title" item-value="value" label="存到哪个地点" density="compact" class="mb-2" />
-            <v-text-field v-model="presetName" label="预设名称（留空 = 自动命名）" density="compact" :counter="24" maxlength="24" hide-details="auto" class="mb-3" />
+            <!-- 长度上限 = 纯函数里的 TRACK_NAME_MAX（预设名在这里就截断，不留给路线库静默删尾巴） -->
+            <v-text-field v-model="presetName" label="预设名称（留空 = 自动命名）" density="compact" :counter="TRACK_NAME_MAX" :maxlength="TRACK_NAME_MAX" hide-details="auto" class="mb-3" />
             <v-btn block size="small" color="primary" class="mb-2" prepend-icon="mdi-content-save-outline" :disabled="!lapInfo" :loading="rp.busy.value === 'save'" @click="doSave">
               导出到本地：存为路径预设
             </v-btn>
@@ -362,14 +452,83 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
               <b>不含</b> token、学号、姓名。好友用下面的「导入」读回去即成为他自己的本机预设。
             </div>
             <v-divider class="my-3" />
+            <!-- 🆕 2026-11-10（用户需求①）：批量 —— 勾选多条 → 一次导出 -->
+            <div class="text-subtitle-2 mb-1">批量导出（勾选多条）</div>
+            <v-alert v-if="pickedCount" type="info" variant="tonal" density="compact" class="mb-2">
+              已勾选 <b>{{ pickedCount }}</b> 条成绩：{{ pickedDatesText }}
+            </v-alert>
+            <div v-else class="text-caption text-medium-emphasis mb-2">
+              在左边「按天」那一栏勾选（可先点「全选」）—— 勾选是<b>跨天</b>的，换一天接着勾也算。
+            </div>
+            <v-progress-linear v-if="batchProgressText" :indeterminate="true" color="primary" class="mb-1" />
+            <div v-if="batchProgressText" class="text-caption text-medium-emphasis mb-2">{{ batchProgressText }}</div>
+            <v-btn
+              block
+              size="small"
+              color="primary"
+              variant="tonal"
+              class="mb-2"
+              prepend-icon="mdi-content-save-multiple-outline"
+              :disabled="!pickedCount"
+              :loading="rp.busy.value === 'save'"
+              @click="doBatchSave"
+            >
+              批量存为路径预设（{{ pickedCount }} 条）
+            </v-btn>
+            <v-btn
+              block
+              size="small"
+              color="secondary"
+              variant="tonal"
+              class="mb-2"
+              prepend-icon="mdi-folder-zip-outline"
+              :disabled="!pickedCount"
+              :loading="rp.busy.value === 'share'"
+              @click="doBatchShare"
+            >
+              批量导出压缩包（{{ pickedCount }} 条装进一个包）
+            </v-btn>
+            <div class="text-caption text-medium-emphasis mb-3">
+              每条都要<b>单独读一次轨迹</b>，所以条数多时会慢一些（上面有进度）。
+              某一条读不到轨迹不会影响其它条，结果在下面<b>逐条列出</b>。
+            </div>
+            <v-divider class="my-3" />
             <div class="text-subtitle-2 mb-1">导入好友分享的压缩包</div>
-            <input ref="fileInput" type="file" accept=".zip,application/zip" class="d-none" @change="doImport" />
+            <input ref="fileInput" type="file" accept=".zip,application/zip" multiple class="d-none" @change="doImport" />
             <v-btn block size="small" variant="tonal" prepend-icon="mdi-file-upload-outline" @click="fileInput?.click()">
-              选择一个压缩包并导入
+              选择一个或多个压缩包并导入
             </v-btn>
             <div class="text-caption text-medium-emphasis mt-1">
               导入的路径会存到上面选的地点（同样可以在跑步页选用）；存进去的条目会标明"来源：真实路径"。
+              <b>可以一次选多个包</b>（包里有几条就收几条）；失败的那些会在下面逐条说明原因。
             </div>
+
+            <!-- 🆕 2026-11-10（用户需求②）：批量结果 —— 成功的点一下数，失败的必须逐条列出来 -->
+            <template v-if="batchSummary && batchSummary.total">
+              <v-divider class="my-3" />
+              <div class="text-subtitle-2 mb-1">上一次批量的结果</div>
+              <v-alert :type="batchSummary.failCount ? (batchSummary.okCount ? 'warning' : 'error') : 'success'" variant="tonal" density="compact" class="mb-2">
+                {{ batchSummary.text }}
+              </v-alert>
+              <div v-if="batchSummary.failed.length" class="mb-1">
+                <div class="text-caption font-weight-bold text-error mb-1">失败的 {{ batchSummary.failed.length }} 条（逐条原因）：</div>
+                <v-list density="compact" class="pa-0">
+                  <v-list-item v-for="(f, i) in batchSummary.failed" :key="`bf-${i}`" class="px-0">
+                    <v-list-item-title class="text-body-2">{{ f.name }}</v-list-item-title>
+                    <v-list-item-subtitle class="text-caption">{{ f.message }}</v-list-item-subtitle>
+                  </v-list-item>
+                </v-list>
+              </div>
+              <v-expansion-panels v-if="batchSummary.ok.length" variant="accordion">
+                <v-expansion-panel :title="`成功的 ${batchSummary.ok.length} 条（展开看明细）`">
+                  <v-expansion-panel-text>
+                    <div v-for="(o, i) in batchSummary.ok" :key="`bo-${i}`" class="text-caption mb-1">
+                      <b>{{ o.name }}</b> —— {{ o.message }}
+                    </div>
+                  </v-expansion-panel-text>
+                </v-expansion-panel>
+              </v-expansion-panels>
+            </template>
           </v-card-text>
         </v-card>
 

@@ -42,6 +42,9 @@ const tryUnlock = (ach: GameAchievement) => {
 const onUnlock = () => {
   if (unlocked.value) return
   unlocked.value = true
+  // 立刻把游戏停住（跳转前还有 600ms）：否则这半秒里恐龙还在跑、音效还在响，
+  // 而且跳到工作台之后原版挂在 document 上的监听/音效上下文会跟着过去（离开页面时的彻底收尾见 ChibiRunGame 的 teardownRunner）
+  gameRef.value?.pause()
   // 「黑暗中的响指」：输完作弊码即解锁（toast 挂全局层，下面 600ms 跳工作台不会吞掉它）
   tryUnlock(ACHIEVEMENT_CHEAT)
   // §72：解锁真源在服务端（EXE 进程生命周期）。本地缓存立即置真（紧接着的 /app 跳转
@@ -54,7 +57,12 @@ const onUnlock = () => {
 }
 
 // ── 分数里程碑与通关 ──
-const gameRef = ref<{ restart: () => void; pause: () => void; resume: () => void } | null>(null)
+const gameRef = ref<{
+  restart: () => void
+  pause: () => void
+  resume: () => void
+  dispose: () => void
+} | null>(null)
 const won = ref(false)
 const finalScore = ref(0)
 
@@ -88,6 +96,15 @@ const onRestart = () => {
   won.value = false
   gameRef.value?.restart()
 }
+
+/**
+ * 离开本页（作弊码跳工作台 / 切到别的页面）时先让游戏组件收尾：
+ * 停主循环、摘掉 document 监听、**关掉音效上下文**。
+ * 组件卸载时的 `onBeforeUnmount` 也会做同一件事，这里提前一拍（页面摘除是有顺序的）。
+ */
+onBeforeUnmount(() => {
+  gameRef.value?.dispose()
+})
 
 // ── 成就/排行榜面板：打开暂停（原版 stop 定格）、关闭恢复（play 原地续跑）；通关定格时不恢复 ──
 const panelOpen = ref(false)

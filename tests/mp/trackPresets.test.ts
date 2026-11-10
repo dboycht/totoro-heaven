@@ -15,6 +15,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   PRESET_CHOICE_KEY,
+  TRACK_NAME_MAX,
   autoPresetName,
   conflictOwnerText,
   duplicateNameGroups,
@@ -29,6 +30,7 @@ import {
   parseRefChoiceMap,
   presetsOfLine,
   resolvePresetForLine,
+  sanitizeLineName,
   withRefChoice,
   type TrackRouteEntry,
 } from '../../utils/mp/trackLibrary.ts'
@@ -132,14 +134,23 @@ test('autoPresetName：第一个就取线路名；撞名改成「· 预设 2 / 3
 })
 
 test('autoPresetName：**长线路名不会因限长而死循环**（截断后仍不重名）', () => {
-  const long = '很长'.repeat(40) // 80 码点 > 24 上限
+  const long = '很长'.repeat(40) // 80 码点 > TRACK_NAME_MAX 上限
   const first = autoPresetName([], long, 'L-long')
   assert.ok(first.length > 0)
   const entries = [mk({ id: 'p1', lineId: 'L-long', lineName: long, customName: first })]
   const second = autoPresetName(entries, long, 'L-long')
   assert.notEqual(second, first, '第二条必须与第一条不同（截断后也要能区分）')
   assert.equal(findNameConflict(entries, second), undefined, '自动生成的名字本身不能撞名')
-  assert.ok(Array.from(second).length <= 24, `不能超过 24 码点：${second}`)
+  assert.ok(Array.from(second).length <= TRACK_NAME_MAX, `不能超过 ${TRACK_NAME_MAX} 码点：${second}`)
+})
+
+test('TRACK_NAME_MAX=48：真实路径默认名（地点 · 真实路径 日期 · 时刻）**不再被截断**', () => {
+  /** 24 码点时代，这个长度（26）会被削尾巴 ⇒ 两条不同日期的预设撞名 */
+  const name = '天目湖-东操场 · 真实路径 2026-09-16 · 2122'
+  assert.ok(Array.from(name).length > 24, `夹具要长于旧上限：${name}`)
+  assert.equal(sanitizeLineName(name), name, '新上限下原样保留')
+  const tooLong = '名'.repeat(TRACK_NAME_MAX + 10)
+  assert.equal(Array.from(sanitizeLineName(tooLong)).length, TRACK_NAME_MAX, '超出上限仍按码点截断')
 })
 
 // ---------------------------------------------------------------- ④ 选哪一条

@@ -64,7 +64,7 @@ import { validateRings } from '~/utils/mp/trackEditor'
 // 🆕 2026-11-05（整理轮）：Web Mercator 投影单一来源（与跑道编辑/轨迹预览共用同一份实现）
 import { TILE, lng2x, lat2y, x2lng, y2lat } from '~/utils/mp/webMercator'
 // 🆕 2026-09-29（用户口径："老版本路径文件提示需要更新"）：老数据的识别与那句提示都在纯模块里（有单测）
-import { LOCAL_FREE_LINE_ID, LOCAL_FREE_LINE_NAME, legacyFreePathUpdate, localFreeTrackLine, resolveEntryName } from '~/utils/mp/trackLibrary'
+import { LOCAL_FREE_LINE_ID, LOCAL_FREE_LINE_NAME, TRACK_NAME_MAX, legacyFreePathUpdate, localFreeTrackLine, resolveEntryName } from '~/utils/mp/trackLibrary'
 // 🆕 2026-09-22（真实用户实测）：本页对"有官方线路的任务"不生效 ⇒ 给一条直达「跑道编辑」的出路
 // 🆕 2026-09-23（pre3）：跑步页的「一键去画一条本机路径」会带 `?draw=curve` 进来 ⇒ 自动进"圈型"绘制模式
 import { drawModeFromQuery, trackEditorLink } from '~/utils/mp/routeGroups'
@@ -1020,8 +1020,8 @@ const pathOf = (pts: P[], close = false) => {
               v-model="presetName"
               label="预设名称（留空 = 自动命名）"
               density="compact"
-              :counter="24"
-              maxlength="24"
+              :counter="TRACK_NAME_MAX"
+              :maxlength="TRACK_NAME_MAX"
               hide-details="auto"
               class="mb-2"
             />
