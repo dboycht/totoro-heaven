@@ -269,8 +269,17 @@ const doLoadRecords = async (monthId?: string, force = false) => {
   }
   if (key && !force && monthCache.value.has(key)) {
     const cached = monthCache.value.get(key)!
-    /** 缓存命中也走一次并入：这一步只是"把已有记录摆回列表"，不发请求（composable 负责去重） */
-    rp.records.value = [...rp.records.value]
+    /**
+     * 🔴 缓存命中 = "把列表切到这个月"，与联网读到之后**做同样的事**（只是不发请求）：
+     *   · `records` 的语义是"当前月份" ⇒ 这里**赋值**（不是并入）；
+     *   · `activeMonthId` 必须跟着走，否则高亮会停在别的月份上
+     *     （实测：点回读过的月份时高亮串到了另一个月，看着像"点错了"）；
+     *   · 清掉"选中看轨迹"的那一条 —— 它属于上一个月，留着会让第 3 步显示别的月的轨迹。
+     */
+    rp.records.value = cached
+    rp.activeMonthId.value = key
+    rp.selectedScoreId.value = ''
+    rp.points.value = null
     showSnackbar(`「${monthNameOf(key)}」已读过（${cached.length} 条），直接用本机缓存 —— 要重读请点「重新读取」`, 'info', { timeout: 4000 })
     return
   }

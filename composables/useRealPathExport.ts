@@ -245,6 +245,8 @@ export function useRealPathExport() {
       activeMonthId.value = useMonth
       selectedDate.value = ''
       selectedScoreId.value = ''
+      /** 换月份时手上的轨迹属于上一个月 ⇒ 清掉（否则第 3 步会显示别的月的轨迹） */
+      clearDetail()
       logInfo('realpath', '读到成绩归档', { count: list.length, monthId: useMonth })
       if (!list.length) {
         notice.value = '这个月没有查到成绩记录（也可能该月还没跑）'
