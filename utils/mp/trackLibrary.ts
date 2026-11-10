@@ -829,16 +829,57 @@ export function localEntryShapeText(e: TrackRouteEntry): string {
 }
 
 /**
+ * 🆕 2026-11-10（用户口径"两种路径不是同一类"）：**这条本机条目是不是"真实路径"**。
+ *
+ * 判据只有一个：带 `realPath` 元信息（由「真实路径【测试】」页导出时写入）。
+ * 为什么要有这个函数而不是各处自己写 `e.realPath`：
+ *   · 跑道编辑页要**禁掉对它的编辑/载入**（它是别人真实跑出来的点列，不该被当草图改）；
+ *   · 列表要把它**折起来**单独成组（真实路径常常一堆，混在手绘跑道里完全看不清）；
+ *   · 详情/摘要要据它换一套措辞（"真实跑日期/场次号"而不是"外圈 N 点"）。
+ */
+export function isRealPathEntry(e: { realPath?: unknown } | null | undefined): boolean {
+  return Boolean(e && typeof e === 'object' && e.realPath)
+}
+
+/** 一组本机条目按"是不是真实路径"拆开（列表分组用；两组都保持库内原有顺序） */
+export function splitRealPathEntries(entries: TrackRouteEntry[] | null | undefined): {
+  drawn: TrackRouteEntry[]
+  real: TrackRouteEntry[]
+} {
+  const drawn: TrackRouteEntry[] = []
+  const real: TrackRouteEntry[] = []
+  for (const e of Array.isArray(entries) ? entries : []) {
+    if (!e || typeof e !== 'object') continue
+    ;(isRealPathEntry(e) ? real : drawn).push(e)
+  }
+  return { drawn, real }
+}
+
+/**
  * 一条路线的摘要（**列表每行的副标题**）：点位数 · 道次 · 创建日期/版本 · 官方原名
  * ＋ 🆕 最近保存（时间/版本）与编辑次数（2026-09-20，1.1.12 需求③）。
  *
  * ⚠️ 旧的字段顺序与措辞**不许改**：`tests/mp/trackEditor.test.ts` 与验证脚本都按它断言
  *（"外圈 N 点 / 第 3 道/6 / 创建日期未知 / 版本未知 / 官方名：…"）。
+ * 🆕 2026-11-10：真实路径条目**换一套措辞**（用户口径"两种路径不是同一类"）——
+ *    它的"外圈 3 点/内圈 3 点"是**占位几何**，照着念会让人以为这条只有 3 个点。
  */
 export function entrySummaryText(e: TrackRouteEntry): string {
   const when = e.createdAt ? formatLocalDateTime(e.createdAt) : '创建日期未知'
   const version = e.appVersion ? `v${e.appVersion.replace(/^v/, '')}` : '版本未知'
   const lane = e.laneNo ? `第 ${e.laneNo} 道${e.laneCount ? `/${e.laneCount}` : ''}` : '道次未记录'
+  /**
+   * 🔴 真实路径走**另一条摘要**：不报"外圈/内圈"（那是占位几何），改报"来自哪场真实跑 + 原始点数"。
+   * 详情里另有完整元信息（日期/场次号/里程/拟合度）。
+   */
+  if (isRealPathEntry(e)) {
+    const rp = e.realPath as RealPathMeta
+    const shape = parseFreePathShape(e.freeShape)
+    const pts = shape?.points?.length ?? 0
+    const date = rp.date || '日期未知'
+    const km = rp.km === null || rp.km === undefined ? '里程未知' : `${rp.km.toFixed(2)} km`
+    return `真实路径 · 来自 ${date} 那场（${km}）· 原始 ${pts} 点 · 地点：${String(e.lineName ?? '').trim() || e.lineId}${editsOf(e)}`
+  }
   // 改过名时**顺带标出厂商原名**：改的是本机显示名，提交用的仍是厂商 lineId，
   // 把原名留在摘要里，用户才不会"改完就不知道这条对应哪条官方线路"（2026-09-18）。
   // 🆕 2026-11-03（1.3.6）：显示名与厂商名**只是大小写/空白不同**（自动命名常常就是取厂商名）时不再重复标一遍。
@@ -859,6 +900,11 @@ export function entrySummaryText(e: TrackRouteEntry): string {
   const free = freePathShapeText(e.freeShape)
   const freePrefix = free ? `${free} · ` : ''
   return `${freePrefix}外圈 ${e.outer.length} 点 · 内圈 ${e.inner.length} 点 · ${lane} · ${when} · ${version}${renamed}${start}${saved}${edits}`
+}
+
+/** 编辑次数后缀（真实路径摘要里也带上；没记录过就一个字都不加） */
+function editsOf(e: TrackRouteEntry): string {
+  return e.editCount ? ` · 编辑 ${e.editCount} 次` : ''
 }
 
 /**

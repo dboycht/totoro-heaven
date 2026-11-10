@@ -18,7 +18,7 @@ import {
   distanceToRingM,
   type TrackRings,
 } from '../../utils/mp/trackEditor.ts'
-import { normalizeLibrary, entrySummaryText, sanitizeLineName, resolveEntryName, TRACK_NAME_MAX } from '../../utils/mp/trackLibrary.ts'
+import { normalizeLibrary, entrySummaryText, isRealPathEntry, sanitizeLineName, resolveEntryName, splitRealPathEntries, TRACK_NAME_MAX } from '../../utils/mp/trackLibrary.ts'
 
 const CENTER = { latitude: 31.37, longitude: 119.48 }
 const mLat = 111320
@@ -276,4 +276,62 @@ test('entrySummaryText：改过名时摘要要标出**官方原名**（避免"�
   assert.ok(text.includes('官方名：西操场'), text)
   // 没改过名就不该出现这个标注（否则每条都挂一句废话）
   assert.ok(!entrySummaryText({ ...entry, customName: undefined }).includes('官方名'), '未改名不应标注官方名')
+})
+
+// ---------------------------------------------------------------- 🆕 真实路径是另一类（2026-11-10）
+
+const mkEntry = (over) => ({
+  id: over.id,
+  lineId: over.lineId ?? 'L1',
+  lineName: over.lineName ?? '东操场',
+  outer: circle(200, 12),
+  inner: circle(180, 12),
+  createdAt: '2026-11-01T00:00:00.000Z',
+  appVersion: '1.3.7',
+  ...over,
+})
+
+test('isRealPathEntry：判据就是"带 realPath 元信息"（其余一律不算）', () => {
+  assert.equal(isRealPathEntry({ realPath: { date: '2026-11-01' } }), true)
+  assert.equal(isRealPathEntry({}), false)
+  assert.equal(isRealPathEntry({ realPath: undefined }), false)
+  assert.equal(isRealPathEntry(null), false)
+  assert.equal(isRealPathEntry(undefined), false)
+})
+
+test('🔴 splitRealPathEntries：手绘跑道与真实路径分成两组，且各自保持库内顺序', () => {
+  const drawn1 = mkEntry({ id: 'd1' })
+  const real1 = mkEntry({ id: 'r1', realPath: { date: '2026-11-01', scoreId: 's1' } })
+  const drawn2 = mkEntry({ id: 'd2' })
+  const real2 = mkEntry({ id: 'r2', realPath: { date: '2026-11-02', scoreId: 's2' } })
+  const { drawn, real } = splitRealPathEntries([drawn1, real1, drawn2, real2])
+  assert.deepEqual(drawn.map((e) => e.id), ['d1', 'd2'], '手绘组保持原序')
+  assert.deepEqual(real.map((e) => e.id), ['r1', 'r2'], '真实路径组保持原序')
+  assert.equal(drawn.length + real.length, 4, '一条都不许丢')
+  /** 空/坏输入安全 */
+  assert.deepEqual(splitRealPathEntries([]), { drawn: [], real: [] })
+  assert.deepEqual(splitRealPathEntries(null), { drawn: [], real: [] })
+  assert.deepEqual(splitRealPathEntries([null, undefined, drawn1]).drawn.map((e) => e.id), ['d1'])
+})
+
+test('🔴 entrySummaryText：真实路径换一套措辞（不报外圈/内圈占位几何）', () => {
+  const real = mkEntry({
+    id: 'r1',
+    lineName: '天目湖-东操场',
+    realPath: { date: '2026-09-17', scoreId: 'sunrunId1', km: 3.28, usedTime: '00:19:28', fitDegree: 0.98, sourcePoints: 967, lapLengthM: 627, exportedAt: '2026-11-10T00:00:00.000Z' },
+    freeShape: { kind: 'curve', points: circle(200, 40) },
+  })
+  const text = entrySummaryText(real)
+  assert.match(text, /真实路径/, '要有"真实路径"这个身份标记')
+  assert.match(text, /2026-09-17/, '要报来自哪场真实跑')
+  assert.match(text, /3\.28 km/, '要报那场的里程')
+  assert.match(text, /原始 40 点/, '报的是 freeShape 的原始点数')
+  assert.match(text, /天目湖-东操场/, '要报地点')
+  assert.doesNotMatch(text, /外圈/, '不许报占位几何的"外圈 N 点"（那会让人以为只有 3 个点）')
+
+  /** 手绘跑道那条**逐字不变**（既有断言按它写） */
+  const drawn = mkEntry({ id: 'd1' })
+  const drawnText = entrySummaryText(drawn)
+  assert.match(drawnText, /外圈 12 点 · 内圈 12 点/)
+  assert.doesNotMatch(drawnText, /真实路径/)
 })

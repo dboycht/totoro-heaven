@@ -160,9 +160,24 @@ const autoMatchNote = computed(() => {
 })
 
 // ── 🆕 2026-11-10 批量选择（用户需求①②：勾选多条 → 一次导出 / 一次导入多个包）──
-/** 批量勾选的场次号集合（增删切换走纯函数 `toggleSelection`，界面不自己拼 Set） */
+/** 一条归档记录的形状（与 `utils/mp/realPath.ts` 的 `RealPathRecord` 同源，这里只取用到的字段） */
+type RealPathRecord = (typeof rp.records.value)[number]
+/**
+ * 批量勾选的场次号集合（增删切换走纯函数 `toggleSelection`，界面不自己拼 Set）。
+ *
+ * 🔴 2026-11-10 二次验收修正（Bug 2）：**勾选跨月份保持**。
+ * 用户口径："选中 9 月的全部路径，再点开 10 月选中全部，那么只能导出 10 月的、9 月的勾选消失了"——
+ * 那是"读归档时清空勾选"造成的。场次号（`scoreId`）本身**全局唯一**，跨月也不会撞，
+ * 所以勾选没有理由被清掉；只有"用户自己点清空"或"退出页面"才该没。
+ */
 const pickedIds = ref<Set<string>>(new Set())
-/** 当前在读成绩里的**全部**场次号（"全选"用） */
+/**
+ * **已经读过的月份**（`monthId` → 那个月的成绩）。
+ * 用户口径："已经读取过的就没有必要重复读取，每一次点击月份都要重新读取一遍有点浪费"。
+ * 点回读过的月份 ⇒ **直接用缓存**，不再打服务端；只有没读过的月份才真发请求。
+ */
+const monthCache = ref<Map<string, RealPathRecord[]>>(new Map())
+/** 当前在读成绩里的**全部**场次号（"全选"用）—— 跨月份累积 */
 const allScoreIds = computed(() => rp.records.value.map((r) => String(r.scoreId)))
 /** 选中的那几条（导出顺序 = 归档顺序，不按点击顺序 —— 便于对照列表） */
 const pickedRecords = computed(() => rp.records.value.filter((r) => pickedIds.value.has(String(r.scoreId))))
@@ -176,23 +191,23 @@ const isPicked = (scoreId: string) => pickedIds.value.has(String(scoreId))
 const togglePick = (scoreId: string) => {
   pickedIds.value = toggleSelection(pickedIds.value, scoreId)
 }
+/**
+ * 「全选」= 把**当前列表里的**全部勾上（并保留其它月份已勾的）。
+ * ⚠️ 不用"清空再选"：那样第二次点某个"全选"会把别的月份的勾选洗掉 —— 正是 Bug 2 的同一类错误。
+ */
 const pickAll = () => {
   pickedIds.value = setSelection(pickedIds.value, allScoreIds.value, true)
 }
 const clearPicks = () => {
-  pickedIds.value = setSelection(pickedIds.value, allScoreIds.value, false)
+  pickedIds.value = new Set()
 }
-/**
- * 换月份 / 重新读归档 ⇒ 清空勾选：场次号是**跨月唯一**的，留着上个月的勾选会让
- * "选中的条数"与"这次读到的数据"对不上（批量导出就会去打已经不在列表里的 id）。
- */
-watch(
-  () => rp.records.value,
-  () => {
-    pickedIds.value = new Set()
-    batchSummary.value = null
-  },
-)
+/** 勾选里有多少条**不在当前列表**（跨月份勾选时如实提示，免得用户以为丢了） */
+const pickedOffListCount = computed(() => {
+  const onList = new Set(allScoreIds.value)
+  let n = 0
+  for (const id of pickedIds.value) if (!onList.has(id)) n++
+  return n
+})
 
 /** 批量动作的逐条结果（`null` = 还没跑过；界面据此决定显不显示"失败原因"那一栏） */
 const batchSummary = ref<BatchSummaryLike | null>(null)
@@ -230,10 +245,58 @@ const doLoadMonths = async () => {
   if (list.length) showSnackbar(`读到 ${list.length} 个月份`, 'info')
   else if (rp.error.value) showSnackbar(rp.error.value, 'warning')
 }
-const doLoadRecords = async (monthId?: string) => {
+/**
+ * 读某个月的归档。
+ *
+ * 🔴 2026-11-10 二次验收修正（Bug 2 的另一半）：
+ *   · **已读过的月份直接用缓存**（用户口径："已经读取过的就没有必要重复读取"）——
+ *     缓存键是 `monthId`，只在"重新读"这个显式动作下才失效；
+ *   · 读到的新月份**并入**列表（`scoreId` 去重），而不是把上一个月的记录顶掉 ——
+ *     否则"跨月勾选"会立刻变成"勾选指向不存在的记录"。
+ *
+ * @param monthId  指定月份；不传 = 用当前月份
+ * @param force    忽略缓存、强制重读（「重新读一遍」按钮用）
+ */
+const doLoadRecords = async (monthId?: string, force = false) => {
+  const key = String(monthId ?? '').trim()
+  /**
+   * 「读取最近成绩」（不点名月份）是**重来一次**的语义：先清空列表与缓存，只留"最近这个月"。
+   * 点具体月份才是**累积**（用户要在跨月之间勾选）。
+   */
+  if (!key) {
+    rp.records.value = []
+    monthCache.value = new Map()
+  }
+  if (key && !force && monthCache.value.has(key)) {
+    const cached = monthCache.value.get(key)!
+    /** 缓存命中也走一次并入：这一步只是"把已有记录摆回列表"，不发请求（composable 负责去重） */
+    rp.records.value = [...rp.records.value]
+    showSnackbar(`「${monthNameOf(key)}」已读过（${cached.length} 条），直接用本机缓存 —— 要重读请点「重新读取」`, 'info', { timeout: 4000 })
+    return
+  }
   const list = await rp.loadRecords(monthId)
+  if (rp.error.value) {
+    showSnackbar(rp.error.value, 'warning')
+    return
+  }
+  /** 成功读到（哪怕 0 条）就把这个月记进缓存：0 条也是有效答案，不必反复问 */
+  const usedKey = String(rp.activeMonthId.value || key).trim()
+  if (usedKey) monthCache.value = new Map(monthCache.value).set(usedKey, list)
   if (list.length) showSnackbar(rp.notice.value || `读到 ${list.length} 条成绩`, 'info')
-  else showSnackbar(rp.error.value || rp.notice.value || '没有读到成绩', 'warning')
+  else showSnackbar(rp.notice.value || '这个月没有查到成绩记录', 'warning')
+}
+/** 月份显示名（缓存命中时提示用；找不到就回退成 id） */
+const monthNameOf = (monthId: string) => rp.months.value.find((m) => m.monthId === monthId)?.monthName || monthId
+/** 「重新读取」：清掉本机缓存并强制重读列表里已有的那些月份（同一批请求，不改变选择） */
+const doReloadRecords = async () => {
+  const ids = [...monthCache.value.keys()]
+  monthCache.value = new Map()
+  if (!ids.length) {
+    await doLoadRecords(rp.activeMonthId.value || undefined, true)
+    return
+  }
+  for (const id of ids) await doLoadRecords(id, true)
+  showSnackbar(`已重新读取 ${ids.length} 个月的归档`, 'info')
 }
 const doLoadDetail = async (scoreId: string) => {
   const pts = await rp.loadDetail(scoreId)
@@ -323,7 +386,18 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
               >
                 读取最近成绩
               </v-btn>
-              <span class="text-caption text-medium-emphasis">（不选月份＝用当前月份）</span>
+              <!-- 🆕 换月份不再重新请求已读过的月份；要拿最新数据就点这里 -->
+              <v-btn
+                size="small"
+                variant="tonal"
+                prepend-icon="mdi-refresh"
+                :loading="rp.busy.value === 'records'"
+                :disabled="!rp.hasToken.value || !monthCache.size"
+                @click="doReloadRecords"
+              >
+                重新读取
+              </v-btn>
+              <span class="text-caption text-medium-emphasis">（不选月份＝用当前月份；点过的月份走本机缓存）</span>
             </div>
             <div v-if="rp.months.value.length" class="d-flex flex-wrap ga-1 mb-3">
               <!-- 高亮 = 最近一次真正读过的那个月（activeMonthId），不是"永远是本月"：否则读 9 月、界面却亮着本月 -->
@@ -333,6 +407,7 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
                 size="x-small"
                 variant="tonal"
                 :color="m.monthId === rp.activeMonthId.value ? 'primary' : undefined"
+                :prepend-icon="monthCache.has(m.monthId) ? 'mdi-check' : undefined"
                 @click="doLoadRecords(m.monthId)"
               >
                 {{ m.monthName }}{{ m.isCurrent ? '（当前）' : '' }}
@@ -351,13 +426,13 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
               <div class="d-flex flex-wrap align-center ga-2 mb-2">
                 <div class="text-subtitle-2">成绩记录（{{ rp.records.value.length }} 条）</div>
                 <v-spacer />
-                <v-btn size="x-small" variant="tonal" @click="pickAll">全选（{{ allScoreIds.length }}）</v-btn>
+                <v-btn size="x-small" variant="tonal" @click="pickAll">全选本列表（{{ allScoreIds.length }}）</v-btn>
                 <v-btn size="x-small" variant="tonal" :disabled="!pickedCount" @click="clearPicks">清空勾选</v-btn>
               </div>
               <div class="text-caption mb-2" :class="pickedCount ? 'text-primary' : 'text-medium-emphasis'">
                 {{ pickedCount
-                  ? `已选 ${pickedCount} 条 —— 单条读取已锁定，请用右侧「批量操作」`
-                  : '勾选左侧复选框可批量导出；不勾选时，点一条读它的轨迹（单条导出）' }}
+                  ? `已选 ${pickedCount} 条${pickedOffListCount ? `（其中 ${pickedOffListCount} 条在别的月份里，导出时会一起带上）` : ''} —— 单条读取已锁定，请用右侧「批量操作」`
+                  : '勾选左侧复选框可批量导出；不勾选时，点一条读它的轨迹（单条导出）。换月份不会丢掉已勾选的。' }}
               </div>
               <v-list density="compact" class="pa-0">
                 <v-list-item

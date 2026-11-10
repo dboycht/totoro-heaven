@@ -222,7 +222,23 @@ export function useRealPathExport() {
         apiOptions.value,
       )
       const list = parseArchRecords(arch.data)
-      records.value = list
+      /**
+       * 🔴 2026-11-10 二次验收修正（Bug 2）：**并入**现有列表，而不是整体替换。
+       *
+       * 用户口径："选中 9 月的全部路径，再点开 10 月选中全部，那么只能导出 10 月的、9 月的勾选消失了"。
+       * 根因有两层：① 界面在"读归档"时清空勾选；② 这里把 9 月的记录**顶掉**了 ——
+       * 于是即使不清勾选，9 月的那些 id 也已经不在列表里，批量导出根本打不到它们。
+       * 场次号（`scoreId`）全局唯一，跨月合并不会串味；去重后**保持先来后到**的顺序。
+       */
+      const seen = new Set(records.value.map((r) => String(r.scoreId)))
+      const merged = [...records.value]
+      for (const r of list) {
+        const id = String(r?.scoreId ?? '')
+        if (!id || seen.has(id)) continue
+        seen.add(id)
+        merged.push(r)
+      }
+      records.value = merged
       /** 界面高亮跟着**真正用过的那一个月**走（图 1：读的是 9 月、高亮却停在"本月"） */
       activeMonthId.value = useMonth
       selectedDate.value = ''

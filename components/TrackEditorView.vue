@@ -34,8 +34,10 @@ import {
   entrySummaryText,
   formatLocalDateTime,
   historyLogText,
+  isRealPathEntry,
   localFreeTrackLine,
   resolveEntryName,
+  splitRealPathEntries,
   startSummaryText,
 } from '~/utils/mp/trackLibrary'
 import { generateCorridorRoute } from '~/utils/mp/generateRoute'
@@ -321,6 +323,15 @@ const onPresetPick = (v: unknown) => {
 }
 /** 这个地点**同名预设**的检测结果（旧数据可能本来就有同名 —— 只提示，绝不自动改名） */
 const dupNames = computed(() => duplicateNameGroups(libEntries.value))
+/**
+ * 🔴 2026-11-10（用户口径"两种路径不是同一类"）：把库拆成**手绘跑道**与**真实路径**两组。
+ * 判据在纯函数里（`splitRealPathEntries`），界面不自己写 `e.realPath` —— 那样两处口径会漂。
+ */
+const splitEntries = computed(() => splitRealPathEntries(libEntries.value))
+const drawnEntries = computed(() => splitEntries.value.drawn)
+const realEntries = computed(() => splitEntries.value.real)
+/** 真实路径那一组是否展开（默认收起：它们常常一堆，全铺开会把跑道预设挤没） */
+const realOpen = ref(false)
 /** 正在编辑的那条预设（`presetId` 为空 = 还没保存过 / 正在新建） */
 const editingEntry = computed(() => (presetId.value ? lib.get(presetId.value) : undefined))
 
@@ -852,11 +863,21 @@ const reset = () => {
   setRing('outer', [])
   setRing('inner', [])
 }
-/** 本地路线管理：载入到编辑器（顺带定位过去） */
+/**
+ * 本地路线管理：载入到编辑器（顺带定位过去）。
+ *
+ * 🔴 2026-11-10（用户口径"跑道编辑相关页面应该无法对真实路径进行编辑以及选中、修改"）：
+ * **真实路径一律拒绝载入** —— 它是别人真实跑出来的点列，载进编辑器就等于把它降级成草图，
+ * 一保存就把原始几何改写了。界面上这条按钮对它**根本不渲染**，这里再拦一道（纵深防御）。
+ */
 const loadEntry = (id: string) => {
   const target = lib.get(String(id))
   if (!target) {
     showSnackbar('这条预设已经不在本机路线库里了', 'warning')
+    return
+  }
+  if (isRealPathEntry(target)) {
+    showSnackbar('真实路径不能载入到跑道编辑器（它是真实跑出来的点列，改动会丢掉原始几何）—— 要改名/删除请在本列表操作', 'warning', { timeout: 7000 })
     return
   }
   // ⚠️ 先把地点切过去，再**显式**载入这一条 —— 只改 lineId 的话，watch 会载入"这个地点默认那条"，
@@ -1380,52 +1401,63 @@ const lineOptions = computed(() =>
             <div v-if="!libEntries.length" class="text-caption text-medium-emphasis">
               还没有配置好的路线。描好内外圈后点「保存（本机）」，这里就会按「创建 / 最近保存的时间与版本 + 编辑次数」列出来。
             </div>
-            <v-list v-else density="compact" class="pa-0">
-              <template v-for="e in libEntries" :key="e.id">
-                <v-list-item class="px-0">
-                  <v-list-item-title class="text-body-2 d-flex flex-wrap align-center ga-1">
-                    {{ nameOf(e) }}
-                    <v-chip v-if="String(e.id) === String(presetId)" size="x-small" color="primary" variant="tonal">正在编辑</v-chip>
-                    <!-- 🆕 2026-11-03：这条属于哪个地点（一个地点多条预设后，这是"它在哪"的关键信息） -->
-                    <v-chip size="x-small" color="secondary" variant="tonal">地点：{{ e.lineName || e.lineId }}</v-chip>
-                    <!-- 🆕 起跑点/编辑次数：不展开也能一眼看到（1.1.12 需求②③）
-                         ⚠️ 编辑次数**只在真的记录过时才显示**：旧条目没有这个字段，
-                            显示"编辑 1 次"是替用户猜的（详情里如实写"未记录（旧数据）"）。 -->
-                    <v-chip v-if="e.start" size="x-small" color="error" variant="tonal">起跑点已设</v-chip>
-                    <v-chip v-if="e.editCount" size="x-small" color="secondary" variant="tonal">编辑 {{ e.editCount }} 次</v-chip>
-                  </v-list-item-title>
-                  <v-list-item-subtitle class="text-caption">{{ entrySummaryText(e) }}</v-list-item-subtitle>
-                  <template #append>
-                    <v-btn size="x-small" variant="text" @click="toggleDetail(e.id)">
-                      {{ isDetailOpen(e.id) ? '收起详情' : '详情' }}
-                    </v-btn>
-                    <v-btn size="x-small" variant="text" @click="loadEntry(e.id)">载入</v-btn>
-                    <v-btn size="x-small" variant="text" color="primary" @click="openRename(e.id)">重命名</v-btn>
-                    <v-btn size="x-small" variant="text" color="error" @click="removeEntry(e.id)">删除</v-btn>
-                  </template>
-                </v-list-item>
-                <!-- 详情（1.1.12 需求③）：时间 / 版本 / 次数 / 几何 / 起跑点 + 最近几次编辑留痕 -->
-                <v-expand-transition>
-                  <div v-if="isDetailOpen(e.id)" class="lib-detail mb-2 pa-2">
-                    <v-table density="compact" class="lib-detail-table mb-2">
-                      <tbody>
-                        <tr v-for="row in entryDetailRows(e)" :key="`${e.id}-${row.label}`">
-                          <td class="text-medium-emphasis lib-detail-label">{{ row.label }}</td>
-                          <td>{{ row.value }}</td>
-                        </tr>
-                      </tbody>
-                    </v-table>
-                    <div class="text-caption text-medium-emphasis">
-                      编辑历史（最近 {{ historyMax }} 次，最新在上）
-                    </div>
-                    <ul v-if="e.history?.length" class="text-caption pl-4 mt-1 mb-0">
-                      <li v-for="(log, i) in e.history" :key="`${e.id}-log-${i}`">{{ historyLogText(log) }}</li>
-                    </ul>
-                    <div v-else class="text-caption pl-1 mt-1">还没有编辑历史（这一条是用旧版本存的）。</div>
-                  </div>
-                </v-expand-transition>
-              </template>
-            </v-list>
+            <template v-else>
+              <!-- 🔴 2026-11-10（用户口径"两种路径不是同一类"）：
+                   手绘跑道与真实路径分成两组；后者可折叠（它常常一堆，混在一起完全看不清） -->
+              <div class="text-subtitle-2 mb-1">跑道预设（{{ drawnEntries.length }} 条）</div>
+              <div v-if="!drawnEntries.length" class="text-caption text-medium-emphasis mb-2">
+                还没有手绘跑道：在上面描好内外圈后点「保存（本机）」。
+              </div>
+              <v-list v-else density="compact" class="pa-0">
+                <template v-for="e in drawnEntries" :key="e.id">
+                  <TrackLibraryRow
+                    :entry="e"
+                    :name="nameOf(e)"
+                    :detail-open="isDetailOpen(e.id)"
+                    :history-max="historyMax"
+                    :real-path="false"
+                    :current="String(e.id) === String(presetId)"
+                    @toggle-detail="toggleDetail(e.id)"
+                    @load="loadEntry(e.id)"
+                    @rename="openRename(e.id)"
+                    @remove="removeEntry(e.id)"
+                  />
+                </template>
+              </v-list>
+
+              <v-divider class="my-3" />
+              <!-- 真实路径组（可折叠）：没有「载入」，因为跑道编辑器不负责编辑它们 -->
+              <div class="d-flex flex-wrap align-center ga-2 mb-1">
+                <div class="text-subtitle-2">真实路径（{{ realEntries.length }} 条）</div>
+                <v-btn size="x-small" variant="text" :prepend-icon="realOpen ? 'mdi-chevron-up' : 'mdi-chevron-down'" @click="realOpen = !realOpen">
+                  {{ realOpen ? '收起' : '展开' }}
+                </v-btn>
+              </div>
+              <div class="text-caption text-medium-emphasis mb-2">
+                来自「我的场地 → 真实路径」那一页导出的<b>真实跑轨迹</b>：与手绘跑道是两类，
+                这里<b>只能看详情、重命名、删除</b>（不能载入编辑 —— 那会改写原始几何）。
+              </div>
+              <v-expand-transition>
+                <div v-show="realOpen">
+                  <div v-if="!realEntries.length" class="text-caption text-medium-emphasis">还没有真实路径预设。</div>
+                  <v-list v-else density="compact" class="pa-0">
+                    <template v-for="e in realEntries" :key="e.id">
+                      <TrackLibraryRow
+                        :entry="e"
+                        :name="nameOf(e)"
+                        :detail-open="isDetailOpen(e.id)"
+                        :history-max="historyMax"
+                        :real-path="true"
+                        :current="String(e.id) === String(presetId)"
+                        @toggle-detail="toggleDetail(e.id)"
+                        @rename="openRename(e.id)"
+                        @remove="removeEntry(e.id)"
+                      />
+                    </template>
+                  </v-list>
+                </div>
+              </v-expand-transition>
+            </template>
           </v-card-text>
         </v-card>
 

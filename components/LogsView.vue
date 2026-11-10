@@ -52,8 +52,19 @@
           （暂无符合条件的日志 —— 去做点操作，这里就会记下来）
         </div>
 
-        <v-expansion-panels v-else variant="accordion" density="compact">
-          <v-expansion-panel v-for="e in filtered" :key="e.t + e.msg">
+        <!-- 🆕 2026-11-10：默认只渲染最后 15 条（防卡顿），其余用一条说明 + 一个按钮带过去 -->
+        <div v-if="hiddenCount > 0 && !showAllEvents" class="d-flex flex-wrap align-center ga-2 mb-2">
+          <v-chip size="small" color="info" variant="tonal">已省略 {{ hiddenCount }} 条（只显示最新 {{ LOG_VIEW_MAX }} 条）</v-chip>
+          <v-btn size="x-small" variant="tonal" @click="showAllEvents = true">显示全部 {{ filtered.length }} 条</v-btn>
+          <span class="text-caption text-medium-emphasis">（全量仍在内存里：「复制全部」与筛选按全量算）</span>
+        </div>
+        <div v-if="showAllEvents && filtered.length > LOG_VIEW_MAX" class="d-flex flex-wrap align-center ga-2 mb-2">
+          <v-chip size="small" color="warning" variant="tonal">正在显示全部 {{ filtered.length }} 条</v-chip>
+          <v-btn size="x-small" variant="tonal" @click="showAllEvents = false">只显示最新 {{ LOG_VIEW_MAX }} 条</v-btn>
+        </div>
+
+        <v-expansion-panels v-if="visibleEvents.length" variant="accordion" density="compact">
+          <v-expansion-panel v-for="e in visibleEvents" :key="e.t + e.msg">
             <v-expansion-panel-title class="py-1">
               <span class="text-caption text-medium-emphasis mr-2">{{ formatTime(e.t) }}</span>
               <v-chip :color="levelColor(e.level)" size="x-small" variant="flat" class="mr-2">{{ e.level }}</v-chip>
@@ -169,6 +180,33 @@ const filtered = computed<LogEntry[]>(() => {
     return true
   })
   return newestFirst.value ? [...list].reverse() : list
+})
+
+/**
+ * 🆕 2026-11-10（用户口径）：**列表默认只渲染最后 `LOG_VIEW_MAX` 条**，其余省略，防止加载卡顿。
+ *
+ * 为什么是"限制渲染"而不是"限制读取"：日志本身仍全量留在内存里（`logs.entries`），
+ * 「复制全部」「清空」「筛选/搜索」都还是**对全量**生效 —— 只有 DOM 里的条目被裁到 15 条。
+ * 这样"卡顿"解决了，但"筛出来的东西不全"这种更难查的问题不会出现。
+ *
+ * 判据：筛选结果 ≤ 15 ⇒ 全渲染；> 15 ⇒ 渲染 15 条并显示"还有 N 条已省略" + 一个「显示全部」。
+ */
+const LOG_VIEW_MAX = 15
+/** 用户点了「显示全部」⇒ 不再裁剪（他自己要看的，卡一点也认） */
+const showAllEvents = ref(false)
+const hiddenCount = computed(() => Math.max(0, filtered.value.length - LOG_VIEW_MAX))
+/** 真正进 DOM 的那一段（默认从**最新那头**取 15 条 —— 调试时最关心的就是刚刚发生的事） */
+const visibleEvents = computed<LogEntry[]>(() => {
+  if (showAllEvents.value || filtered.value.length <= LOG_VIEW_MAX) return filtered.value
+  return filtered.value.slice(0, LOG_VIEW_MAX)
+})
+/**
+ * 换了筛选/搜索/排序 ⇒ 收回「显示全部」。
+ * 否则用户筛一个宽条件点了全展开、再改成窄条件，界面还停在"全展开"，
+ * 下一次筛选又变卡 —— 那正是这一条要防的事。
+ */
+watch([levelFilter, catFilter, keyword, newestFirst], () => {
+  showAllEvents.value = false
 })
 
 const levelColor = (l: LogLevel) => (l === 'error' ? 'error' : l === 'warn' ? 'warning' : 'info')
