@@ -235,7 +235,11 @@ const doBatchSave = async () => {
   showSnackbar(out.message, out.summary.failCount ? (out.summary.okCount ? 'warning' : 'error') : 'success')
 }
 const doBatchShare = async () => {
-  const out = await rp.downloadBatchZip(pickedRecords.value.map((r) => ({ scoreId: r.scoreId })))
+  /** 🔴 地点一起导出去（否则对方导入时无从归位） */
+  const out = await rp.downloadBatchZip(pickedRecords.value.map((r) => ({ scoreId: r.scoreId })), {
+    lineId: targetLineId.value,
+    lineName: targetLineName.value,
+  })
   batchSummary.value = out.summary
   showSnackbar(out.message, out.summary.failCount ? (out.summary.okCount ? 'warning' : 'error') : 'info')
 }
@@ -317,7 +321,8 @@ const doSave = () => {
   showSnackbar(out.message, out.ok ? 'success' : 'error')
 }
 const doShare = async () => {
-  const out = await rp.downloadShareZip(presetName.value)
+  /** 🔴 地点必须一起导出去（否则对方导入时无从归位） */
+  const out = await rp.downloadShareZip(presetName.value, targetLineId.value, targetLineName.value)
   showSnackbar(out.message, out.ok ? 'info' : 'error')
 }
 
@@ -332,11 +337,80 @@ const doImport = async (ev: Event) => {
    */
   const files = [...(input.files ?? [])]
   if (!files.length) return
-  const out = await rp.importManyShareZips(files, { lineId: targetLineId.value, lineName: targetLineName.value })
+  /**
+   * 🔴 2026-11-10（用户反馈「导入东操场的路径没有被录入到东操场」）：
+   * 把**可选地点表**传给组合层，让它先按「包里的地点 → 轨迹位置」自动归类；
+   * 认不出的那些回到 pending，这里再弹「选择存档地点」让用户定。
+   */
+  const out = await rp.importManyShareZips(files, {
+    lineId: targetLineId.value,
+    lineName: targetLineName.value,
+    places: placeOptions.value,
+  })
   batchSummary.value = out.summary
+  if (out.pending.length) {
+    pendingImports.value = out.pending
+    pendingPlaceId.value = placeOptions.value[0]?.value ?? LOCAL_FREE_LINE_ID
+    pendingOpen.value = true
+  }
   showSnackbar(out.message, out.summary.failCount ? (out.summary.okCount ? 'warning' : 'error') : 'success')
   /** 清空选择，便于同一批文件再导一次（例如换个地点） */
   input.value = ''
+}
+
+/** ── 导入时「认不出地点」的待定项 + 选择存档地点的弹窗（2026-11-10）── */
+const pendingOpen = ref(false)
+const pendingImports = ref<{ file: string; entryName: string; item: { name: string; points: unknown[] }; reason: string }[]>([])
+/** 用户在弹窗里选的地点 */
+const pendingPlaceId = ref<string>(LOCAL_FREE_LINE_ID)
+/**
+ * **可选地点表**（含官方线路点列）—— 自动归类与弹窗下拉共用这一份。
+ * ⚠️ 与 locationItems 的区别：那个是给下拉用的（只有 value/title），
+ * 这里额外带上 pointList，几何匹配要用。
+ */
+const placeOptions = computed(() => {
+  const out: { value: string; title: string; pointList?: { latitude: number; longitude: number }[] }[] = []
+  const seen = new Set<string>()
+  const push = (value: string, title: string, pointList?: { latitude: number; longitude: number }[]) => {
+    const v = String(value ?? '').trim()
+    if (!v || seen.has(v)) return
+    seen.add(v)
+    out.push({ value: v, title, pointList })
+  }
+  /** 官方线路优先（几何匹配只能靠它们） */
+  for (const l of taskLinesWithGeometry.value) push(l.pointId, l.pointName, l.pointList)
+  for (const i of locationItems.value) push(i.value, i.title)
+  return out
+})
+const pendingPlaceName = computed(
+  () => placeOptions.value.find((o) => o.value === pendingPlaceId.value)?.title ?? pendingPlaceId.value,
+)
+/** 弹窗里确认：把待定的那几条存到选中的地点 */
+const doSavePending = () => {
+  const out = rp.savePendingImports(pendingImports.value as never, pendingPlaceId.value, pendingPlaceName.value)
+  pendingOpen.value = false
+  const prev = batchSummary.value
+  /** 与上一次的批量结果合并（用户要同时看到「自动归类的」与「手动选的」两批结果） */
+  const mergedText = `${prev?.text ?? ''}；其中 ${out.summary.okCount} 条按你选的地点存好了`
+  batchSummary.value = prev
+    ? {
+        ...prev,
+        okCount: prev.okCount + out.summary.okCount,
+        failCount: prev.failCount + out.summary.failCount,
+        total: prev.total + out.summary.total,
+        ok: [...prev.ok, ...out.summary.ok],
+        failed: [...prev.failed, ...out.summary.failed],
+        text: mergedText,
+      }
+    : out.summary
+  showSnackbar(out.message, out.ok ? 'success' : 'error')
+  pendingImports.value = []
+}
+/** 弹窗里取消：这几条不导入了（如实告诉用户没导入） */
+const cancelPending = () => {
+  pendingOpen.value = false
+  showSnackbar(`已放弃 ${pendingImports.value.length} 条认不出地点的路径（没有导入）`, 'warning')
+  pendingImports.value = []
 }
 
 /** 那天的记录标签（时间 + 里程 + 判定） */
@@ -628,6 +702,43 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
               <b>可以一次选多个包</b>；一个包里有多少条路径就收多少条（导出的批量包内是每条一个 JSON）。
               失败的会在下面逐条说明原因。
             </div>
+
+            <!-- 🆕 2026-11-10（用户口径）：认不出地点的那几条弹这个选择框；选完才落库 -->
+            <v-dialog v-model="pendingOpen" max-width="560" persistent>
+              <v-card>
+                <v-card-title class="text-subtitle-1 d-flex align-center ga-2">
+                  <v-icon color="warning">mdi-map-marker-question-outline</v-icon>
+                  选择存档地点（{{ pendingImports.length }} 条认不出来）
+                </v-card-title>
+                <v-card-text>
+                  <div class="text-caption text-medium-emphasis mb-2">
+                    下面这些路径<b>包里没写地点、按轨迹位置也匹配不上</b>任何线路。
+                    请选一个地点把它们存进去（存进去后仍可在「跑道编辑」里重命名/删除）。
+                  </div>
+                  <v-list density="compact" class="pa-0 mb-3 pending-list">
+                    <v-list-item v-for="(p, i) in pendingImports" :key="i" class="px-0">
+                      <!-- 显示路径名（包里 item.name），不是包内 JSON 文件名 —— 后者对用户没意义 -->
+                      <v-list-item-title class="text-body-2">{{ p.item.name || p.entryName }}</v-list-item-title>
+                      <v-list-item-subtitle class="text-caption">{{ p.reason }}（来自 {{ p.file }}）</v-list-item-subtitle>
+                    </v-list-item>
+                  </v-list>
+                  <v-select
+                    v-model="pendingPlaceId"
+                    :items="placeOptions"
+                    item-title="title"
+                    item-value="value"
+                    label="存到哪个地点"
+                    density="compact"
+                    hide-details
+                  />
+                </v-card-text>
+                <v-card-actions>
+                  <v-btn variant="text" @click="cancelPending">不导入这些</v-btn>
+                  <v-spacer />
+                  <v-btn color="primary" variant="flat" @click="doSavePending">存到「{{ pendingPlaceName }}」</v-btn>
+                </v-card-actions>
+              </v-card>
+            </v-dialog>
 
             <!-- 🆕 2026-11-10（用户需求②）：批量结果 —— 成功的点一下数，失败的必须逐条列出来 -->
             <template v-if="batchSummary && batchSummary.total">

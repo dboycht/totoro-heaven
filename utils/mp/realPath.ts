@@ -327,6 +327,97 @@ export function nearestLineByGeometry(
   return best
 }
 
+// ---------------------------------------------------------------- 地点归属判定（2026-11-10）
+
+/** 一个可选地点（界面上的「存到哪个地点」就是这么来的） */
+export interface PlaceOption {
+  /** 厂商线路 pointId 或本机键（如 local:free） */
+  value: string
+  /** 显示名（厂商线路名 / 本机键的说明） */
+  title: string
+  /** 这条线路的官方点列（有才能做几何匹配；本机键通常没有） */
+  pointList?: RealPathPoint[]
+}
+
+/** 一条路径**归到哪个地点**的判定结果 */
+export interface PlaceResolution {
+  /** 定下来的地点（null = 认不出来，要用户自己选） */
+  place: PlaceOption | null
+  /** 怎么定下来的：包里的地点 / 按名字对上 / 按轨迹位置对上 / 认不出 */
+  via: 'bundle-id' | 'bundle-name' | 'geometry' | 'none'
+  /** 人话说明（界面上如实展示「为什么归到这儿」） */
+  reason: string
+  /** 按几何匹配时的最近距离（米；没走几何匹配 ⇒ null） */
+  distM?: number | null
+}
+
+/** 名字归一化：去括号里的备注、去空白、统一小写 */
+const placeNameKey = (raw: unknown): string =>
+  String(raw ?? '')
+    .replace(/[（(][^）)]*[）)]/g, '')
+    .replace(/\s+/g, '')
+    .toLowerCase()
+
+/**
+ * **一条路径属于哪个地点**（唯一判据；导入时逐条调它）。
+ *
+ * 按顺序取第一个命中的（用户口径：「先看包里的地点，再看轨迹坐标」）：
+ *   ① lineId **精确命中**本机可选地点 ⇒ bundle-id（最可靠：ID 不会重名）；
+ *   ② lineName 与某个地点的显示名**同名**（归一化后比；唯一命中才算）⇒ bundle-name
+ *      （好友那边线路 ID 可能不同，但操场名通常一致）；
+ *   ③ 用**轨迹坐标**与各线路点列比最近距离（nearestLineByGeometry，>150 m 不算）⇒ geometry
+ *      （旧包里没有地点信息时，这是唯一能自动归位的办法）；
+ *   ④ 都不行 ⇒ none，界面据此**弹出「选择存档地点」**。
+ *
+ * ⚠️ 纯函数、无副作用；**不猜**地点 —— 宁可就 none 让用户选，也不要硬塞一个错的。
+ */
+export function resolvePlace(
+  item: { lineId?: unknown; lineName?: unknown; points?: unknown },
+  options: PlaceOption[],
+  opts: { maxDistM?: number } = {},
+): PlaceResolution {
+  const list = (Array.isArray(options) ? options : []).filter((o) => o && String(o.value ?? '').trim())
+  const lineId = String(item?.lineId ?? '').trim()
+  const lineName = String(item?.lineName ?? '').trim()
+
+  if (lineId) {
+    const byId = list.find((o) => String(o.value) === lineId)
+    if (byId) return { place: byId, via: 'bundle-id', reason: '包里写明属于「' + byId.title + '」' }
+  }
+
+  const key = placeNameKey(lineName)
+  if (key) {
+    /** 同名多条时**不猜**（例如两个校区都有「东操场」）—— 交给几何或用户 */
+    const byName = list.filter((o) => placeNameKey(o.title) === key)
+    if (byName.length === 1) {
+      return { place: byName[0]!, via: 'bundle-name', reason: '按地点名「' + byName[0]!.title + '」对上' }
+    }
+  }
+
+  const pts = (Array.isArray(item?.points) ? item.points : []) as RealPathPoint[]
+  const geo = nearestLineByGeometry(
+    pts,
+    list
+      .filter((o) => Array.isArray(o.pointList) && o.pointList.length >= 2)
+      .map((o) => ({ pointId: String(o.value), pointName: o.title, pointList: o.pointList })),
+    { maxDistM: opts.maxDistM ?? 150 },
+  )
+  if (geo) {
+    return {
+      place: list.find((o) => String(o.value) === geo.pointId) ?? null,
+      via: 'geometry',
+      reason: '按轨迹位置匹配到「' + geo.pointName + '」（最近约 ' + Math.round(geo.distM) + ' m）',
+      distM: geo.distM,
+    }
+  }
+
+  const why =
+    lineName || lineId
+      ? '包里写的地点「' + (lineName || lineId) + '」在本机不存在，轨迹也匹配不上任何线路'
+      : '包里没有地点信息，轨迹也匹配不上任何线路'
+  return { place: null, via: 'none', reason: why, distM: null }
+}
+
 /**
  * 点到**线段**的距离（米；局部等距近似，够用且便宜）。
  * 与 `routeSimilarity.pointToSegmentDistance` 同口径（那边是"度"为单位），这里出口是米。
@@ -551,7 +642,16 @@ export const REAL_PATH_BUNDLE_KIND = 'totoro-real-path'
 /** 分享包里的**一条**路径（只放几何 + 元信息，**绝不放 token/学号/姓名**） */
 export interface RealPathBundleItem {
   name: string
+  /**
+   * 这条路径**属于哪个地点**（厂商线路 pointId，或本机键如 local:free）。
+   *
+   * 🔴 2026-11-10：导出时**必须写值**。此前一律写空串，包里没有地点信息 ⇒
+   * 导入时只能落到界面下拉当前选中的地点（默认「本机跑道」），用户反馈的就是这个
+   * （「导入东操场的路径，没有被录入到东操场」）。
+   * 空串仍有意义：**旧包**（这一版之前导出的）里就是空串，导入时走「几何匹配 / 让用户选」。
+   */
   lineId: string
+  /** 那个地点的**名字快照**（好友那里可能没有同名线路，所以只作提示与名字匹配用） */
   lineName: string
   points: RealPathPoint[]
   meta: RealPathMeta

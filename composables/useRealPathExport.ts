@@ -41,6 +41,7 @@ import {
   pickMonthId,
   readAllShareItemsFromZip,
   readShareBundleFromZip,
+  resolvePlace,
   sanitizeZipEntryName,
   summarizeBatch,
   withRandomSuffix,
@@ -52,7 +53,23 @@ import {
   type RealPathMeta,
   type RealPathPoint,
   type RealPathRecord,
+  type PlaceOption,
 } from '~/utils/mp/realPath'
+
+/**
+ * 一条**认不出地点**的待导入路径（导入时自动归类失败，等用户在弹窗里选）。
+ * 用户口径：「如果文件中没有相关的匹配路径，那么就打开相关的选取界面让我们进行选择」。
+ */
+export interface PendingImport {
+  /** 来自哪个包（文件名） */
+  file: string
+  /** 包内条目名 */
+  entryName: string
+  /** 包里的那条路径（几何 + 元信息） */
+  item: RealPathBundleItem
+  /** 为什么认不出来（人话，界面上如实展示） */
+  reason: string
+}
 
 /** 一个"可选的月份"（来自 `getSchoolMonthByTerm`） */
 export interface RealPathMonth {
@@ -360,14 +377,19 @@ export function useRealPathExport() {
     }
   }
 
-  /** 构造分享包（**纯本地**，不联网；轨迹原样整条） */
-  const buildBundle = (presetName: string): RealPathBundle | null => {
+  /**
+   * 构造分享包（**纯本地**，不联网；轨迹原样整条）。
+   *
+   * 🔴 2026-11-10：**地点必须写进包**（此前写空串 ⇒ 导入方拿不到地点，只能落到「本机跑道」，
+   * 用户反馈「导入东操场的路径没有被录入到东操场」）。地点来自界面上的「存到哪个地点」。
+   */
+  const buildBundle = (presetName: string, lineId: string, lineName: string): RealPathBundle | null => {
     const sel = currentSelection()
     if (!sel) return null
     const item: RealPathBundleItem = {
       name: String(presetName || defaultRealPathName({ ...sel.meta, startTime: sel.record.startTime })),
-      lineId: '',
-      lineName: '',
+      lineId: String(lineId ?? ''),
+      lineName: String(lineName ?? ''),
       points: sel.points,
       meta: sel.meta,
     }
@@ -376,8 +398,12 @@ export function useRealPathExport() {
    * **导出分享给好友**：把分享包交给本机端点打成 zip，再触发浏览器下载。
    * @returns `{ ok, message }`（成功时 `message` 里有文件名与字节数）
    */
-  const downloadShareZip = async (presetName: string): Promise<{ ok: boolean; message: string }> => {
-    const bundle = buildBundle(presetName)
+  const downloadShareZip = async (
+    presetName: string,
+    lineId: string,
+    lineName: string,
+  ): Promise<{ ok: boolean; message: string }> => {
+    const bundle = buildBundle(presetName, lineId, lineName)
     if (!bundle) return { ok: false, message: '还没读到这条成绩的轨迹：先点「读取这条的轨迹」' }
     busy.value = 'share'
     try {
@@ -463,7 +489,10 @@ export function useRealPathExport() {
    */
   const downloadBatchZip = async (
     entries: { scoreId: string; presetName?: string }[],
+    place: { lineId?: string; lineName?: string } = {},
   ): Promise<{ ok: boolean; message: string; summary: BatchSummary }> => {
+    const batchLineId = String(place.lineId ?? '')
+    const batchLineName = String(place.lineName ?? '')
     const wanted = (Array.isArray(entries) ? entries : []).filter((e) => String(e?.scoreId ?? '').trim())
     if (!wanted.length) {
       return { ok: false, message: '还没选任何成绩：先在上面勾选要导出的那几条', summary: summarizeBatch([]) }
@@ -505,7 +534,7 @@ export function useRealPathExport() {
           /** 批量里用户没填名字 ⇒ 默认名 + 随机后缀（避免与别人/别次的同名撞车） */
           const typed = String(want.presetName ?? '').trim()
           const rawName = typed || withRandomSuffix(defaultRealPathName({ ...meta, startTime: record?.startTime }))
-          const item: RealPathBundleItem = { name: rawName, lineId: '', lineName: '', points: pts, meta }
+          const item: RealPathBundleItem = { name: rawName, lineId: String(batchLineId ?? ''), lineName: String(batchLineName ?? ''), points: pts, meta }
           /** 包内条目名去重：同名的加序号（ZIP 不允许重名条目） */
           let entryName = sanitizeZipEntryName(rawName)
           if (usedNames.has(entryName)) {
@@ -652,16 +681,18 @@ export function useRealPathExport() {
    */
   const importManyShareZips = async (
     files: File[],
-    opts: { index?: number; lineId: string; lineName: string; presetName?: string },
-  ): Promise<{ ok: boolean; message: string; summary: BatchSummary }> => {
+    opts: { index?: number; lineId: string; lineName: string; presetName?: string; places?: PlaceOption[] },
+  ): Promise<{ ok: boolean; message: string; summary: BatchSummary; pending: PendingImport[] }> => {
     const list = (Array.isArray(files) ? files : []).filter(Boolean)
     if (!list.length) {
-      return { ok: false, message: '还没选文件：先点「选择一个或多个压缩包」', summary: summarizeBatch([]) }
+      return { ok: false, message: '还没选文件：先点「选择一个或多个压缩包」', summary: summarizeBatch([]), pending: [] }
     }
     busy.value = 'share'
     batchProgress.value = { done: 0, total: list.length }
     try {
       const outcomes: BatchOutcome[] = []
+      /** 认不出地点的那些（交给界面弹窗让用户选） */
+      const pending: PendingImport[] = []
       for (const [i, file] of list.entries()) {
         const fileName = String(file.name || `第 ${i + 1} 个文件`)
         try {
@@ -686,19 +717,33 @@ export function useRealPathExport() {
           for (const { entryName, item } of picked) {
             const label = picked.length > 1 || parsed.skipped.length ? `${fileName} · ${entryName}` : fileName
             try {
-              const draft = buildRealPathPresetDraft({
-                meta: item.meta,
-                points: item.points,
-                lineId: opts.lineId,
-                lineName: opts.lineName,
-                presetName: opts.presetName ?? item.name,
-              })
-              const saved = lib.upsert(draft)
+              /**
+               * 🔴 2026-11-10（用户反馈「导入东操场的路径没有被录入到东操场」）：
+               * **先按包里写的地点 / 轨迹位置自动归类**（`resolvePlace`，判据在纯函数层）；
+               * 认不出来才排队等用户在弹窗里选 —— 不再一律塞进界面下拉当前选中的地点。
+               */
+              const resolved = opts.places?.length ? resolvePlace(item, opts.places) : null
+              if (resolved && !resolved.place) {
+                pending.push({
+                  file: fileName,
+                  entryName,
+                  item,
+                  reason: resolved.reason,
+                })
+                continue
+              }
+              const lineId = resolved?.place ? String(resolved.place.value) : opts.lineId
+              const lineName = resolved?.place ? String(resolved.place.title) : opts.lineName
+              const saved = saveOneImport(item, lineId, lineName, opts.presetName)
               if (!saved.ok) {
                 outcomes.push({ name: label, ok: false, message: saved.message })
                 continue
               }
-              outcomes.push({ name: label, ok: true, message: `已导入「${saved.entry.customName || item.name}」（${item.points.length} 点）` })
+              outcomes.push({
+                name: label,
+                ok: true,
+                message: `已导入到「${lineName}」（${item.points.length} 点）` + (resolved?.place ? ` · ${resolved.reason}` : ''),
+              })
             } catch (err) {
               outcomes.push({ name: label, ok: false, message: `导入失败：${err instanceof Error ? err.message : '未知错误'}` })
             }
@@ -710,12 +755,65 @@ export function useRealPathExport() {
         }
       }
       const summary = summarizeBatch(outcomes)
-      logInfo('realpath', '批量导入压缩包', { files: list.length, ok: summary.okCount, failed: summary.failCount })
-      return { ok: summary.okCount > 0, message: `批量导入：${summary.text}`, summary }
+      logInfo('realpath', '批量导入压缩包', {
+        files: list.length,
+        ok: summary.okCount,
+        failed: summary.failCount,
+        pending: pending.length,
+      })
+      const tail = pending.length ? `；另有 ${pending.length} 条认不出属于哪个地点，请在弹窗里选（见下方）` : ''
+      return { ok: summary.okCount > 0, message: `批量导入：${summary.text}${tail}`, summary, pending }
     } finally {
       busy.value = ''
       batchProgress.value = null
     }
+  }
+
+  /**
+   * **单条导入落库的唯一出口**（自动归类成功、以及用户在弹窗里选了地点，两条路都走它）。
+   * 抽出来是为了两条路的口径一致：同一种草稿构造、同一套措辞、同一处日志。
+   */
+  const saveOneImport = (
+    item: RealPathBundleItem,
+    lineId: string,
+    lineName: string,
+    presetName?: string,
+  ): { ok: boolean; message: string } => {
+    const draft = buildRealPathPresetDraft({
+      meta: item.meta,
+      points: item.points,
+      lineId,
+      lineName,
+      presetName: presetName ?? item.name,
+    })
+    const saved = lib.upsert(draft)
+    if (!saved.ok) return { ok: false, message: saved.message }
+    logInfo('realpath', '导入一条真实路径', { lineId, points: item.points.length, name: saved.entry.customName })
+    return { ok: true, message: `已导入「${saved.entry.customName || item.name}」` }
+  }
+
+  /**
+   * **把待定的那些存到用户选的地点**（弹窗确认后调它）。
+   * 逐条落库、逐条记账 —— 某一条撞名/几何坏不影响其它条。
+   */
+  const savePendingImports = (
+    pending: PendingImport[],
+    lineId: string,
+    lineName: string,
+  ): { ok: boolean; message: string; summary: BatchSummary } => {
+    const outcomes: BatchOutcome[] = []
+    for (const p of Array.isArray(pending) ? pending : []) {
+      const label = p.entryName || p.file
+      try {
+        const saved = saveOneImport(p.item, lineId, lineName)
+        outcomes.push({ name: label, ok: saved.ok, message: saved.ok ? `${saved.message}（${p.item.points.length} 点）· 存到「${lineName}」` : saved.message })
+      } catch (err) {
+        outcomes.push({ name: label, ok: false, message: `导入失败：${err instanceof Error ? err.message : '未知错误'}` })
+      }
+    }
+    const summary = summarizeBatch(outcomes)
+    logInfo('realpath', '待定导入已选地点', { lineId, total: outcomes.length, ok: summary.okCount })
+    return { ok: summary.okCount > 0, message: `已存到「${lineName}」：${summary.text}`, summary }
   }
 
   /** 加/remove 一条到已选（跨月累计；同一条再点一次就取消） */
@@ -764,6 +862,8 @@ export function useRealPathExport() {
     /** 🆕 跨月累计已选（"已选汇总"块用） */
     pickedRecords,
     batchProgress,
+    // 🆕 导入地点归属（自动归类认不出的，交给弹窗选）
+    savePendingImports,
     // 🆕 已选集合的增删（跨月累计；判据走纯函数 `toggleSelection`/`setSelection`）
     togglePickRecord,
     pickManyRecords,

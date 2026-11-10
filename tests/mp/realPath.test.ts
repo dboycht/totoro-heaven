@@ -38,6 +38,7 @@ import {
   randomNameSuffix,
   readAllShareItemsFromZip,
   readShareBundleFromZip,
+  resolvePlace,
   sanitizeZipEntryName,
   setSelection,
   summarizeBatch,
@@ -633,4 +634,85 @@ test('多文件包：全部条目都坏 ⇒ 包级失败并说明原因（不假
   assert.equal(back.items.length, 0)
   assert.ok(back.error.length > 0, '必须给出人话原因')
   assert.match(back.error, /缺少 kind 标记|没有可用/)
+})
+
+// ---------------------------------------------------------------- ⑩ 地点归属判定（2026-11-10）
+
+/** 造一个"东操场"级别的线路：以 (31.99, 118.84) 为心的方框 */
+const squareLine = (lat: number, lng: number, halfM = 60) => [
+  { latitude: lat + halfM / mLat, longitude: lng - halfM / mLng },
+  { latitude: lat + halfM / mLat, longitude: lng + halfM / mLng },
+  { latitude: lat - halfM / mLat, longitude: lng + halfM / mLng },
+  { latitude: lat - halfM / mLat, longitude: lng - halfM / mLng },
+  { latitude: lat + halfM / mLat, longitude: lng - halfM / mLng },
+]
+
+const EAST = { value: "line-east", title: "东操场", pointList: squareLine(31.99, 118.84) }
+const WEST = { value: "line-west", title: "西操场", pointList: squareLine(32.01, 118.87) }
+const LOCAL = { value: "local:free", title: "本机跑道（不属于任何官方线路）" }
+const PLACES = [EAST, WEST, LOCAL]
+
+test("resolvePlace ①：包里写了 lineId 且本机有 ⇒ 直接用它（最可靠）", () => {
+  const r = resolvePlace({ lineId: "line-west", lineName: "东操场", points: circle(100, 20) }, PLACES)
+  assert.equal(r.via, "bundle-id")
+  assert.equal(r.place?.value, "line-west", "ID 命中优先于名字（名字可能对不上）")
+  assert.match(r.reason, /包里写明/)
+})
+
+test("resolvePlace ②：包里 lineId 本机没有，但**名字**唯一对上 ⇒ 按名字归位", () => {
+  const r = resolvePlace({ lineId: "someone-else-id", lineName: "东操场", points: circle(100, 20) }, PLACES)
+  assert.equal(r.via, "bundle-name")
+  assert.equal(r.place?.value, "line-east")
+  assert.match(r.reason, /按地点名/)
+})
+
+test("resolvePlace ②：名字**重复**时不猜（两个校区都有「东操场」）⇒ 交给几何", () => {
+  const dup = [EAST, { ...WEST, title: "东操场" }, LOCAL]
+  const onEast = circle(100, 24, false)
+  const r = resolvePlace({ lineId: "", lineName: "东操场", points: onEast }, dup)
+  assert.notEqual(r.via, "bundle-name", "同名多条时不许按名字硬猜")
+})
+
+test("resolvePlace ③：旧包没有地点信息 ⇒ 按**轨迹位置**归位（这是旧包唯一的自动办法）", () => {
+  /** 轨迹贴着东操场那个方框 */
+  const eastTrail = squareLine(31.99, 118.84, 50)
+  const r = resolvePlace({ lineId: "", lineName: "", points: eastTrail }, PLACES)
+  assert.equal(r.via, "geometry")
+  assert.equal(r.place?.value, "line-east")
+  assert.ok(typeof r.distM === "number" && r.distM < 150, "最近距离要报出来")
+  assert.match(r.reason, /按轨迹位置匹配/)
+})
+
+test("🔴 resolvePlace ④：哪一条都不成立 ⇒ none（界面据此弹「选择存档地点」）", () => {
+  /** 离两条线路都很远（>150 m） */
+  const far = circle(100, 20).map((p) => ({ latitude: p.latitude + 0.02, longitude: p.longitude + 0.02 }))
+  const r = resolvePlace({ lineId: "nobody", lineName: "不存在的操场", points: far }, PLACES)
+  assert.equal(r.via, "none")
+  assert.equal(r.place, null, "认不出来就必须是 null，**不许硬塞一个地点**")
+  assert.match(r.reason, /不存在|匹配不上/)
+})
+
+test("resolvePlace：空选项表 ⇒ 一律 none（不崩、不猜）", () => {
+  const r = resolvePlace({ lineId: "line-east", lineName: "东操场", points: circle(100, 20) }, [])
+  assert.equal(r.via, "none")
+  assert.equal(r.place, null)
+})
+
+test("🔴 分享包里**必须带着地点**（导出时写值，读回来还在）—— 这是「导入东操场路径却没进东操场」的根因", () => {
+  const pts = circle(100, 24)
+  const item = {
+    name: "东操场那条",
+    lineId: "line-east",
+    lineName: "东操场",
+    points: pts,
+    meta: { date: "2026-09-17", scoreId: "s1", km: 3.2, usedTime: "00:19:28", fitDegree: 0.98, sourcePoints: pts.length, lapLengthM: 620, exportedAt: "2026-11-10T00:00:00.000Z" },
+  }
+  const bundle = buildShareBundle([item])
+  assert.equal(bundle.items[0]!.lineId, "line-east", "lineId 必须进包")
+  assert.equal(bundle.items[0]!.lineName, "东操场", "lineName 必须进包")
+  /** 读回来之后仍能据此归位 */
+  const back = parseShareBundle(JSON.parse(JSON.stringify(bundle)))
+  assert.equal(back.ok, true)
+  const r = resolvePlace(back.items[0]!, PLACES)
+  assert.equal(r.place?.value, "line-east", "读回来要能直接归到东操场")
 })
