@@ -287,6 +287,25 @@ const hideAllLaps = () => {
 }
 
 // ---------------------------------------------------------------- 绘图（随缩放/平移重算）
+/**
+ * **形状要不要闭合**（米）。
+ *
+ * 与 `utils/mp/pathShape.ts` 的「首尾 < 30 m 即闭合」同一个数：
+ *   · 手绘圈 / 折线：首尾重合或在几米内 ⇒ 闭合（观感与以前逐字一致）；
+ *   · **真实路径**：跑完没回到起点（几十米起）⇒ **不闭合**，不补那条假的斜线。
+ */
+const SHAPE_CLOSE_TOL_M = 30
+const shapeLooksClosed = (pts: P[]): boolean => {
+  if (pts.length <= 2) return false
+  const a = pts[0]!
+  const b = pts[pts.length - 1]!
+  const mLat = 111320
+  const mLng = 111320 * Math.cos((((a.latitude + b.latitude) / 2) * Math.PI) / 180)
+  const dx = (b.longitude - a.longitude) * mLng
+  const dy = (b.latitude - a.latitude) * mLat
+  return Math.hypot(dx, dy) <= SHAPE_CLOSE_TOL_M
+}
+
 /** SVG 路径（当前视图下） */
 const paths = computed(() => {
   const z = zoom.value
@@ -308,7 +327,15 @@ const paths = computed(() => {
     outer: tr ? d(tr.outer, true) : '',
     inner: tr ? d(tr.inner, true) : '',
     lane: tr && tr.lane.length >= 3 ? d(tr.lane, true) : '',
-    shape: tr && tr.shape.length >= 2 ? d(tr.shape, tr.shape.length > 2) : '',
+    /**
+     * 🔴 2026-11-10（用户反馈"真实路径有突变斜线"）：**只有首尾真的接得上才闭合**。
+     *
+     * 以前是无条件 `d(tr.shape, true)` —— 手绘的圈首尾本来就重合，看不出问题；
+     * 但真实路径是**真实跑出来的轨迹**，跑完停在哪就是哪（实测 22 个包首尾全部差 9~153 m）
+     * ⇒ 无条件闭合会给每条都补一条斜穿操场的直线，看着像"数据突变"，其实是画出来的。
+     * 判据 `SHAPE_CLOSE_TOL_M` 与 `utils/mp/pathShape.ts` 的"首尾 < 30 m 即闭合"同一个数。
+     */
+    shape: tr && tr.shape.length >= 2 ? d(tr.shape, shapeLooksClosed(tr.shape)) : '',
   }
 })
 /** 进场段（第 1 圈之前的点）：单独一段，**不计圈**、不上色（灰色实线） */
