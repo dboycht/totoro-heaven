@@ -23,6 +23,32 @@ test('releaseArt：用户可见文本里**不得出现 markdown 标记**（星�
   }
 })
 
+/**
+ * **内部流程话术**（不该出现在用户可见的版本页上）。
+ *
+ * 判据：这些词描述的是「我们做到哪一步了」，而版本页要回答的是「这一版有什么」。
+ *
+ * ⚠️ 词表要收得准 —— 故意**不**收这些（收了就会假红，逼人去改历史条目，那是更坏的结果）：
+ *   · 「本轮」：历史条目里是既成事实的记述（「本轮同时做了代码审计」），属于版本内容；
+ *   · 「未完成」：可能是功能名（「未完成提交的说明卡」）；
+ *   · 「开发中 / 计划中」：由 `probe_release_entry.mjs` 按**发布态**断言，语义不同。
+ */
+const INTERNAL_PROCESS_WORDS = ['待用户验收', '定版候选', '待验收', '等用户验收', '尚未验收']
+
+test('🔴 releaseArt：用户可见文字里不许出现内部流程话术（版本页会原样显示 note）', () => {
+  const bad: string[] = []
+  for (const e of VERSION_ENTRIES) {
+    /** 版本页实际渲染的就是这四处（见 pages/version-info.vue） */
+    const shown = [e.title, e.note ?? '', ...e.highlights, ...(e.releaseHighlights ?? [])]
+    for (const text of shown) {
+      for (const w of INTERNAL_PROCESS_WORDS) {
+        if (text.includes(w)) bad.push(`v${e.version} 出现「${w}」：${text.slice(0, 60)}`)
+      }
+    }
+  }
+  assert.deepEqual(bad, [], `版本页上不该出现内部流程话术：\n  - ${bad.join('\n  - ')}`)
+})
+
 test('releaseArt：条目结构自洽（版本唯一、日期格式、渠道合法、要点非空）', () => {
   const seen = new Set<string>()
   for (const e of VERSION_ENTRIES) {
