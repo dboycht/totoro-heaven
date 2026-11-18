@@ -18,7 +18,7 @@ import { applyStartToLoop, laneLoop, laneRatioFor, outwardNormalSign, ringWidthM
 import { DEFAULT_LANE_COUNT, DEFAULT_LANE_NO } from '~/utils/mp/laneProfile'
 // 🆕 2026-10-30（1.3.3）：进场段（纯算法，见 utils/mp/pathShape.ts 末尾一节）
 import { prependEntrySegment } from '~/utils/mp/pathShape'
-import { buildRunStats, buildTimeFields } from '~/utils/mp/runData'
+import { buildRunStats, buildTimeFields, resolveRealPathPace } from '~/utils/mp/runData'
 import { buildScoreDetailRequest, buildScoreRequest } from '~/utils/mp/submitPayload'
 import { evaluateRunAgainstTask, type TaskCheckResult } from '~/utils/mp/taskRules'
 // 🆕 2026-09-22（issue #12）：判"任务到底有没有下发线路"（纯函数，与门禁/自检/诊断同源）
@@ -27,8 +27,6 @@ import { routeRequirementOf, taskPaperIdOf } from '~/utils/mp/taskShape'
 import { resolveFreePathGeometry } from '~/utils/mp/freePathGeometry'
 import { freeRouteGeometryChoice, resolveEntryName, type TrackRouteEntry } from '~/utils/mp/trackLibrary'
 import { newRunSeed, planRealisticRun, type RunPlan } from '~/utils/mp/realism'
-// 🆕 2026-11-18：真实路径的配速/时长改用**归档里的真实用时**（见 utils/mp/realPath.ts 的说明）
-import { resolveRealPathPace } from '~/utils/mp/realPath'
 // 🆕 2026-10-07（用户要求）：本机记录 id（真实提交成功后要按它 / 按 settledAtMs 认领这一条）
 import { newLocalRecordId } from '~/utils/mp/recordState'
 // 🆕 2026-09-29（issue #13）：研途健行的"目标里程"归一化入口（与跑步页显示**同一个函数**）
@@ -365,7 +363,7 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
          *   ③ 都没有 ⇒ 回落右栏「配速策略」（与旧版逐字一致）。
          */
         const picked = Number(run.value.realPathPaceSeconds ?? 0)
-        const recorded = resolveRealPathPace(trackEntry.realPath, km)
+        const recorded = resolveRealPathPace(trackEntry.realPath.usedTime, km)
         const paceSecPerKm = picked > 0
           ? Math.max(1, Math.round(picked))
           : (recorded?.paceSecPerKm ?? run.value.paceSecPerKm)

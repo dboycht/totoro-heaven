@@ -44,6 +44,38 @@ export function parsePace(text: string): number {
   return Number(m[1]) * 60 + Number(m[2])
 }
 
+/** 由归档真实用时反算出的配速与时长（秒） */
+export interface RealPathPace {
+  /** 归档里的真实用时（秒，整数） */
+  usedTimeSeconds: number
+  /** 配速（秒/公里，整数）= 用时 ÷ 里程 */
+  paceSecPerKm: number
+}
+
+/**
+ * 🆕 2026-11-18（用户问"为什么真实路径提交的配速是固定数值"）：**用归档里的真实用时反算本次配速/时长**。
+ *
+ * 背景：真实路径原先走「原样载入并结算」，用时按**右栏「配速策略」下拉**（默认 360 = 6'00"）重算，
+ * 而导出元信息里本来就带着服务端原文 `usedTime` —— 于是每次提交都是同一个配速。
+ * 现在优先用 `usedTime ÷ km`：轨迹是真跑出来的，用时也该是真跑出来的那次。
+ *
+ * 判据（读不出就返回 `null`，调用方回落到"按当前配速重算"，行为与旧版逐字一致）：
+ *   · `usedTime` 必须是可解析的 `HH:mm:ss` / `HH:mm`，且 > 0 秒；
+ *   · `km` 必须 > 0；
+ *   · 反算出的配速落在**常见范围**（2'00"~20'00"，与 `buildRunStats` 同口径），否则视为坏数据。
+ *
+ * ⚠️ 位置刻意放这里（不放 `utils/mp/realPath.ts`）：**realPath.ts 必须保持零 import** ——
+ *    多个浏览器探针直接用 Node ESM `import ... from '.../utils/mp/realPath.ts'`，
+ *    解析不了无扩展名的相对导入（实测报 `Cannot find module .../utils/mp/runData`）。
+ */
+export function resolveRealPathPace(usedTime: string, km: number): RealPathPace | null {
+  const seconds = parseDuration(usedTime)
+  if (!(seconds > 0) || !(km > 0)) return null
+  const paceSecPerKm = Math.round(seconds / km)
+  if (paceSecPerKm < 120 || paceSecPerKm > 1200) return null
+  return { usedTimeSeconds: seconds, paceSecPerKm }
+}
+
 export interface RunStatsInput {
   /** 里程（公里） */
   distanceKm: number
