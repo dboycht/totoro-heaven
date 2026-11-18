@@ -21,6 +21,8 @@
  *   · **不给旧数据添乱**：预设里的 `realPath` 是可选字段，没有它的条目行为与旧版逐字一致。
  */
 
+import { parseDuration } from './runData'
+
 /** 一个坐标点（与项目其余部分同口径：`latitude`/`longitude`） */
 export interface RealPathPoint {
   latitude: number
@@ -118,6 +120,37 @@ export function parseRealPathMeta(raw: unknown): RealPathMeta | undefined {
 /** `YYYY-MM-DD` 形态（服务端 `runTime` 就是它；别的时间形态一律当"日期未知"） */
 export function isIsoDate(s: unknown): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(str(s))
+}
+
+/** 由归档真实用时反算出的配速与时长（秒） */
+export interface RealPathPace {
+  /** 归档里的真实用时（秒，整数） */
+  usedTimeSeconds: number
+  /** 配速（秒/公里，整数）= 用时 ÷ 里程 */
+  paceSecPerKm: number
+}
+
+/**
+ * 🆕 2026-11-18（用户问"为什么真实路径提交的配速是固定数值"）：**用归档里的真实用时反算本次配速/时长**。
+ *
+ * 背景：真实路径原先走「原样载入并结算」，用时按**右栏「配速策略」下拉**（默认 360 = 6'00"）重算，
+ * 而导出元信息里本来就带着服务端原文 `usedTime` —— 于是每次提交都是同一个配速。
+ * 现在优先用 `usedTime ÷ km`：轨迹是真跑出来的，用时也该是真跑出来的那次。
+ *
+ * 判据（读不出就返回 `null`，调用方回落到"按当前配速重算"，行为与旧版逐字一致）：
+ *   · `usedTime` 必须是可解析的 `HH:mm:ss` / `HH:mm`，且 > 0 秒；
+ *   · `km` 必须 > 0；
+ *   · 反算出的配速落在**常见范围**（2'00"~20'00"，与 `buildRunStats` 同口径），否则视为坏数据。
+ */
+export function resolveRealPathPace(
+  meta: Pick<RealPathMeta, 'usedTime'> | null | undefined,
+  km: number,
+): RealPathPace | null {
+  const seconds = parseDuration(meta?.usedTime ?? '')
+  if (!(seconds > 0) || !(km > 0)) return null
+  const paceSecPerKm = Math.round(seconds / km)
+  if (paceSecPerKm < 120 || paceSecPerKm > 1200) return null
+  return { usedTimeSeconds: seconds, paceSecPerKm }
 }
 
 /**

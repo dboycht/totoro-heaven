@@ -27,6 +27,8 @@ import { routeRequirementOf, taskPaperIdOf } from '~/utils/mp/taskShape'
 import { resolveFreePathGeometry } from '~/utils/mp/freePathGeometry'
 import { freeRouteGeometryChoice, resolveEntryName, type TrackRouteEntry } from '~/utils/mp/trackLibrary'
 import { newRunSeed, planRealisticRun, type RunPlan } from '~/utils/mp/realism'
+// 🆕 2026-11-18：真实路径的配速/时长改用**归档里的真实用时**（见 utils/mp/realPath.ts 的说明）
+import { resolveRealPathPace } from '~/utils/mp/realPath'
 // 🆕 2026-10-07（用户要求）：本机记录 id（真实提交成功后要按它 / 按 settledAtMs 认领这一条）
 import { newLocalRecordId } from '~/utils/mp/recordState'
 // 🆕 2026-09-29（issue #13）：研途健行的"目标里程"归一化入口（与跑步页显示**同一个函数**）
@@ -356,13 +358,29 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
         const km = Number.isFinite(metaKm) && metaKm > 0 ? metaKm : pathLengthMeters(raw) / 1000
         const rawPoints = raw.map((p) => ({ latitude: p.latitude.toFixed(6), longitude: p.longitude.toFixed(6) }))
         const metaLapM = Number(trackEntry.realPath.lapLengthM)
+        /**
+         * 🆕 2026-11-18（用户问"为什么配速是固定数值" + "加一个随机按钮"）：
+         *   ① 用户点过「随机配速」⇒ 用那个值（时长按 `里程 × 它` 算），**优先于归档**；
+         *   ② 否则有归档真实用时 ⇒ 用归档反算的配速/时长；
+         *   ③ 都没有 ⇒ 回落右栏「配速策略」（与旧版逐字一致）。
+         */
+        const picked = Number(run.value.realPathPaceSeconds ?? 0)
+        const recorded = resolveRealPathPace(trackEntry.realPath, km)
+        const paceSecPerKm = picked > 0
+          ? Math.max(1, Math.round(picked))
+          : (recorded?.paceSecPerKm ?? run.value.paceSecPerKm)
+        const durationSeconds = picked > 0 ? Math.max(1, Math.round(km * paceSecPerKm)) : (recorded?.usedTimeSeconds ?? 0)
         run.value = {
           ...createRunState(),
           status: 'running',
           runType: run.value.runType,
           lineId: line?.pointId ?? '',
-          paceSecPerKm: run.value.paceSecPerKm,
-          plan: { targetKm: km, paceSecPerKm: run.value.paceSecPerKm, overshootRatio: 0, durationSeconds: 0 },
+          paceSecPerKm,
+          plan: { targetKm: km, paceSecPerKm, overshootRatio: 0, durationSeconds },
+          /** 随机值随状态带下去（结算两次都用它）；没随机过 = undefined ⇒ 用归档/下拉 */
+          realPathPaceSeconds: picked > 0 ? paceSecPerKm : undefined,
+          /** 结算时长：随机 ⇒ `里程×配速`；归档 ⇒ 归档原文；`finish()` 只在有值时用它 */
+          durationOverrideSeconds: durationSeconds > 0 ? durationSeconds : undefined,
           speed: run.value.speed,
           targetKm: km,
           distanceM: km * 1000,
@@ -493,8 +511,15 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
 
     const endedAtMs = Date.now()
     const distanceKm = run.value.distanceM / 1000
-    // 时长由「实际里程 × 本次配速」推出（配速非整分钟 → 时长自然落到 20:34 这种）
-    const durationSeconds = Math.max(1, Math.round(distanceKm * run.value.paceSecPerKm))
+    /**
+     * 时长由「实际里程 × 本次配速」推出（配速非整分钟 → 时长自然落到 20:34 这种）。
+     * 🆕 2026-11-18：**真实路径**例外 —— 它的轨迹是真跑出来的，时长也该用归档里的真实用时
+     * （`durationOverrideSeconds`，由 `resolveRealPathPace` 反算）；其余跑法一律没有这个覆盖值。
+     */
+    const overrideSeconds = Number(run.value.durationOverrideSeconds ?? 0)
+    const durationSeconds = overrideSeconds > 0
+      ? Math.max(1, Math.round(overrideSeconds))
+      : Math.max(1, Math.round(distanceKm * run.value.paceSecPerKm))
     run.value.elapsedS = durationSeconds
     const points = visiblePoints()
     const fitDegree = points.length >= 2 ? calculateRouteSimilarity(run.value.officialRoute, points) : 0

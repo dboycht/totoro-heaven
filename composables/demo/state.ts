@@ -117,6 +117,17 @@ export interface DemoRunState {
    * 用途：真实提交成功后按 `settledAtMs` 认领那条记录、把**真实场次号**写回去（见 `utils/mp/recordState.ts`）。
    */
   localRecordId?: string
+  /**
+   * 🆕 2026-11-18：**结算时长覆盖（秒）**。仅「真实路径」会有值 —— 用归档里的真实用时
+   * （`resolveRealPathPace`）；其余跑法留空 ⇒ `finish()` 按「里程 × 配速」算，行为与旧版一致。
+   */
+  durationOverrideSeconds?: number
+  /**
+   * 🆕 2026-11-18（用户口径"加一个随机按钮，控制相关的随机抖动"）：**真实路径的随机配速**（秒/公里）。
+   * 有值 ⇒ 结算用它（时长按 `里程 × 它` 算），**优先于归档用时**；无值 ⇒ 用归档/用户在「配速策略」里选的值。
+   * ⚠️ 只存活在内存态：换预设或用户手改下拉时由界面清掉（见 `RunWorkspace.vue`）。
+   */
+  realPathPaceSeconds?: number
 }
 
 export interface DemoRunResult {
@@ -168,6 +179,7 @@ export const createRunState = (): DemoRunState => ({
   passPoints: { all: 4, done: 0, notPassed: 4 },
   result: null,
   error: '',
+  durationOverrideSeconds: undefined,
 })
 
 /**

@@ -39,6 +39,7 @@ import {
   readAllShareItemsFromZip,
   readShareBundleFromZip,
   resolvePlace,
+  resolveRealPathPace,
   sanitizeZipEntryName,
   setSelection,
   summarizeBatch,
@@ -715,4 +716,52 @@ test("🔴 分享包里**必须带着地点**（导出时写值，读回来还�
   assert.equal(back.ok, true)
   const r = resolvePlace(back.items[0]!, PLACES)
   assert.equal(r.place?.value, "line-east", "读回来要能直接归到东操场")
+})
+
+// ── 🆕 2026-11-18：真实路径的配速/用时改用**归档里的真实用时**（用户问"为什么配速是固定数值"）──
+
+test("🔴 resolveRealPathPace：用归档真实用时反算配速（不再是固定的「配速策略」值）", () => {
+  // 3.2 km 用了 19 分 28 秒 = 1168 s ⇒ 365 s/km = 6'05"
+  const r = resolveRealPathPace({ usedTime: "00:19:28" }, 3.2)!
+  assert.ok(r, "读得出就必须有值")
+  assert.equal(r.usedTimeSeconds, 1168)
+  assert.equal(r.paceSecPerKm, 365)
+})
+
+test("resolveRealPathPace：配速不是整分钟、且随记录变化（每次跑的用时不同 ⇒ 配速不同）", () => {
+  const a = resolveRealPathPace({ usedTime: "00:20:13" }, 3.21)!
+  const b = resolveRealPathPace({ usedTime: "00:23:41" }, 3.21)!
+  assert.equal(a.usedTimeSeconds, 1213)
+  assert.equal(a.paceSecPerKm, Math.round(1213 / 3.21))
+  assert.notEqual(a.paceSecPerKm, b.paceSecPerKm, "两次真实跑必须给出不同配速")
+})
+
+test("resolveRealPathPace：HH:mm 形态也认（服务端原文可能是两种写法）", () => {
+  assert.equal(resolveRealPathPace({ usedTime: "19:28" }, 3.2)?.usedTimeSeconds, 1168)
+})
+
+test("resolveRealPathPace：读不出 ⇒ null（老数据没有 usedTime，回落到旧行为）", () => {
+  assert.equal(resolveRealPathPace({ usedTime: "" }, 3.2), null)
+  assert.equal(resolveRealPathPace({ usedTime: "abc" }, 3.2), null)
+  assert.equal(resolveRealPathPace({ usedTime: "00:00:00" }, 3.2), null, "0 秒不算有效用时")
+  assert.equal(resolveRealPathPace(null, 3.2), null)
+  assert.equal(resolveRealPathPace(undefined, 3.2), null)
+})
+
+test("resolveRealPathPace：里程无效 ⇒ null（不许拿 0 去除）", () => {
+  assert.equal(resolveRealPathPace({ usedTime: "00:19:28" }, 0), null)
+  assert.equal(resolveRealPathPace({ usedTime: "00:19:28" }, Number.NaN), null)
+  assert.equal(resolveRealPathPace({ usedTime: "00:19:28" }, -1), null)
+})
+
+test("resolveRealPathPace：配速超出常见范围 ⇒ null（坏数据当没有，与 buildRunStats 同口径）", () => {
+  // 3600 s 跑 100 km = 36 s/km，比 2'00" 快得多 ⇒ 坏数据
+  assert.equal(resolveRealPathPace({ usedTime: "01:00:00" }, 100), null)
+  // 60 s 跑 0.1 km = 600 s/km？不超；改用 60 s 跑 0.01 km = 6000 s/km > 20'00"
+  assert.equal(resolveRealPathPace({ usedTime: "00:01:00" }, 0.01), null)
+  // 边界：2'00"=120 与 20'00"=1200 都收；119 / 1201 都不收
+  assert.ok(resolveRealPathPace({ usedTime: "00:02:00" }, 1))
+  assert.ok(resolveRealPathPace({ usedTime: "00:20:00" }, 1))
+  assert.equal(resolveRealPathPace({ usedTime: "00:01:59" }, 1), null)
+  assert.equal(resolveRealPathPace({ usedTime: "00:20:01" }, 1), null)
 })

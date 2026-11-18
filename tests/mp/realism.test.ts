@@ -8,7 +8,8 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { newRunSeed, planRealisticRun } from '../../utils/mp/realism.ts'
+import { newRunSeed, planRealisticRun, randomRealPathPace, runPaceWindow } from '../../utils/mp/realism.ts'
+import type { RunPaceWindow } from '../../utils/mp/realism.ts'
 import { generateCorridorRoute } from '../../utils/mp/generateRoute.ts'
 import { evaluateRunAgainstTask } from '../../utils/mp/taskRules.ts'
 import type { MpSunrunTask } from '../../src/mp/types.ts'
@@ -139,4 +140,54 @@ test('端到端真实感：规划 → 生成轨迹 → 任务自检全绿，且�
   // 因为判据容差是 25 m —— 压到 0.8x 就必须偏离路线 25 m+（甩出跑道、手机上一眼假）。
   assert.ok(Number(generated.fitDegree) >= 0.97, `拟合度 ${generated.fitDegree} 低于新下限 0.97`)
   assert.ok(Number(generated.fitDegree) <= 1, `拟合度 ${generated.fitDegree} 超过上限 1.00`)
+})
+
+// ── 🆕 2026-11-18：真实路径的「随机配速」按钮（用户："不是 6:00 这种太假的，而是那种 6:11 这种"）──
+
+const windowOf = (input: Parameters<typeof runPaceWindow>[0]): RunPaceWindow => runPaceWindow(input, input.requiredKm)
+
+/** 无任何约束的窗口（任务没下发速度/时长） */
+const FREE_WINDOW: RunPaceWindow = {
+  lo: 0,
+  hi: Infinity,
+  speedLo: 0,
+  speedHi: Infinity,
+  timeLo: 0,
+  timeHi: Infinity,
+  hasSpeedWindow: false,
+  hasTimeWindow: false,
+  conflict: false,
+}
+
+test('🔴 randomRealPathPace：结果**不是整分钟**（6\'00" 这种一眼假的不许出现）', () => {
+  for (let i = 0; i < 50; i++) {
+    const pace = randomRealPathPace({ basePaceSecPerKm: 360, window: FREE_WINDOW, targetKm: 3.2, rng: () => i / 50 })
+    assert.notEqual(pace % 60, 0, `第 ${i} 次随机出了整分钟配速 ${pace}`)
+  }
+})
+
+test('randomRealPathPace：落在任务允许区间内（与模拟跑同一个采样器）', () => {
+  const win = windowOf({ requiredKm: 3.2, minSpeedKmh: 3, maxSpeedKmh: 15, minMinutes: 10, maxMinutes: 25 })
+  for (let i = 0; i < 50; i++) {
+    const pace = randomRealPathPace({ basePaceSecPerKm: 360, window: win, targetKm: 3.2 })
+    assert.ok(pace >= win.lo && pace <= win.hi, `配速 ${pace} 越出 [${win.lo}, ${win.hi}]`)
+  }
+})
+
+test('randomRealPathPace：可复现（注入 rng）且通常有变化', () => {
+  const a = randomRealPathPace({ basePaceSecPerKm: 360, window: FREE_WINDOW, targetKm: 3.2, rng: () => 0.5 })
+  const b = randomRealPathPace({ basePaceSecPerKm: 360, window: FREE_WINDOW, targetKm: 3.2, rng: () => 0.5 })
+  assert.equal(a, b, '同一 rng 必须同一个结果')
+  const set = new Set<number>()
+  for (let i = 0; i < 30; i++) set.add(randomRealPathPace({ basePaceSecPerKm: 360, window: FREE_WINDOW, targetKm: 3.2, rng: () => i / 30 }))
+  assert.ok(set.size >= 10, `30 个 rng 只产生 ${set.size} 种配速，多样性不足`)
+})
+
+test('randomRealPathPace：基线在区间外时也不越界（越界基线不会把结果顶到界外）', () => {
+  // 研途健行式窄窗：514~875，而默认策略 6'00"=360 远在快侧之外
+  const win = windowOf({ requiredKm: 2.4, minSpeedKmh: 4, maxSpeedKmh: 7, minMinutes: 20, maxMinutes: 35 })
+  for (let i = 0; i < 50; i++) {
+    const pace = randomRealPathPace({ basePaceSecPerKm: 360, window: win, targetKm: 2.4, rng: () => i / 50 })
+    assert.ok(pace >= win.lo && pace <= win.hi, `配速 ${pace} 越出 [${win.lo}, ${win.hi}]`)
+  }
 })

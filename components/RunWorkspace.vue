@@ -230,7 +230,7 @@
          · 右栏 ＝ 开跑设置（线路 / 预设 / 模拟倍速 / 配速策略 / 开始（或真实路径"结算"）+ 原有提示卡）
       布局调整见 2026-11-03 用户要求："三大块上下块状结构；第一块分左右两侧，左侧三区域，右侧保持原版"。
       🆕 2026-11-04 流程口径（用户）：普通预设「选择预设 → 调配参数 → 模拟 → 检验 → 真实提交」；
-      真实路径【测试】「选择路径 → 检验 → 提交」（不模拟：轨迹原样、里程原样、用时按配速重算）。
+      真实路径【测试】「选择路径 → 检验 → 提交」（不模拟：轨迹原样、里程原样、配速/用时取归档真实记录，读不出才按配速重算）。
       ═══════════════════════════════════════════════════════════════════════════
     -->
     <v-row>
@@ -335,7 +335,8 @@
           <v-card-text class="text-caption text-medium-emphasis">
             <template v-if="isRealPathRun">
               这次选的预设来自「真实路径【测试】」⇒ 流程是<b>「选择路径 → 检验 → 提交」</b>：
-              轨迹按导出的原始点列<b>原样</b>使用（不切圈、不降采样、不叠加换道），没有道次可换。
+              轨迹按导出的原始点列<b>原样</b>使用（不切圈、不降采样、不叠加换道），没有道次可换；
+              里程原样，<b>配速与用时取归档里那场真实跑的记录</b>（没带用时则用上方选的配速策略，可点「随机配速」抖到非整分钟，如 6'11"）。
             </template>
             <template v-else>
               这次选的预设没有"内外双圈"（折线路径等）⇒ 没有道次可换，<b>不参与换圈</b>。
@@ -671,6 +672,7 @@
                 density="comfortable"
                 :disabled="isBusy"
                 class="mb-1"
+                @update:model-value="onPaceSelect"
               />
               <div class="text-caption text-medium-emphasis mb-2">{{ ytuWindowText }}</div>
               <v-alert type="success" variant="tonal" density="compact" class="mb-2">
@@ -696,12 +698,30 @@
               density="comfortable"
               :disabled="isBusy"
               class="mb-3"
+              @update:model-value="onPaceSelect"
             />
+
+            <!-- 🆕 2026-11-18（用户口径）：真实路径的配速来源 + 「随机」按钮。
+                 有归档用时 ⇒ 结算用归档；没有 ⇒ 用上方选的值，但可以用这个按钮抖到非整分钟（如 6'11"）。 -->
+            <div v-if="isRealPathRun" class="mb-3">
+              <div class="text-caption text-medium-emphasis mb-1">
+                这条真实路径的配速来源：<b>{{ realPathPaceSourceText }}</b>
+              </div>
+              <v-btn
+                block
+                variant="tonal"
+                prepend-icon="mdi-dice-multiple-outline"
+                :disabled="isBusy"
+                @click="randomizeRealPathPace"
+              >
+                随机配速（避开整分钟，如 6'11"）
+              </v-btn>
+            </div>
 
             <div class="d-flex flex-column ga-2">
               <!-- 🆕 2026-11-04（真实路径【测试】流程 = 选择路径 → 检验 → 提交）：
                    真实路径预设不模拟 —— 按钮换成"原样载入并结算"（轨迹=导出的原始点列，
-                   里程原样，用时按当前配速重算）；普通预设仍是「开始跑步」模拟。
+                   里程原样，配速/用时取归档里的真实记录，读不出才按当前配速重算）；普通预设仍是「开始跑步」模拟。
                    ⚠️ 故意拆成两个按钮（不是一个按钮换文案）：R9 守卫与注入自测按「开始跑步」字面量定位。 -->
               <v-btn
                 v-if="(run.status === 'idle' || run.status === 'finished') && isRealPathRun"
@@ -724,7 +744,7 @@
                 开始跑步
               </v-btn>
               <div v-if="isRealPathRun" class="text-caption text-medium-emphasis">
-                真实路径不模拟：原样载入并结算，用时按当前配速重算（详见左边「跑圈设置」的说明）。
+                真实路径不模拟：原样载入并结算，配速/用时取归档里那场真实跑的记录（没带用时则用上方选的值，可点「随机配速」避开整分钟，详见左边「跑圈设置」的说明）。
               </div>
               <v-btn v-if="run.status === 'running'" color="warning" block prepend-icon="mdi-pause" @click="pause">暂停</v-btn>
               <v-btn v-if="run.status === 'paused'" color="primary" block prepend-icon="mdi-play" @click="resume">继续</v-btn>
@@ -1302,7 +1322,7 @@
 </template>
 
 <script setup lang="ts">
-import { formatClock, formatDuration, formatPace } from '~/utils/mp/runData'
+import { formatClock, formatDuration, formatPace, parseDuration } from '~/utils/mp/runData'
 // 冗余加固（2026-09-21）：判定"这笔结算是不是上一笔/演示数据留下的"（纯函数，有单测）
 import { isStaleSettlement } from '~/utils/mp/writeOutcome'
 import { useMpDemo } from '~/composables/useMpDemo'
@@ -1351,7 +1371,7 @@ import {
   ytuRunPreview,
 } from '~/utils/mp/ytuRun'
 // 🆕 2026-09-29（issue #13）：配速**在任务允许区间内采样**（本次实际配速与"任务允许区间"同源）
-import { newRunSeed, planRealisticRun, runPaceWindow } from '~/utils/mp/realism'
+import { newRunSeed, planRealisticRun, randomRealPathPace, runPaceWindow } from '~/utils/mp/realism'
 // 🆕 2026-11-03（1.3.6 需求②）「每轮换圈」：圈数/每圈用时/斜率校验/初始图 —— 全是纯函数（有单测）
 import {
   DEFAULT_LANE_COUNT,
@@ -1983,9 +2003,78 @@ const lanePlanSupports = computed(
 /**
  * 🆕 2026-11-04（真实路径【测试】流程 =「选择路径 → 检验 → 提交」）：
  * **这次真要用的那条预设是不是"真实路径导出"**（判据 = 预设带 `realPath` 元信息，与引擎同一条 `lanePlanEntry`）。
- * 是 ⇒ 不模拟：按钮变成「结算（真实路径原样）」，轨迹原样、里程原样、用时按配速重算（`runner.start` 同口径）。
+ * 是 ⇒ 不模拟：按钮变成「结算（真实路径原样）」，轨迹原样、里程原样，配速/用时按
+ * 「随机值 → 归档真实用时 → 用户在「配速策略」里选的值」三级取值（`runner.start` 同口径）。
  */
 const isRealPathRun = computed(() => Boolean(lanePlanEntry.value?.realPath))
+/**
+ * 🆕 2026-11-18（用户口径）：**真实路径的配速来源**。
+ * ① 归档里有那场真实跑的用时（`usedTime` + `km`）⇒ 结算用归档值（`resolveRealPathPace`）；
+ * ② 没有 ⇒ 用用户在「配速策略」里选的值；此时下方那个「随机」按钮可以一键抖动到非整分钟
+ *   （例：不是 6'00"，而是 6'11"）。
+ */
+const realPathMetaNow = computed(() => lanePlanEntry.value?.realPath)
+const realPathKm = computed(() => {
+  const km = Number(realPathMetaNow.value?.km)
+  if (Number.isFinite(km) && km > 0) return km
+  return taskMileageKm.value || YTU_TARGET_KM_FALLBACK
+})
+const realPathHasRecordedTime = computed(() => {
+  const meta = realPathMetaNow.value
+  const seconds = parseDuration(meta?.usedTime ?? '')
+  return seconds > 0 && Number(meta?.km) > 0
+})
+const realPathPaceSourceText = computed(() =>
+  realPathHasRecordedTime.value
+    ? '归档记录（那场真实跑的用时）；点「随机配速」可改成随机值'
+    : '你在上方选择的配速策略（这条路径没带真实用时）',
+)
+/** 随机按钮用的任务允许区间（与模拟跑、界面显示同一处判据） */
+const realPathPaceWindow = computed(() =>
+  runPaceWindow(
+    {
+      requiredKm: realPathKm.value,
+      minSpeedKmh: activeTask.value?.minSpeed,
+      maxSpeedKmh: activeTask.value?.maxSpeed,
+      minMinutes: activeTask.value?.minTime,
+      maxMinutes: activeTask.value?.maxTime,
+    },
+    realPathKm.value,
+  ),
+)
+/**
+ * 「随机」按钮：把配速抖到任务允许区间内的一个**非整分钟**值（如 6'11"）。
+ * ⚠️ 必须写进 `run.realPathPaceSeconds`：否则下次结算会重新用归档/下拉把它盖掉
+ *   （第一次实现就踩了这个：随机只在当前这笔有效，重算即失效）。
+ */
+const randomizeRealPathPace = () => {
+  const pace = randomRealPathPace({
+    basePaceSecPerKm: run.value.paceSecPerKm,
+    window: realPathPaceWindow.value,
+    targetKm: realPathKm.value,
+  })
+  run.value.realPathPaceSeconds = pace
+  run.value.paceSecPerKm = pace
+  run.value.durationOverrideSeconds = undefined
+  logInfo('run', '真实路径：用户点「随机配速」', { paceSecPerKm: pace, km: realPathKm.value })
+  showSnackbar(`已随机为 ${formatPace(pace)} /km（这条路径的结算改用该值，时长按它重算）`, 'info')
+}
+/**
+ * 随机配速只属于**当前这条真实路径**：换预设就清掉。
+ * 用户手改「配速策略」下拉也清掉（他明确选了别的档，随机值不该再压着它）。
+ */
+watch(
+  () => lanePlanEntry.value?.id,
+  () => {
+    if (run.value.realPathPaceSeconds) run.value.realPathPaceSeconds = undefined
+  },
+)
+const onPaceSelect = (v: unknown) => {
+  const n = Number(v)
+  if (run.value.realPathPaceSeconds && n > 0 && n !== run.value.realPathPaceSeconds) {
+    run.value.realPathPaceSeconds = undefined
+  }
+}
 /** 这个预设的道数 / 基准道次（换圈图的 Y 轴范围与 y0） */
 const lanePlanLaneCount = computed(() => Number(lanePlanEntry.value?.laneCount ?? 0) || DEFAULT_LANE_COUNT)
 const lanePlanBaseLane = computed(() => {

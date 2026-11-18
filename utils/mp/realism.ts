@@ -204,6 +204,38 @@ export function sampleRunPace(
   return pace
 }
 
+/**
+ * 🆕 2026-11-18（用户）：**真实路径的「随机配速」按钮**的唯一来源。
+ *
+ * 用户原话：「不是 6:00 这种太假的，而是那种 6:11 这种」。
+ *   · 有归档用时 ⇒ 结算**优先用归档**（`resolveRealPathPace`），不用这里；
+ *   · 没有归档用时 ⇒ 由用户在上方选基线，再按这个函数随机抖动（仍落在任务允许区间内）。
+ *
+ * 口径：`sampleRunPace()`（与模拟跑**同一个采样器**）→ 取整 → 夹回允许区间 →
+ * **避开整分钟**（恰好转出 `x'00"` 时沿随机的方向挪 1~9 秒，再夹一次）。
+ * ⚠️ 「避开整分钟」只由这个按钮强制执行；用户从下拉里主动选 5'30"/6'00" 仍然照用。
+ */
+export function randomRealPathPace(input: {
+  /** 当前配速（秒/公里）；非法则退回模块默认档 */
+  basePaceSecPerKm?: number
+  window: RunPaceWindow
+  targetKm: number
+  rng?: () => number
+}): number {
+  const rng = input.rng ?? Math.random
+  let pace = Math.round(
+    sampleRunPace({ basePaceSecPerKm: input.basePaceSecPerKm, window: input.window, rng }, input.targetKm),
+  )
+  const { lo, hi } = input.window
+  if (Number.isFinite(lo) && Number.isFinite(hi)) pace = Math.min(Math.max(pace, lo), hi)
+  if (pace > 0 && pace % 60 === 0) {
+    const delta = 1 + Math.floor(rng() * 9)
+    pace += rng() < 0.5 ? -delta : delta
+    if (Number.isFinite(lo) && Number.isFinite(hi)) pace = Math.min(Math.max(pace, lo), hi)
+  }
+  return Math.max(1, Math.round(pace))
+}
+
 export function planRealisticRun(input: RunPlanInput): RunPlan {
   const rng = createRngFromSeed(input.seed ?? newRunSeed())
   const required = Math.max(0.1, Number(input.requiredKm) || 3)
