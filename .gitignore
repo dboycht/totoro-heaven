@@ -33,6 +33,13 @@ npm-debug.log*
 DEVELOPMENT.md
 ERROR.md
 HANDOVER.md
+# 🆕 2026-11-19：验收记录（与上面三份同类，只留开发副本）。
+ACCEPTANCE.md
+# 🆕 2026-11-19（文档规范轮）：开发日志目录 —— 各轮次经过/实测数据/修正记录全在这里
+#    （原 DEVELOPMENT.md 的轮次流水 + 原 HANDOVER.md 的 §0 与附录 A–N + 四份历史交接稿都迁了进来）。
+#    索引见 logs/README.md；规范见工作区 rules/03-项目文档规范.md §6。
+#    判据：`git check-ignore -v --no-index -- logs/README.md` 必须命中。
+logs/
 # 🆕 2026-09-30：接手说明（五分钟上手版）—— 与上面三份同类，只留开发副本。
 # ⚠️ 必须**显式写这一行**：`.gitignore` 的 `HANDOVER.md` 只匹配这个**精确文件名**，
 #    盖不住 `HANDOVER-接手说明.md`（前缀相似 ≠ 命中）⇒ 漏写它就会被 `git add -A` 提交上去。
