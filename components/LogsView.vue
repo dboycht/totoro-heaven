@@ -104,7 +104,31 @@
       </v-card-subtitle>
       <v-card-text>
         <div v-if="serverErr" class="text-body-2 text-error mb-2">{{ serverErr }}</div>
-        <pre class="text-caption log-pre">{{ serverLines.join('\n') }}</pre>
+        <!--
+          🆕 2026-11-20（用户口径：别把调试界面直接铺给用户看）：
+          原先整段是 `JSON.stringify` 出来的原始行。现在按行解析成「时间 · 级别 · 类别 · 消息」，
+          `data` 与原始 JSON 收进每行的展开区（要看原文的人点开就有，不看的人一眼能扫）。
+        -->
+        <div class="log-list">
+          <v-expansion-panels variant="accordion" density="compact">
+            <v-expansion-panel v-for="(row, i) in serverRows" :key="`srv-${i}`">
+              <v-expansion-panel-title class="log-row">
+                <span class="log-time">{{ row.time || '--:--:--' }}</span>
+                <v-chip v-if="row.level" size="x-small" variant="tonal" :color="row.level === 'warn' ? 'warning' : row.level === 'error' ? 'error' : undefined">
+                  {{ row.level }}
+                </v-chip>
+                <span v-if="row.cat" class="log-cat">{{ row.cat }}</span>
+                <span class="log-msg">{{ row.msg || row.raw }}</span>
+              </v-expansion-panel-title>
+              <v-expansion-panel-text>
+                <pre class="text-caption log-pre">{{ row.raw }}</pre>
+              </v-expansion-panel-text>
+            </v-expansion-panel>
+          </v-expansion-panels>
+          <div v-if="!serverRows.length && !serverErr" class="text-caption text-medium-emphasis">
+            还没有服务端日志（跑一次就会写）。
+          </div>
+        </div>
       </v-card-text>
     </v-card>
 
@@ -236,6 +260,21 @@ const clearEvents = () => {
 
 // ---- 服务端文件日志 ----
 const serverLines = ref<string[]>([])
+/**
+ * 服务端日志行 → 可读行（2026-11-20）。
+ * 解析不出 JSON 的行（理论上不该有，但日志可能被外部追加）**原样保留** `raw`，消息里直接显示原文，
+ * 不吞行、不猜格式。
+ */
+const serverRows = computed(() =>
+  serverLines.value.map((raw) => {
+    try {
+      const o = JSON.parse(raw) as { time?: string; level?: string; cat?: string; msg?: string }
+      return { time: String(o.time ?? '').slice(11, 19), level: String(o.level ?? ''), cat: String(o.cat ?? ''), msg: String(o.msg ?? ''), raw }
+    } catch {
+      return { time: '', level: '', cat: '', msg: '', raw }
+    }
+  }),
+)
 const serverDir = ref('')
 const serverInfo = ref<{ files: { name: string; bytes: number; mtime: string }[]; totalBytes: number } | null>(null)
 const serverFiles = computed(() => serverInfo.value?.files ?? [])
@@ -319,6 +358,30 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.log-list {
+  max-height: 460px;
+  overflow: auto;
+}
+.log-row {
+  font-size: 12px;
+  min-height: 32px !important;
+  gap: 8px;
+}
+.log-time {
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.5);
+  flex: 0 0 auto;
+}
+.log-cat {
+  color: rgba(120, 190, 255, 0.85);
+  flex: 0 0 auto;
+}
+.log-msg {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
 .log-pre {
   max-height: 460px;
   overflow: auto;

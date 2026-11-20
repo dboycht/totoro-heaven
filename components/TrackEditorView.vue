@@ -1190,24 +1190,18 @@ const lineOptions = computed(() =>
               hide-details="auto"
               class="mb-2"
             />
-            <div class="text-caption text-medium-emphasis mb-3">
-              一个地点可以存<b>多条预设</b>（例如东操场的「内道 / 外道 / 起跑点在东侧」）：
-              描好内外圈 → 起个名字 → 点「保存（本机）」。<b>名称全库不可重复</b>；
-              跑步页会在选完线路后再让你选这个地点用哪条预设。
+            <div class="text-caption text-medium-emphasis mb-3 d-flex align-center ga-1">
+              <v-icon size="small" color="medium-emphasis"
+                title="一个地点可以存多条预设（例如东操场的「内道 / 外道 / 起跑点在东侧」）；名称全库不可重复；跑步页会在选完线路后再让你选预设。新建时画布清空，只有车道数与内缩沿用当前值。" />
               <template v-if="editingEntry">
-                <br />正在编辑：<b>{{ resolveEntryName(editingEntry) }}</b>
-                （预设编号 {{ editingEntry.id }}）·
+                正在编辑：<b>{{ resolveEntryName(editingEntry) }}</b>（预设编号 {{ editingEntry.id }}）·
                 创建 {{ editingEntry.createdAt ? formatLocalDateTime(editingEntry.createdAt) : '未记录' }}
               </template>
-              <template v-else><br />当前是<b>新建模式</b>：保存后会在这个地点下多出一条预设。
-                <br />⚠️ 新建时<b>画布已清空</b>（内外圈 / 起跑点 / 进场点都从零开始）；
-                只有<b>车道数 {{ laneCount }}</b> 与<b>内缩 {{ insetM }} m</b> 沿用当前值（可在下方改）。
-              </template>
+              <template v-else>新建模式：保存后会在这个地点下多出一条预设。</template>
             </div>
             <!-- 🆕 2026-09-22（issue #12）：任务未下发线路时，把"这是本机跑道"说在选项正下方 -->
             <div v-if="localFreeLine" class="text-caption text-medium-emphasis mb-3">
-              本任务未下发线路 —— 上面这条「<b>本机跑道</b>」是本机的条目：在它上面描好内外圈并保存，
-              跑步页就会用你描的这条生成轨迹（<b>不是官方路线</b>，只存在这台电脑上）。
+              本任务未下发线路 —— 这条「<b>本机跑道</b>」只存在这台电脑上（<b>不是官方路线</b>）。
             </div>
             <v-btn-toggle v-model="editing" mandatory density="compact" class="mb-3">
               <v-btn value="outer" size="small">外圈</v-btn>

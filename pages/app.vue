@@ -38,18 +38,14 @@
       </div>
     </v-alert>
 
-    <v-alert type="info" variant="tonal" class="mb-4" density="comfortable">
+    <v-alert type="info" variant="tonal" class="mb-4" density="compact">
       <template #prepend>
         <v-icon>mdi-rocket-launch-outline</v-icon>
       </template>
-      <div class="font-weight-bold">使用方式：粘贴 token → 自动读取 → 选线路开跑</div>
-      <div class="text-body-2">
-        <b>真实流程</b>：把真实 token 粘进来 → 点「读取真实账号与任务」→ 自动校验 token、识别学校、
-        读取<b>真实任务约束与真实线路</b> → 在「阳光跑」页选线路开跑（提交前会先过<strong>开跑前门禁</strong>并自检）。<br />
-        <b>演示</b>：只是想先看界面/报文、不想碰真实账号时，点「载入演示数据」——数据来自
-        <code>src/mp/demo.ts</code>，<b>不发任何网络请求</b>，也不会真实提交。
-      </div>
-      <div class="mt-2">
+      <div class="d-flex flex-wrap align-center ga-2">
+        <span class="text-body-2">
+          粘贴真实 token → 点「读取真实账号与任务」→ 进「阳光跑」选线路开跑；只想过界面就点「载入演示数据」（不发请求、不提交）。
+        </span>
         <v-btn size="small" variant="tonal" prepend-icon="mdi-school-outline" @click="guideOpen = true">
           查看上手教程
         </v-btn>
@@ -183,11 +179,7 @@
             回到本页再点一次「一键获取 token」即可。
             <br />（等价且更稳的做法：在微信里删除该小程序 → 重新打开 → 登录。两者都会解除微信绑定，请确认记得学号。）
           </v-alert>
-          <v-alert type="warning" variant="tonal" density="compact" class="mt-2">
-            <b>请始终使用最新版本</b>（当前 v{{ appVersion }}）：每次发版都会修 bug、跟进校方与小程序的变化；
-            旧版本可能无法使用，甚至产生<b>无效记录</b>。
-            <a :href="releasesUrl" target="_blank" rel="noopener" class="text-primary">查看最新版</a>
-          </v-alert>
+          <!-- 版本提醒不在这里再写一遍：工作台顶端常驻的「请始终使用最新版本」卡片一直可见（同一句话不重复两次）。 -->
         </v-card-text>
         <v-card-actions>
           <v-btn variant="text" prepend-icon="mdi-radar" @click="doTokenScanAndCloseGuide">知道了，立即获取 token</v-btn>
@@ -250,8 +242,7 @@ const verifiedSchoolText = computed(() => {
 const manualToken = ref('')
 const confirmClearOpen = ref(false)
 
-// 版本提示（用 UpdateNotice 组件；这里只取教程弹窗要用的两个值）
-const { appVersion, releasesUrl } = useUpdateCheck()
+// 版本提示只由顶端常驻的 `UpdateNotice` 负责（教程弹窗里那句重复的版本警告已按 2026-11-20 用户口径删掉）
 
 // ---------- 首次启动教程（用户要求：第一次启动弹教程） ----------
 // 键版本 v1 → v2（2026-10-31）：教程内容随 1.3.4 大改（小游戏入口、工作台迁 /app、取消停更公告）

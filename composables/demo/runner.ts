@@ -349,7 +349,7 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
           .map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
           .filter((p) => Number.isFinite(p.latitude) && Number.isFinite(p.longitude))
         if (raw.length < 2) {
-          run.value.error = '这条真实路径预设的几何是空的（点数不足）：请回「我的场地 → 真实路径【测试】」重新导出，或换一条路径'
+          run.value.error = '这条真实路径预设的几何是空的（点数不足）：请回「我的场地 → 真实路径」重新导出，或换一条路径'
           return
         }
         const metaKm = Number(trackEntry.realPath.km)

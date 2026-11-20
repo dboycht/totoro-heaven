@@ -36,21 +36,28 @@
       <v-divider class="my-3" />
       <div class="text-caption text-medium-emphasis mb-2">一票否决项（真实数据读取后自动查）</div>
       <v-list density="compact">
+        <!-- 字段名（`sunrunStartFace` 这些）不在标题里露出来：悬停才显示，给排查时对照用 -->
         <v-list-item
-          title="开场人脸 sunrunStartFace"
+          title="开场人脸"
           :subtitle="switchText(realSwitches?.sunrunStartFace, '开启（需实时拍脸）', '关闭')"
           prepend-icon="mdi-camera-outline"
-        />
+        >
+          <v-tooltip activator="parent" location="end">接口字段：sunrunStartFace</v-tooltip>
+        </v-list-item>
         <v-list-item
-          title="随机抽查 sunrunPointRandom"
+          title="随机抽查"
           :subtitle="switchText(realSwitches?.sunrunPointRandom, '开启（跑动中可能弹脸）', '关闭')"
           prepend-icon="mdi-shuffle-variant"
-        />
+        >
+          <v-tooltip activator="parent" location="end">接口字段：sunrunPointRandom</v-tooltip>
+        </v-list-item>
         <v-list-item
-          title="摄像头杆 getCameraConfig.flag"
+          title="摄像头杆"
           :subtitle="cameraFlag === null ? '未读取' : cameraFlag ? '当前选中线路启用（需人到杆附近）' : '当前选中线路未启用'"
           prepend-icon="mdi-video-outline"
-        />
+        >
+          <v-tooltip activator="parent" location="end">接口字段：getCameraConfig.flag</v-tooltip>
+        </v-list-item>
       </v-list>
       <v-alert v-if="!gateStatus.allow" type="error" variant="tonal" density="compact" class="mt-2">
         <div class="font-weight-bold">⛔ 开跑前门禁未通过（真实提交会被阻止，不会创建场次）</div>

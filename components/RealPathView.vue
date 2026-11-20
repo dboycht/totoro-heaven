@@ -1,10 +1,10 @@
 <script setup lang="ts">
 /**
- * **「真实路径」【测试】**（2026-11-03，1.3.6 需求③；放「我的场地」分组下）
+ * **「真实路径」**（2026-11-03，1.3.6 需求③；放「我的场地」分组下）
  *
  * 用户口径："登录账号后，可以使用相关内部功能来导出**某一天真实跑的路径信息**，并可以选择
  * 「导出到本地存为路径预设」或者「导出分享给好友」两种选择，用户在跑步界面可以选择这些路径并进行跑步，
- * 目前先做到直接原版数据提交，后面再慢慢补齐（相关功能标注为「测试」）"。
+ * 目前先做到直接原版数据提交，后面再慢慢补齐"。
  *
  * ## 这一页做什么
  *   ① 选月份 → 读**本人**成绩归档（只读）→ 按天分组；
@@ -12,8 +12,8 @@
  *   ③ 二选一的出口：**存为本机路径预设**（之后在跑步页可选）或**导出压缩包**分享给好友；
  *   ④ 也能**导入**好友发来的压缩包（读 zip → 写本机路线库）。
  *
- * ## 三条如实标注（别删）
- *   · 这是**【测试】**功能：导出的路径会被**当作本机几何**去生成轨迹，提交仍走**原版报文**；
+ * ## 三条如实标注（别删；顶栏「使用说明」对话框里逐条展示）
+ *   · 存成的预设会被**当作本机几何**去生成轨迹，提交仍走**原版报文**；
  *   · **只读服务端**：本页没有任何写请求（不做申诉、不改成绩）；
  *   · **只碰本人数据**：查询用的学号来自当前登录会话，页面不提供"查别人"的入口。
  */
@@ -22,6 +22,8 @@ import { defaultRealPathName, nearestLineByGeometry, setSelection, toggleSelecti
 import { LOCAL_FREE_LINE_ID, TRACK_NAME_MAX } from '~/utils/mp/trackLibrary'
 
 const showSnackbar = useNotice()
+/** 顶栏「使用说明」对话框（原先摊在页面顶部的三段说明搬进了这里，页面只留控件与一行摘要） */
+const helpOpen = ref(false)
 const rp = useRealPathExport()
 const lib = useTrackLibrary()
 /**
@@ -189,12 +191,13 @@ const togglePick = (scoreId: string) => {
   const rec = [...monthRecords.value, ...pickedRecords.value].find((r) => String(r.scoreId) === String(scoreId))
   if (rec) rp.togglePickRecord(rec)
 }
-/** 当前月是否已全部选中（「全选」要显示成"已全选"） */
+/** 当前月是否已全部选中（「全选」按钮的悬停提示用它；页面上不再单独写一行"这个月已全选"） */
 const monthAllPicked = computed(
   () => monthRecords.value.length > 0 && monthRecords.value.every((r) => pickedIds.value.has(String(r.scoreId))),
 )
 /** 当前月有多少条已选 */
 const monthPickedCount = computed(() => monthRecords.value.filter((r) => pickedIds.value.has(String(r.scoreId))).length)
+const monthAllPickedTip = computed(() => (monthAllPicked.value ? '这个月已全选' : '选中当前月的全部成绩'))
 /** 「全选」：把**当前月份**的记录全加入已选（增量，不洗掉别的月份） */
 const pickAll = () => rp.pickManyRecords(monthRecords.value)
 /** 「反选」：把**当前月份**里已选的拿掉（其余月份的已选一律不动） */
@@ -424,32 +427,51 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
 
 <template>
   <v-container fluid>
-    <!-- 顶部：这是什么 + 【测试】标注 + 三条如实说明 -->
-    <v-alert type="info" variant="tonal" density="comfortable" class="mb-3">
-      <div class="d-flex align-center flex-wrap ga-2">
-        <v-icon>mdi-map-marker-path</v-icon>
-        <span class="font-weight-bold">真实路径</span>
-        <v-chip size="small" color="warning" variant="flat">测试</v-chip>
-      </div>
-      <div class="text-body-2 mt-1">
-        把你在小程序/本工具里<b>真实跑过</b>的那一天的轨迹取回来，存成本机路径预设（之后在「跑步」页可选），
-        或者打成一个压缩包分享给好友。
-        <br />本页<b>只读</b>服务端（不申诉、不改成绩）；查询的学号来自<b>当前登录会话</b>，只能读你自己的记录。
-        <br />⚠️ 存成预设后，跑步页会把它<b>当作本机几何</b>去生成轨迹，<b>提交仍走原版报文</b>（本功能不影响提交口径）。
-      </div>
-    </v-alert>
+    <!-- 顶栏：一行摘要 + 控件；三条如实标注在「使用说明」对话框里（原先摊在页面顶部，与控件抢地方） -->
+    <div class="d-flex flex-wrap align-center ga-2 mb-3">
+      <v-icon color="primary">mdi-map-marker-path</v-icon>
+      <span class="text-subtitle-1 font-weight-bold">真实路径</span>
+      <v-btn size="x-small" variant="tonal" prepend-icon="mdi-help-circle-outline" @click="helpOpen = true">使用说明</v-btn>
+      <span class="text-caption text-medium-emphasis">
+        取回本人某一天真实跑过的轨迹 → 存成本机路径预设（跑步页可选）或导出分享；本页只读服务端，只读自己的记录。
+      </span>
+    </div>
+
+    <v-dialog v-model="helpOpen" max-width="620">
+      <v-card>
+        <v-card-title class="text-subtitle-1 d-flex align-center ga-2">
+          <v-icon color="primary">mdi-map-marker-path</v-icon>
+          真实路径 · 使用说明
+        </v-card-title>
+        <v-card-text class="text-body-2">
+          <p class="mb-2">
+            把你在小程序或本工具里<b>真实跑过</b>的那一天的轨迹取回来，存成本机路径预设（之后在「跑步」页可选），
+            或者打成一个压缩包分享给好友。
+          </p>
+          <p class="mb-2">本页<b>只读</b>服务端：不申诉、不改成绩。</p>
+          <p class="mb-2">查询用的学号来自<b>当前登录会话</b>，只能读你自己的记录，页面不提供"查别人"的入口。</p>
+          <p class="mb-0">
+            存成预设后，跑步页会把它<b>当作本机几何</b>去生成轨迹，<b>提交仍走原版报文</b>（本功能不影响提交口径）。
+          </p>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="helpOpen = false">知道了</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
 
     <v-alert v-if="!rp.hasToken.value" type="warning" variant="tonal" density="compact" class="mb-3">
       还没有登录态：请先回「工作台」点「一键获取 token」，再回本页。
     </v-alert>
 
     <v-row dense>
-      <!-- 左：1 选月份 → 2 读归档 → 3 选天与成绩 -->
+      <!-- 左：读归档 → 选成绩 → 看轨迹 -->
       <v-col cols="12" md="7">
         <v-card>
           <v-card-title class="text-subtitle-1 d-flex flex-wrap align-center ga-2">
             <v-icon color="primary">mdi-account-search-outline</v-icon>
-            第 1~2 步：选月份 → 读我的成绩归档
+            我的成绩归档
             <v-spacer />
             <v-btn size="small" variant="tonal" prepend-icon="mdi-refresh" :loading="rp.busy.value === 'months'" :disabled="!rp.hasToken.value" @click="doLoadMonths">
               读月份
@@ -469,7 +491,6 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
               >
                 读取最近成绩
               </v-btn>
-              <!-- 🆕 换月份不再重新请求已读过的月份；要拿最新数据就点这里 -->
               <v-btn
                 size="small"
                 variant="tonal"
@@ -480,7 +501,14 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
               >
                 重新读取
               </v-btn>
-              <span class="text-caption text-medium-emphasis">（不选月份＝用当前月份；点过的月份走本机缓存）</span>
+              <!-- 可选操作：默认口径写成 title，鼠标悬停才显示，不占版面 -->
+              <v-icon
+                size="small"
+                color="medium-emphasis"
+                title="不选月份＝用当前月份；点过的月份走本机缓存"
+              >
+                mdi-information-outline
+              </v-icon>
             </div>
             <div v-if="rp.months.value.length" class="d-flex flex-wrap ga-1 mb-3">
               <!-- 高亮 = 最近一次真正读过的那个月（activeMonthId），不是"永远是本月"：否则读 9 月、界面却亮着本月 -->
@@ -511,8 +539,15 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
                   {{ activeMonthName }} 的成绩（{{ monthRecords.length }} 条，已选 {{ monthPickedCount }}）
                 </div>
                 <v-spacer />
-                <v-btn size="x-small" variant="tonal" @click="pickAll">全选</v-btn>
+                <v-btn size="x-small" variant="tonal" :title="monthAllPickedTip" @click="pickAll">全选</v-btn>
                 <v-btn size="x-small" variant="tonal" :disabled="!monthPickedCount" @click="invertPicks">反选</v-btn>
+                <v-icon
+                  size="small"
+                  color="medium-emphasis"
+                  title="勾选框只影响「已选汇总」；不勾选时点一条读它的轨迹（单条导出）。换月份不会丢掉已选的。"
+                >
+                  mdi-information-outline
+                </v-icon>
               </div>
               <v-list density="compact" class="pa-0">
                 <v-list-item
@@ -549,10 +584,6 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
                   </template>
                 </v-list-item>
               </v-list>
-              <div class="text-caption text-medium-emphasis mt-1">
-                {{ monthAllPicked ? '这个月已全选。' : '勾选框只影响"已选汇总"；不勾选时点一条读它的轨迹（单条导出）。' }}
-                换月份<b>不会</b>丢掉已选的。
-              </div>
             </template>
 
             <!-- 🆕 2026-11-10（用户口径）：已选汇总（常驻）—— 跨月累计选中的都列在这儿，可逐条取消 -->
@@ -588,11 +619,14 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
         <v-card class="mt-3">
           <v-card-title class="text-subtitle-1 d-flex flex-wrap align-center ga-2">
             <v-icon color="secondary">mdi-vector-polyline</v-icon>
-            第 3 步：这条轨迹长什么样
+            这条轨迹长什么样
           </v-card-title>
           <v-card-text>
             <div v-if="!lapInfo" class="text-caption text-medium-emphasis">
-              还没读到轨迹：在上面点「读取轨迹」。读不到时会如实说明（云端 `pointList` 为空的那类记录是取不回来的）。
+              还没读到轨迹：在上面点「读取轨迹」。
+              <v-icon size="small" color="medium-emphasis" title="读不到时会如实说明（云端 pointList 为空的那类记录是取不回来的）">
+                mdi-information-outline
+              </v-icon>
             </div>
             <template v-else>
               <div class="text-body-2">
@@ -601,6 +635,13 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
                   · 识别到一圈约 <b>{{ Math.round(lapInfo.lapLengthM) }} m</b>（跑步页预览按它把整条按圈着色）
                 </template>
                 <template v-else> · <span class="text-warning">没识别到闭环</span>，预览按整条一色显示</template>
+                <v-icon
+                  size="small"
+                  color="medium-emphasis"
+                  title="一圈长度只是报数（供预览按圈着色），轨迹本身一个点都不删 —— 5~8 圈整场原样保存"
+                >
+                  mdi-information-outline
+                </v-icon>
               </div>
               <div v-if="autoMatchNote" class="text-caption text-success mt-1">{{ autoMatchNote }}</div>
               <div v-else-if="taskLinesWithGeometry.length" class="text-caption text-medium-emphasis mt-1">
@@ -609,9 +650,6 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
               <div v-else class="text-caption text-warning mt-1">
                 当前还没有读到任务（线路列表为空）⇒ 只能先存到「本机跑道」。回「工作台」读一次任务再回本页，就会自动按位置匹配线路。
               </div>
-              <div class="text-caption text-medium-emphasis mt-1">
-                一圈长度只是<b>报数</b>（供预览按圈着色），轨迹本身一个点都不删 —— 5~8 圈整场原样保存。
-              </div>
             </template>
           </v-card-text>
         </v-card>
@@ -619,43 +657,52 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
 
       <!-- 右：出口（存预设 / 导出压缩包）+ 导入 -->
       <v-col cols="12" md="5">
-        <v-card variant="outlined" color="warning">
+        <v-card>
           <v-card-title class="text-subtitle-1 d-flex align-center flex-wrap ga-2">
-            <v-chip size="small" color="warning" variant="flat">测试</v-chip>
-            第 4 步：导出
+            <v-icon color="warning">mdi-tray-arrow-down</v-icon>
+            单条导出
           </v-card-title>
           <v-card-text>
             <v-select v-model="targetLineId" :items="locationItems" item-title="title" item-value="value" label="存到哪个地点" density="compact" class="mb-2" />
             <!-- 长度上限 = 纯函数里的 TRACK_NAME_MAX（预设名在这里就截断，不留给路线库静默删尾巴） -->
-            <v-text-field v-model="presetName" label="预设名称（留空 = 自动命名）" density="compact" :counter="TRACK_NAME_MAX" :maxlength="TRACK_NAME_MAX" hide-details="auto" class="mb-1" />
-            <div class="text-caption text-medium-emphasis mb-3">
-              留空时自动命名会在末尾加一段<b>随机后缀</b>（如 <code>-2b9c</code>），避免两次导出撞名；你手打的名字保持原样。
-            </div>
-            <!-- 🔴 单条 / 批量互斥（用户口径）：勾了任何一条 ⇒ 下面这两个单条按钮变灰 -->
+            <v-text-field v-model="presetName" label="预设名称（留空 = 自动命名）" density="compact" :counter="TRACK_NAME_MAX" :maxlength="TRACK_NAME_MAX" hide-details="auto" class="mb-3" />
+            <!-- 🔴 单条 / 批量互斥（用户口径）：勾了任何一条 ⇒ 单条那两个按钮变灰 -->
             <v-alert v-if="pickedCount" type="warning" variant="tonal" density="compact" class="mb-2">
-              已选 {{ pickedCount }} 条 ⇒ <b>单条导出已锁定</b>。要单条导出请先「清空勾选」。
+              已选 {{ pickedCount }} 条 ⇒ <b>单条导出已锁定</b>。要单条导出请先「清空已选」。
             </v-alert>
             <v-btn block size="small" color="primary" class="mb-2" prepend-icon="mdi-content-save-outline" :disabled="!lapInfo || pickedCount > 0" :loading="rp.busy.value === 'save'" @click="doSave">
               导出到本地：存为路径预设
             </v-btn>
-            <div class="text-caption text-medium-emphasis mb-3">
-              存进本机路线库（与「跑道编辑」共用同一个库）⇒ 回「跑步」页就能在「预设 / 本机路径」里选到它。
-            </div>
             <v-btn block size="small" color="secondary" variant="tonal" prepend-icon="mdi-folder-zip-outline" :disabled="!lapInfo || pickedCount > 0" :loading="rp.busy.value === 'share'" @click="doShare">
               导出分享给好友：生成压缩包
             </v-btn>
-            <div class="text-caption text-medium-emphasis mt-1">
-              单条压缩包里只有<b>一个</b> JSON（<code>totoro-real-path.json</code>）：路径点 + 日期/场次号/里程/用时/拟合度。
-              <b>不含</b> token、学号、姓名。好友用下面的「导入」读回去即成为他自己的本机预设。
+            <!-- 这一段事实必须留在明面上（不藏进悬停提示）：包内到底有什么、没有什么 -->
+            <div class="d-flex align-center ga-1 mt-1">
+              <v-icon size="small" color="medium-emphasis">mdi-information-outline</v-icon>
+              <span class="text-caption text-medium-emphasis">
+                包内是一个 JSON：路径点 + 日期/场次号/里程/用时/拟合度；<b>不含</b> token、学号、姓名。
+              </span>
             </div>
-            <v-divider class="my-3" />
+            <div class="text-caption text-medium-emphasis mt-1 d-flex align-center ga-1">
+              <v-icon size="small" color="medium-emphasis"
+                title="留空自动命名会在末尾加一段随机后缀（如 -2b9c），避免两次导出撞名；你手打的名字保持原样。" />
+              存进本机路线库（与「跑道编辑」共用同一个库）。
+            </div>
+          </v-card-text>
+        </v-card>
+
+        <v-card class="mt-3">
+          <v-card-title class="text-subtitle-1 d-flex flex-wrap align-center ga-2">
+            <v-icon color="warning">mdi-content-save-multiple-outline</v-icon>
+            批量与导入
+          </v-card-title>
+          <v-card-text>
             <!-- 🆕 2026-11-10（用户需求①）：批量 —— 勾选多条 → 一次导出 -->
-            <div class="text-subtitle-2 mb-1">批量操作（勾选多条后可用）</div>
             <v-alert v-if="pickedCount" type="info" variant="tonal" density="compact" class="mb-2">
               已选 <b>{{ pickedCount }}</b> 条：{{ pickedDatesText }}
             </v-alert>
             <div v-else class="text-caption text-medium-emphasis mb-2">
-              在左边列表里勾选复选框（可先点「全选」）—— 勾选是<b>跨年月</b>的。
+              还没勾选任何成绩：在左边列表里勾选（可跨年月）。
             </div>
             <div v-if="batchProgressText" class="mb-2">
               <v-progress-linear :model-value="batchProgressPercent" color="primary" height="6" rounded class="mb-1" />
@@ -687,20 +734,20 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
             >
               批量导出压缩包（{{ pickedCount }} 条）
             </v-btn>
-            <div class="text-caption text-medium-emphasis mb-3">
-              每条都要<b>单独读一次轨迹</b>，所以条数多时会慢一些（上面有进度条）。
-              导出的包里<b>每条路径一个独立的 JSON 文件</b>；读不到的<b>跳过</b>，最后在下面逐条列出结果。
+            <div class="text-caption text-medium-emphasis d-flex align-center ga-1 mb-1">
+              <v-icon size="small" color="medium-emphasis"
+                title="每条都要单独读一次轨迹，所以条数多时会慢一些（上面有进度条）。导出的包里每条路径一个独立的 JSON 文件；读不到的跳过，最后逐条列出结果。" />
+              批量要逐条读轨迹，条数多时会慢一些。
             </div>
             <v-divider class="my-3" />
-            <div class="text-subtitle-2 mb-1">导入好友分享的压缩包</div>
             <input ref="fileInput" type="file" accept=".zip,application/zip" multiple class="d-none" @change="doImport" />
             <v-btn block size="small" variant="tonal" prepend-icon="mdi-file-upload-outline" @click="fileInput?.click()">
               选择一个或多个压缩包并导入
             </v-btn>
-            <div class="text-caption text-medium-emphasis mt-1">
-              导入的路径会存到上面选的地点（同样可以在跑步页选用）；存进去的条目会标明"来源：真实路径"。
-              <b>可以一次选多个包</b>；一个包里有多少条路径就收多少条（导出的批量包内是每条一个 JSON）。
-              失败的会在下面逐条说明原因。
+            <div class="text-caption text-medium-emphasis mt-1 d-flex align-center ga-1">
+              <v-icon size="small" color="medium-emphasis"
+                title="可以一次选多个包；一个包里有多少条路径就收多少条。失败的会逐条说明原因。" />
+              导入的路径存到上面选的地点，条目会标明「来源：真实路径」。
             </div>
 
             <!-- 🆕 2026-11-10（用户口径）：认不出地点的那几条弹这个选择框；选完才落库 -->
@@ -712,8 +759,8 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
                 </v-card-title>
                 <v-card-text>
                   <div class="text-caption text-medium-emphasis mb-2">
-                    下面这些路径<b>包里没写地点、按轨迹位置也匹配不上</b>任何线路。
-                    请选一个地点把它们存进去（存进去后仍可在「跑道编辑」里重命名/删除）。
+                    下面这些路径<b>包里没写地点、按轨迹位置也匹配不上</b>任何线路 ⇒ 请选一个地点把它们存进去。
+                    <v-icon size="small" title="存进去后仍可在「跑道编辑」里重命名或删除">mdi-information-outline</v-icon>
                   </div>
                   <v-list density="compact" class="pa-0 mb-3 pending-list">
                     <v-list-item v-for="(p, i) in pendingImports" :key="i" class="px-0">

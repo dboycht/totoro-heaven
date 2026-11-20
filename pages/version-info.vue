@@ -33,9 +33,10 @@
           {{ entry.channel === 'stable' ? 'mdi-star-circle-outline' : 'mdi-test-tube' }}
         </v-icon>
         <span class="text-h6">{{ entry.version }}</span>
-        <v-chip size="small" :color="entry.channel === 'stable' ? 'success' : 'primary'" variant="tonal">
+        <v-chip v-if="!isDevEntry" size="small" :color="entry.channel === 'stable' ? 'success' : 'primary'" variant="tonal">
           {{ channelText(entry.channel) }}
         </v-chip>
+        <v-chip v-else size="small" color="warning" variant="tonal">开发中版本</v-chip>
         <v-chip v-if="isCurrentEntry" size="small" color="primary" variant="flat">当前版本</v-chip>
         <v-chip v-else size="small" variant="tonal" color="warning">当前运行 v{{ currentVersion }}（开发中）</v-chip>
         <v-chip v-if="entry.date" size="small" variant="text" class="text-medium-emphasis">{{ entry.date }}</v-chip>
@@ -105,6 +106,14 @@ const entry = computed<VersionEntry>(() => {
 
 /** 卡片上的版本是否就是"当前运行版本"（否则说明这里显示的是最近一个有记录的版本） */
 const isCurrentEntry = computed(() => entry.value.version === currentVersion.value)
+
+/**
+ * 这张卡是不是"开发中的当前版本"（1.3.8 这类占位条目：`note` 以「开发中」开头）。
+ * ⚠️ 2026-11-20 用户口径：这类条目**不能**再挂「建议使用（正式版）」徽章 ——
+ *    之前同一张卡上同时出现「建议使用（正式版）」与标题「（开发中）1.3.8」，自相矛盾。
+ *    判据只读条目自己的 `note`（数据驱动，不写死版本号）。
+ */
+const isDevEntry = computed(() => (entry.value.note ?? '').startsWith('开发中'))
 
 /**
  * ⚠️ 2026-10-30：「对外发布的最新版本是 X」这句**整句撤掉**（连同原 `stableVersion` 计算属性）——

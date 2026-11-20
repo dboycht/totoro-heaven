@@ -10,7 +10,7 @@
         :model-value="manualToken"
         label="真实 token（从抓包的 Authorization: Bearer 后面复制）"
         density="comfortable"
-        hint="只存本机 localStorage；不打印、不入库、不提交"
+        hint="只存在本机；不打印、不入库、不提交"
         persistent-hint
         class="mb-4"
         @update:model-value="emit('update:manualToken', $event)"

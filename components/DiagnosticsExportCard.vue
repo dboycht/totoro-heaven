@@ -60,9 +60,8 @@
 
       <!-- 记录窗口的存活范围（如实写明） -->
       <div class="text-caption text-medium-emphasis mb-3">
-        记录窗口记录在<b>服务端</b>（不在这个页面里）：只要本程序还在运行，切页、刷新、关掉浏览器再打开都<b>不中断</b>记录，
-        时长按服务端记下的开始时刻补算；<b>关掉本程序再启动就是新的一次运行、从「未记录」开始</b>（不会继承上一次的窗口）。
-        导出只取这段窗口内的服务端日志与操作时间线（最多 {{ DIAG_TIMELINE_MAX }} 条，超出时保留最早
+        记录窗口在<b>服务端</b>：切页、刷新、重开浏览器都不中断；<b>关掉本程序再启动</b>才算新的一次运行。
+        导出只取这段窗口内的日志与操作时间线（最多 {{ DIAG_TIMELINE_MAX }} 条，超出时保留最早
         {{ DIAG_TIMELINE_HEAD_KEEP }} 条 + 最新若干条，并在包里写明）。
         <span v-if="windowStartedText">本次窗口：{{ windowStartedText }} 开始。</span>
       </div>
@@ -94,22 +93,25 @@
 
       <div v-if="exportError" class="text-body-2 text-error mb-3">{{ exportError }}</div>
 
-      <!-- ③ 导出前先看：这个包里会包含什么 + 隐私说明 -->
-      <div class="text-body-2 font-weight-bold mb-1">这个包里会包含什么</div>
-      <ul class="pl-5 mb-2">
-        <li v-for="(m, i) in manifestPreview" :key="i" class="text-body-2">
-          <span class="text-medium-emphasis">{{ i + 1 }}.</span>
-          <b>{{ m.name }}</b> —— {{ m.note }}
-        </li>
-      </ul>
-      <v-alert :type="includeGeometry ? 'warning' : 'success'" variant="tonal" density="comfortable" class="mb-3">
+      <!-- ③ 导出前先看：这个包里会包含什么（默认收起）+ 隐私说明 -->
+      <v-expansion-panels class="mb-3" variant="accordion">
+        <v-expansion-panel :title="`这个包里会包含什么（${manifestPreview.length} 项）`">
+          <v-expansion-panel-text>
+            <ul class="pl-5">
+              <li v-for="(m, i) in manifestPreview" :key="i" class="text-body-2 mb-1">
+                <span class="text-medium-emphasis">{{ i + 1 }}.</span>
+                <b>{{ m.name }}</b> —— {{ m.note }}
+              </li>
+            </ul>
+          </v-expansion-panel-text>
+        </v-expansion-panel>
+      </v-expansion-panels>
+      <v-alert :type="includeGeometry ? 'warning' : 'success'" variant="tonal" density="compact" class="mb-3">
         <span v-if="includeGeometry">
-          隐私说明：包内不含 token 明文（只留长度与前后各 4 位用于核对），学号与姓名已掩码；
-          因为上方的开关是打开的，所以包含你描过的跑道与任务的坐标。
+          包内不含 token 明文（只留长度与前后各 4 位用于核对），学号与姓名已掩码；上面的开关是开着的，所以包含跑道与任务的坐标。
         </span>
         <span v-else>
-          隐私说明：包内不含 token 明文（只留长度与前后各 4 位用于核对），学号与姓名已掩码；
-          因为上方的开关是关闭的，所以不含跑道与任务的坐标。
+          包内不含 token 明文（只留长度与前后各 4 位用于核对），学号与姓名已掩码；上面的开关是关着的，所以不含跑道与任务的坐标。
         </span>
       </v-alert>
 
@@ -129,10 +131,8 @@
       </div>
 
       <div class="text-caption text-medium-emphasis">
-        注意：导出时按上面那个记录窗口取服务端日志一起打包（由服务端自己读取，不进浏览器）。
-        若本页手里的窗口与服务端当前窗口对不上（例如程序重启过、或另一个标签页换了窗口），
-        导出会被拦下并告诉你怎么重来 —— 不会悄悄把最近 {{ logDays }} 天的全量日志当成你这一次记录发出去。
-        导出的文件名形如 totoro-diagnostics-{{ fileNameSample }}.zip。
+        导出会按上面那个窗口取服务端日志一起打包（服务端自己读，不进浏览器），文件名形如
+        totoro-diagnostics-{{ fileNameSample }}.zip；窗口对不上会被拦下（不会把最近 {{ logDays }} 天的全量日志当成你这次的记录）。
       </div>
     </v-card-text>
   </v-card>

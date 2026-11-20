@@ -1,12 +1,7 @@
 <template>
   <div>
-    <v-alert type="info" variant="tonal" density="comfortable" class="mb-4">
-      <div class="font-weight-bold">成绩记录</div>
-      <div class="text-body-2">
-        默认<b>不含任何假数据</b>：在跑步页结算一条成绩会追加到最前面（存本机 localStorage）。
-        点工作台/跑步页的「载入演示数据」后，列表里是演示记录（Mock）；真实记录来自
-        <code>getSunrunArch</code> 的顶层 <code>data[]</code> 与汇总字段。
-      </div>
+    <v-alert type="info" variant="tonal" density="compact" class="mb-4">
+      默认<b>不含任何假数据</b>：在跑步页结算一条成绩就会追加到最前面；点「载入演示数据」后才出现演示记录（不会真正提交）。
     </v-alert>
 
     <v-row dense class="mb-2">
@@ -114,27 +109,44 @@
         <v-alert v-else type="info" variant="tonal">暂无记录 —— 去跑步页跑一条。</v-alert>
 
         <v-divider class="my-4" />
-        <div class="text-caption text-medium-emphasis">
-          <b>关于「提交」列（2026-10-07 加）</b>：本表读的是<b>本机记录</b>，它在<b>每次结算</b>时就写一条 ——
-          <b>不等于</b>那笔已经提交到服务端。所以：
-          <code>已真实提交</code> = 成绩已发出去（判定是<b>服务端</b>给的，并带上轨迹有没有交上）；
-          <code>仅本地结算</code> = 只在本机跑完结算、<b>没提交</b>（判定列写的是"本地预判"）；
-          <code>演示</code> = 演示数据跑出来的，从不提交；
-          <code>未记录（旧数据）</code> = 本次改动之前写下的记录，<b>不猜</b>。
-          ⚠️ 真实提交成功后，那一行会自动从"仅本地结算"变成"已真实提交"并写回<b>真实场次号</b>。
+        <div class="d-flex flex-wrap align-center ga-2">
+          <span class="text-caption text-medium-emphasis">「提交」「判定」「异常标记」三列的口径</span>
+          <v-btn size="x-small" variant="tonal" prepend-icon="mdi-help-circle-outline" @click="notesOpen = true">说明</v-btn>
         </div>
-        <div class="text-caption text-medium-emphasis mt-2">
-          状态映射（源码 SetValue，逐字）：0 无效 / 1 有效 / 2 申诉有效 / 3 补录有效；
-          <code>startTmie</code> / <code>endTmie</code> 是服务端拼写错误，逐字保留。
-        </div>
-        <div class="text-caption text-medium-emphasis mt-2">
-          <b>关于「异常标记」</b>：这是服务端记录里的 <code>warnType</code>（源码 <code>SetwarnType</code> 映射表）。
-          <b>实测事实</b>：真人真跑与工具记录都可以带 <code>warnType=3（拟合度异常）</code>——
-          它有<b>不代表</b>这段成绩是用工具跑的（2026-09-17 真实提交前后各一条真跑记录实测）。
-          ⚠️ 手机端记录详情页那个 ⚠ 图标是<b>厂商自身的显示问题</b>（判据写成
-          <code>scorePassType != '0'</code>，且文案取了记录里不存在的 <code>scorePassRemark</code> 字段），
-          与我们是否用工具无关。以本表「判定」列的<b>有效/无效</b>为准。
-        </div>
+
+        <v-dialog v-model="notesOpen" max-width="640">
+          <v-card>
+            <v-card-title class="text-subtitle-1 d-flex align-center ga-2">
+              <v-icon color="primary">mdi-help-circle-outline</v-icon>
+              记录页三列的口径
+            </v-card-title>
+            <v-card-text class="text-body-2">
+              <div class="mb-3">
+                <b>「提交」列</b>：本表读的是<b>本机记录</b>，它在<b>每次结算</b>时就写一条 ——
+                <b>不等于</b>那笔已经提交到服务端。所以：
+                <code>已真实提交</code> = 成绩已发出去（判定是<b>服务端</b>给的，并带上轨迹有没有交上）；
+                <code>仅本地结算</code> = 只在本机跑完结算、<b>没提交</b>（判定列写的是"本地预判"）；
+                <code>演示</code> = 演示数据跑出来的，从不提交；
+                <code>未记录（旧数据）</code> = 本次改动之前写下的记录，<b>不猜</b>。
+                ⚠️ 真实提交成功后，那一行会自动从"仅本地结算"变成"已真实提交"并写回<b>真实场次号</b>。
+              </div>
+              <div class="mb-3">
+                <b>「判定」列</b>：0 无效 / 1 有效 / 2 申诉有效 / 3 补录有效；
+                <code>startTmie</code> / <code>endTmie</code> 是服务端拼写错误，逐字保留。
+              </div>
+              <div>
+                <b>「异常标记」</b>：这是服务端记录里的 <code>warnType</code>（源码 <code>SetwarnType</code> 映射表）。
+                <b>实测事实</b>：真人真跑与工具记录都可以带 <code>warnType=3（拟合度异常）</code>——
+                它有<b>不代表</b>这段成绩是用工具跑的。手机端记录详情页那个 ⚠ 图标是<b>厂商自身的显示问题</b>，
+                与我们是否用工具无关。以本表「判定」列的<b>有效/无效</b>为准。
+              </div>
+            </v-card-text>
+            <v-card-actions>
+              <v-spacer />
+              <v-btn variant="text" @click="notesOpen = false">知道了</v-btn>
+            </v-card-actions>
+          </v-card>
+        </v-dialog>
       </v-card-text>
     </v-card>
   </div>
@@ -211,4 +223,11 @@ const doReset = () => {
   resetRecords()
   showSnackbar('已清空本机记录（服务端成绩不受影响）', 'info')
 }
+
+/**
+ * 「判定 / 提交 / 异常标记」三列的口径说明。
+ * 原先这三段（约 900 字，含 `SetwarnType`、`startTmie` 这类源码标识与日期）直接铺在页面底部，
+ * 与控件抢版面（2026-11-20 用户口径：删掉多余注解）⇒ 收进这个对话框，页面只留一行入口。
+ */
+const notesOpen = ref(false)
 </script>

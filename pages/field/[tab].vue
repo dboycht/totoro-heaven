@@ -5,7 +5,7 @@
     <MornsignZoneView v-else-if="tab === 'mornsign-zone'" />
     <!-- 2026-09-22 结构调整：非官方路径绘制从「跑道编辑」里搬出来，与上面两个子页**同级** -->
     <FreePathView v-else-if="tab === 'free-path'" />
-    <!-- 2026-11-03（1.3.6 需求③）：「真实路径」【测试】—— 某天真实跑的轨迹 → 本机预设 / 分享包 -->
+    <!-- 2026-11-03（1.3.6 需求③）：「真实路径」—— 某天真实跑的轨迹 → 本机预设 / 分享包 -->
     <RealPathView v-else-if="tab === 'real-path'" />
   </TabGroupShell>
 </template>
@@ -14,7 +14,7 @@
 /**
  * 「我的场地」分组：`/field/track-editor`、`/field/mornsign-zone`、`/field/free-path`、`/field/real-path`
  * （2026-09-20 分组重构；本机路径页 2026-09-22 加；2026-09-29 改名为「研途健行路径编辑器」；
- *  🆕 2026-11-03 加「真实路径」【测试】）
+ *  🆕 2026-11-03 加「真实路径」）
  *
  * ⚠️ 为什么是**动态段** `[tab].vue` 而不是 `index.vue + 两个子文件`：
  *    Nuxt 按**文件**生成路由 —— `pages/field/index.vue` 只对应 `/field` 本身，
@@ -36,7 +36,7 @@
  *    （用户明确选择"只改显示名，路由与存储键全保留" ⇒ 零迁移风险，旧书签与旧数据都不动）。
  *
  * 🆕 2026-11-03（需求③）：新增子页 key `real-path`、组件 `components/RealPathView.vue`，
- *    标签名「真实路径」，按钮/卡片上标【测试】（用户要求"相关功能标注为「测试」"）。
+ *    标签名「真实路径」（2026-11-20 用户口径：删掉原先的【测试】标注）。
  *    同样三处一起改：`validate` 白名单 / `GROUP.tabs` / 模板分支 + import。
  */
 import TrackEditorView from '~/components/TrackEditorView.vue'
@@ -60,7 +60,7 @@ const GROUP = {
     { key: 'track-editor', label: '跑道编辑', icon: 'mdi-vector-polyline' },
     { key: 'mornsign-zone', label: '签到区域', icon: 'mdi-map-marker-radius-outline' },
     { key: 'free-path', label: '研途健行路径', icon: 'mdi-vector-curve' },
-    { key: 'real-path', label: '真实路径【测试】', icon: 'mdi-map-marker-path' },
+    { key: 'real-path', label: '真实路径', icon: 'mdi-map-marker-path' },
   ],
 } as const
 

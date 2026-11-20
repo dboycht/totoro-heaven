@@ -159,15 +159,8 @@
             />
           </template>
         </div>
-        <div class="text-caption text-medium-emphasis text-center credits-foot">
-          <template v-if="!fits">片尾缓慢滚动中，可随时暂停；你的滚轮与键盘仍然归你自己用。</template>
-          <!--
-            ⚠️ 2026-10-30 修（用户发现）：这里原先写的是"本页是界面预览。真正接进软件时才会出现在导航里。"
-            —— 那是 2026-09-23 写本组件时的占位文案，而 2026-09-25 就已经把「鸣谢」接进顶栏导航了
-            （见 `layouts/default.vue`）。占位文案没跟着改 ⇒ 变成一句与事实相反的错话贴在最底下。
-            现在改成如实描述这一屏本身（"条目放得下所以静态列全"），不再提"接没接进软件"。
-          -->
-          <template v-else>以上是全部鸣谢名单；点击两侧箭头或圆点可切换条目。</template>
+        <div v-if="!fits" class="text-caption text-medium-emphasis text-center credits-foot">
+          片尾缓慢滚动中，可随时暂停；你的滚轮与键盘仍然归你自己用。
         </div>
       </footer>
     </div>

@@ -124,7 +124,7 @@ export interface TrackRouteEntry {
    */
   freeShape?: FreePathShape
   /**
-   * 🆕 2026-11-03（1.3.6 需求③「真实路径【测试】」）：**这条预设的来源是某一天的真实跑**。
+   * 🆕 2026-11-03（1.3.6 需求③「真实路径」）：**这条预设的来源是某一天的真实跑**。
    *
    * 只有"从成绩归档导出"的预设才有这个字段；**没有它 ⇒ 与旧版本逐字一致**（不凭空造）。
    * 用途：① 界面如实显示"这条是哪天/哪一场导出的"；② 换圈那一步**不参与**
@@ -831,7 +831,7 @@ export function localEntryShapeText(e: TrackRouteEntry): string {
 /**
  * 🆕 2026-11-10（用户口径"两种路径不是同一类"）：**这条本机条目是不是"真实路径"**。
  *
- * 判据只有一个：带 `realPath` 元信息（由「真实路径【测试】」页导出时写入）。
+ * 判据只有一个：带 `realPath` 元信息（由「真实路径」页导出时写入）。
  * 为什么要有这个函数而不是各处自己写 `e.realPath`：
  *   · 跑道编辑页要**禁掉对它的编辑/载入**（它是别人真实跑出来的点列，不该被当草图改）；
  *   · 列表要把它**折起来**单独成组（真实路径常常一堆，混在手绘跑道里完全看不清）；
@@ -941,7 +941,7 @@ export function entryDetailRows(e: TrackRouteEntry): { label: string; value: str
      */
     ...(e.realPath
       ? [
-          { label: '来源', value: '真实路径（从成绩归档导出，测试功能）' },
+          { label: '来源', value: '真实路径（从成绩归档导出）' },
           { label: '真实跑日期', value: e.realPath.date || '未记录' },
           { label: '真实场次号', value: e.realPath.scoreId || '未记录' },
           {

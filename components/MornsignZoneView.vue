@@ -1,27 +1,22 @@
 <template>
   <div>
-    <v-alert type="info" variant="flat" density="comfortable" class="mb-4">
+    <v-alert type="info" variant="tonal" density="compact" class="mb-3">
       <div class="font-weight-bold">
-        <v-icon class="mr-1">mdi-map-marker-radius-outline</v-icon>签到区域编辑
+        <v-icon class="mr-1" size="18">mdi-map-marker-radius-outline</v-icon>签到区域编辑
       </div>
       <div class="text-body-2">
-        为<b>每个签到点位</b>设置"提交时坐标怎么来"。默认策略是"<b>走到圈里、停在偏内一点的位置</b>"
-        （而不是围着点位圆心均匀撒点 —— 那是最容易被看出是程序的特征）。
-        <br />⚠️ 这里改的是<b>坐标这一项</b>的生成方式；"是否到场"这件事在提交时就已经跳过了（见「早操签到」页的说明）。
-        点位标识（任务号 / 点位号 / 二维码）<b>一律原样</b>，本页不涉及。
+        给每个签到点位设置「提交时坐标怎么来」：默认<b>走到圈里、停在偏内一点</b>（不是绕圆心均匀撒点）。
+        点位标识（任务号 / 点位号 / 二维码）<b>一律原样</b>。
       </div>
     </v-alert>
 
-    <!-- ⭐ 用户 2026-09-20 点名："主要是需要调方向偏置" —— 把它单独提出来讲清楚，别埋在滑杆里 -->
-    <v-alert type="warning" variant="tonal" density="comfortable" class="mb-4">
+    <!-- ⭐ 用户 2026-09-20 点名："主要是需要调方向偏置" —— 把它单独提出来，但只留判据与参考表 -->
+    <v-alert type="warning" variant="tonal" density="compact" class="mb-4">
       <div class="font-weight-bold">
-        <v-icon class="mr-1">mdi-compass-outline</v-icon>最该调的是「进场方向」—— 调它的顺序也建议从它开始
+        <v-icon class="mr-1" size="18">mdi-compass-outline</v-icon>最该调的是「进场方向」（顺序：方向 → 落点带 → GPS 噪声）
       </div>
       <div class="text-body-2 mt-1">
-        <b>①先调方向</b>（决定"从哪个方向走过来"，最影响像不像真人）→ ②再调落点带 → ③最后动 GPS 噪声。
-        <br />为什么方向最重要：真人每次都<b>从同一个方向</b>过来（宿舍/教学楼在哪个方位就走哪条路）；
-        而 <b>方向为"每次随机"时，落点会围成一个整圆</b> —— 那是最典型的程序特征。
-        距离反而影响小：站在操场里，离点位中心 40 m 还是 150 m 都正常。
+        真人每次都<b>从同一个方向</b>过来；方向设成"每次随机"时落点会围成<b>一个整圆</b> —— 那是最典型的程序特征。
       </div>
       <v-table density="compact" class="mt-2 zone-bearing-table">
         <thead>
@@ -47,15 +42,14 @@
         </tbody>
       </v-table>
       <div class="text-caption mt-1 text-medium-emphasis">
-        怎么定：在卫星图上看「你常来的那栋楼/那个门」相对<b>点位中心</b>在哪个方向；
-        或用手机指南针站在出发点，读指向签到点位的方位角。填好后看左边预览 —— 黄点应集中成<b>一个扇形</b>而不是整圆。
+        怎么定：看常来的那栋楼/那道门在点位中心的哪个方位（或站在出发点用手机指南针读方位角）。填好后左边预览的黄点应成<b>扇形</b>。
       </div>
     </v-alert>
 
-    <v-alert v-if="status !== 'ready'" type="warning" variant="tonal" density="comfortable" class="mb-4">
+    <v-alert v-if="status !== 'ready'" type="warning" variant="tonal" density="compact" class="mb-4">
       <div class="font-weight-bold">需要先读到签到任务</div>
       <div class="text-body-2">
-        点位（中心坐标 / 圈半径）来自服务端下发 —— 先在工作台登录并读取真实数据，或到「早操签到」页点「重新读取」。
+        点位来自服务端下发 —— 先在工作台读取真实数据，或到「早操签到」页点「重新读取」。
         <span v-if="status === 'unavailable'">当前账号返回"无需签到"（{{ unavailableMessage }}）。</span>
       </div>
     </v-alert>
