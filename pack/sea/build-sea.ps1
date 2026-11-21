@@ -26,6 +26,21 @@ Get-Process -Name rcedit -ErrorAction SilentlyContinue | ForEach-Object {
 }
 if (Test-Path $exeOut) { Remove-Item $exeOut -Force -ErrorAction SilentlyContinue }
 
+# ---- [0/7-pre] release-art placeholder gate (user 2026-11-21 caliber, see dev-sync BOARD) ----
+# A "build for release" EXE must not ship the dev-placeholder text of the current releaseArt.ts
+# entry (version page card shows it verbatim). The entry MUST be formalized first (HANDOVER section 6
+# step 1), only then may the build proceed. Runs BEFORE any packaging so a doomed build fails fast.
+# The patterns live in check-release-art.mjs (UTF-8 JS, NOT here: this file stays pure ASCII).
+Write-Host '[0/7-pre] release-art placeholder gate...'
+# PS 5.1 decodes native output with the console codepage (cp936) while node emits UTF-8 -> mojibake.
+# Switch decode to UTF-8 for this child only. try/catch: when stdout is redirected there may be no
+# console handle - in that case the report degrades to mojibake but the exit code still rules.
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+& node (Join-Path $PSScriptRoot 'check-release-art.mjs')
+if ($LASTEXITCODE -ne 0) {
+    throw "[0/7-pre] release-art placeholder gate FAILED (exit $LASTEXITCODE) - formalize src/mp/releaseArt.ts first (HANDOVER section 6 step 1), then rebuild. For a readable report run: node pack/sea/check-release-art.mjs (Git Bash / pwsh)."
+}
+
 # ---- [0/7] make sure .output is a production build ----
 # Note: an ssr:false SPA build has no static public/index.html (HTML is rendered at runtime by nitro
 #       through client.manifest.mjs), so the pollution check keys off client.manifest.mjs instead.
