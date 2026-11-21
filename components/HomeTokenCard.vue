@@ -79,6 +79,11 @@
           <v-icon start size="14">mdi-database-check-outline</v-icon>
           真实任务已就绪
         </v-chip>
+        <!-- 🆕 2026-11-21（用户要求）：读到 token 后给一个「复制 token」——剪贴板是用户自己的传递通道；
+             🔒 事件日志只记动作、不含 token 本体；不打印、不落盘的纪律不变 -->
+        <v-btn v-if="sessionToken" size="small" variant="text" prepend-icon="mdi-content-copy" @click="copyToken">
+          复制 token
+        </v-btn>
       </div>
 
       <v-alert v-if="realStatus === 'error'" type="error" variant="tonal" density="compact" class="mt-3">
@@ -153,4 +158,22 @@ const emit = defineEmits<{
   'restore-cached': []
   'clear-cached': []
 }>()
+
+/** 会话 token（与页面同源：useMpSession 是单例状态）——读到之后才显示「复制 token」 */
+const { token: sessionToken } = useMpSession()
+const showNotice = useNotice()
+
+/** 复制当前会话 token 到剪贴板（用户 2026-11-21 要求；剪贴板属用户自己的传递通道，
+ *  🔒 事件日志只记动作、绝不写 token 本体——「不打印、不落盘」纪律不变） */
+const copyToken = async () => {
+  const t = sessionToken.value?.trim()
+  if (!t) return
+  try {
+    await navigator.clipboard.writeText(t)
+    showNotice('token 已复制到剪贴板', 'success')
+    logInfo('ui', '复制 token 到剪贴板（内容不入日志）')
+  } catch {
+    showNotice('复制失败：浏览器没给剪贴板权限（localhost 下通常可用）', 'error')
+  }
+}
 </script>
