@@ -7,7 +7,7 @@
 
 <script setup lang="ts">
 /**
- * 「跑步」分组：`/runs/sunrun`（阳光跑）、`/runs/ytu`（研途健行【建议】）、`/runs/freerun`（自由跑）
+ * 「跑步」分组：`/runs/sunrun`（阳光跑）、`/runs/ytu`（研途健行）、`/runs/freerun`（自由跑）
  *
  * ## 2026-09-20 立组（用户要求）
  * 用户要求："把自由跑阳光跑放到一个标签页"（此前是导航里两个平级入口）。
@@ -16,6 +16,7 @@
  *
  * ## 🆕 2026-09-29 加第三个小标签「研途健行【建议】」（GitHub issue #13 + 用户四条口径）
  * 用户原话："将研途健行专门做一个选项卡【建议】，与阳光跑，自由跑同列，启动时进行识别并提示"。
+ *   🔄 2026-11-21（用户口径）：标签上的「【建议】」删掉（与「测试」标注同批清理的漏网之鱼；历史原话保留）。
  *   · **判据是通用的**（`routeRequirementOf(task).kind === 'free'`，即"服务端未下发线路"），
  *     **不是**把某所学校写死 —— 研途健行只是这一类任务里的一个实例；
  *   · `RunWorkspace` 内部据此**主动提示**（站错页时给一键切换入口，站对页时确认一句），
@@ -41,7 +42,7 @@ const GROUP = {
   hint: '阳光跑 / 研途健行 / 自由跑（同一套引擎，仅提交口径与设置项不同）',
   tabs: [
     { key: 'sunrun', label: '阳光跑', icon: 'mdi-white-balance-sunny' },
-    { key: 'ytu', label: '研途健行【建议】', icon: 'mdi-map-marker-path' },
+    { key: 'ytu', label: '研途健行', icon: 'mdi-map-marker-path' },
     { key: 'freerun', label: '自由跑', icon: 'mdi-run' },
   ],
 } as const
