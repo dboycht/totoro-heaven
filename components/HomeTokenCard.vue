@@ -56,7 +56,13 @@
           请确认：电脑版微信已打开并登录「龙猫体育锻炼」（扫描器只读它自己的进程内存，不需要管理员）。
         </div>
       </v-alert>
-      <v-alert v-else-if="tokenScanState.phase === 'ready'" type="success" variant="tonal" density="compact" class="mt-2">
+      <v-alert
+        v-else-if="tokenScanState.phase === 'ready' && acquiredThisVisit"
+        type="success"
+        variant="tonal"
+        density="compact"
+        class="mt-2"
+      >
         ✅ 已获取 token：{{ tokenScanState.masked }} —— 会话已写入，正在读取真实数据…
       </v-alert>
       <v-alert v-else-if="tokenScanState.phase === 'error'" type="error" variant="tonal" density="compact" class="mt-2">
@@ -79,9 +85,10 @@
           <v-icon start size="14">mdi-database-check-outline</v-icon>
           真实任务已就绪
         </v-chip>
-        <!-- 🆕 2026-11-21（用户要求）：读到 token 后给一个「复制 token」——剪贴板是用户自己的传递通道；
-             🔒 事件日志只记动作、不含 token 本体；不打印、不落盘的纪律不变 -->
-        <v-btn v-if="sessionToken" size="small" variant="text" prepend-icon="mdi-content-copy" @click="copyToken">
+        <!-- 🆕 2026-11-21（用户要求 + 验收口径）：本轮显式获取成功后才给「复制 token」——
+             缓存恢复态（重开页面 mp_session 自动恢复）不算"获取到"，不给复制入口；
+             🔒 剪贴板是用户自己的传递通道，事件日志只记动作、不含 token 本体，不打印、不落盘的纪律不变 -->
+        <v-btn v-if="acquiredThisVisit" size="small" variant="text" prepend-icon="mdi-content-copy" @click="copyToken">
           复制 token
         </v-btn>
       </div>
@@ -145,6 +152,9 @@ defineProps<{
   /** 缓存里是否存了 token（决定"恢复"能否真正重建会话）+ 它的掩码（仅供显示） */
   cacheHasToken: boolean
   cacheTokenMask: string
+  /** 🆕 2026-11-21：本轮（页面加载以来）是否**显式获取成功**过（读取/恢复/一键获取）——
+   *  恢复态（重开页面自动恢复的旧会话）不算 ⇒ 「复制 token」与「已获取」横幅都不出现 */
+  acquiredThisVisit: boolean
   realTask: MpSunrunTask | null
 }>()
 
@@ -159,7 +169,7 @@ const emit = defineEmits<{
   'clear-cached': []
 }>()
 
-/** 会话 token（与页面同源：useMpSession 是单例状态）——读到之后才显示「复制 token」 */
+/** 会话 token（与页面同源：useMpSession 是单例状态）——复制动作取值用；显不显示由 acquiredThisVisit 判 */
 const { token: sessionToken } = useMpSession()
 const showNotice = useNotice()
 

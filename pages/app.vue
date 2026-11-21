@@ -65,6 +65,7 @@
           :cached-task-label="cachedTaskLabel"
           :cache-has-token="cacheHasToken"
           :cache-token-mask="cacheTokenMask"
+          :acquired-this-visit="tokenAcquiredThisVisit"
           :real-task="realTask"
           @load-real="doLoadReal"
           @token-scan="doTokenScan"
@@ -233,6 +234,19 @@ const {
 // 全局提示（唯一契约见 composables/useNotice.ts；渲染在 app.vue —— 普通矩形提示条，点一下关闭）
 const showSnackbar = useNotice()
 
+/**
+ * 🆕 2026-11-21（用户验收口径）：「复制 token」按钮与「✅ 已获取 token」横幅只在**本轮显式获取成功**后出现。
+ * 为什么不能只看会话里有没有 token：`mp_session` 会从 localStorage 自动恢复 —— 重开页面就算"有会话"，
+ * 但那不是本轮获取（用户原话："在没有获取到的时候这个按钮也能按"）。
+ * 判据：`realStatus` 变 'ready' 只可能来自三条**显式**路径（手动粘 token 读取 / 点「恢复」重读 /
+ * 一键获取成功后的自动读取），挂载时没有任何自动读取 ⇒ watch 一次就够。
+ * 不持久化（刷新即归零）；「重开页面续用同一 token」的既有行为不受影响——恢复入口照旧。
+ */
+const tokenAcquiredThisVisit = ref(false)
+watch(realStatus, (v) => {
+  if (v === 'ready') tokenAcquiredThisVisit.value = true
+})
+
 /** 已验证学校名单（登记表仅用于"判分口径是否实测过"的提示） */
 const verifiedSchoolText = computed(() => {
   const list = VERIFIED_SCHOOLS.filter((s) => s.verified).map((s) => `「${s.schoolName}」（${s.schoolCode}）`)
@@ -326,6 +340,7 @@ const doLogout = () => {
   // ⚠️ 2026-09-18 审计 S1：改用 `logoutAndClearSession()` —— 之前只 `logout()`（清会话），
   //    缓存里那份完整 token 还留在本机，点「恢复」就能一键登回去。
   logoutAndClearSession()
+  tokenAcquiredThisVisit.value = false
   showSnackbar('已退出登录（本机 token 与缓存已一并清除）', 'info')
 }
 
@@ -341,6 +356,7 @@ const doRestoreCached = () => {
 const doClearAll = () => {
   clearAllLocalData()
   manualToken.value = ''
+  tokenAcquiredThisVisit.value = false
   confirmClearOpen.value = false
   showSnackbar('已清空本机数据：会话 / 任务缓存 / 本机记录（服务端成绩不受影响）', 'info')
 }
