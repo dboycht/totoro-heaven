@@ -478,7 +478,7 @@
             <v-select
               v-if="!isYtuTab && presetItems.length"
               v-model="presetPick"
-              :items="presetItems"
+              :items="presetMenuItems"
               item-title="title"
               item-value="value"
               label="预设（这个地点可以存多条）"
@@ -486,9 +486,26 @@
               :disabled="isBusy"
               class="mb-1"
             />
-            <div v-if="!isYtuTab && presetItems.length" class="text-caption text-medium-emphasis mb-2">
-              这个地点有 <b>{{ presetItems.length }}</b> 条预设，选中的那条决定<b>这次用哪套几何</b>
-              （新建 / 改名 / 删除都在「我的场地 → 跑道编辑」，保存时可给预设起名字）。
+            <div
+              v-if="!isYtuTab && presetItems.length"
+              class="text-caption text-medium-emphasis mb-2 d-flex flex-wrap align-center ga-2"
+            >
+              <span>
+                这个地点有 <b>{{ presetItems.length }}</b> 条预设，选中的那条决定<b>这次用哪套几何</b>
+                （新建 / 改名 / 删除都在「我的场地 → 跑道编辑」，保存时可给预设起名字）。
+              </span>
+              <!-- 🆕 2026-11-21（用户要求）：真实路径池 ≥2 条时给「随机选一条」——省去在长列表里挑 -->
+              <v-btn
+                v-if="realPathPresetCount >= 2"
+                size="x-small"
+                variant="tonal"
+                prepend-icon="mdi-shuffle-variant"
+                class="flex-shrink-0"
+                :disabled="isBusy"
+                @click="pickRandomRealPathPreset"
+              >
+                随机选一条（真实路径）
+              </v-btn>
             </div>
             <div v-if="!isYtuTab && presetItems.length && presetPreferredUnavailable" class="text-caption text-warning mb-2">
               ⚠️ 你上次选的预设已不可用（可能被删除或几何不完整），已改用这个地点里另一条可用的预设。
@@ -1341,10 +1358,12 @@ import { useMpDemo } from '~/composables/useMpDemo'
 import {
   entryGeometryUsable,
   freeRouteGeometryChoice,
+  isRealPathEntry,
   legacyFreePathUpdate,
   localEntryGeometryText,
   localEntryShapeText,
   resolveEntryName,
+  splitRealPathEntries,
 } from '~/utils/mp/trackLibrary'
 // 🆕 2026-09-23（pre3）：一键跳转去画本机路径（`?draw=curve` ⇒ 落地页自动进圈型绘制模式）
 import { freePathDrawLink } from '~/utils/mp/routeGroups'
@@ -1856,6 +1875,51 @@ const presetItems = computed(() =>
       value: String(e.id),
     })),
 )
+/**
+ * 🆕 2026-11-21（用户要求）：预设下拉**分组**——「程序预设」与「真实路径」两段（小标题带条数），程序预设在前。
+ * 为什么两层结构：真实路径预设随使用越攒越多（日期+场次号的长名字），混在手绘跑道里"太多找不过来"。
+ * 判据与拆分都走算法层现成函数（`splitRealPathEntries` / `isRealPathEntry`），界面不另写一套；
+ * 可选项目保持 `{ title, value }` 原样 ⇒ 探针按标题点选的行为不变（分组头是不可选的 subheader）。
+ * 注意 `presetItems`（可选条数）与 `presetMenuItems`（含分组头）是两份：模板里的计数继续用前者。
+ * ⚠️ 分组头在本机 Vuetify 3.5 的形状是 `{ type: 'subheader', title }`（`VListChildren` 按 `type === 'subheader'`
+ * 渲染成 VListSubheader）——`{ props: { header } }` 形状不生效（实测菜单里根本不渲染，探针 47/51 抓到过）。
+ */
+const presetMenuItems = computed(() => {
+  const own = libEntries.value.filter((e) => String(e.lineId) === String(run.value.lineId))
+  const { drawn, real } = splitRealPathEntries(own)
+  const menu: Array<Record<string, unknown>> = []
+  if (drawn.length) {
+    menu.push({ type: 'subheader', title: `程序预设（${drawn.length} 条）` })
+    for (const e of drawn) {
+      menu.push({ title: `${resolveEntryName(e)} —— ${localEntryShapeText(e)}`, value: String(e.id) })
+    }
+  }
+  if (real.length) {
+    menu.push({ type: 'subheader', title: `真实路径（${real.length} 条）` })
+    for (const e of real) {
+      menu.push({ title: `${resolveEntryName(e)} —— ${localEntryShapeText(e)}`, value: String(e.id) })
+    }
+  }
+  return menu
+})
+/** 当前地点的**真实路径**预设条数（「随机选一条」按钮的出现判据：≥2 条才有随机意义） */
+const realPathPresetCount = computed(
+  () => libEntries.value.filter((e) => String(e.lineId) === String(run.value.lineId) && isRealPathEntry(e)).length,
+)
+/**
+ * 🆕 2026-11-21（用户要求）：真实路径池**随机选一条**——省去在长列表里挑的麻烦。
+ * 范围 = 当前地点的真实路径预设（程序预设不参与）；均匀随机抽一条后走 `setPresetChoice`
+ * 与手动选**同一条持久化路径**（刷新/重开沿用），snackbar 报选中名字 + 事件日志（不含 token，本来就无关）。
+ */
+const pickRandomRealPathPreset = () => {
+  const pool = libEntries.value.filter((e) => String(e.lineId) === String(run.value.lineId) && isRealPathEntry(e))
+  if (pool.length < 2) return
+  const pick = pool[Math.floor(Math.random() * pool.length)]
+  if (!pick) return
+  setPresetChoice(run.value.lineId, String(pick.id))
+  logInfo('run', '真实路径池随机选预设', { lineId: run.value.lineId, presetId: String(pick.id), pool: pool.length })
+  showSnackbar(`已随机选中：${resolveEntryName(pick)}`, 'success')
+}
 const presetPick = computed({
   get: () => String(presetChoice.value.entry?.id ?? ''),
   set: (v: string) => {
