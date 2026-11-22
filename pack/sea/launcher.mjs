@@ -62,6 +62,33 @@ function isPortFree(port) {
   })
 }
 
+/* ===== 退场前的"最后一步"必须等子进程跑完（2026-11-22，E111）=====
+ * 用户真机实测：已有一个实例在跑，再双击 EXE ⇒ 打了「已在运行」提示就退出，**浏览器没开**。
+ * 根因：`exec('start …')` 是**异步发射**，跟着立刻 `process.exit()` —— Windows Terminal
+ * （Win11 默认终端）下父进程一退，伪控制台随之销毁，cmd 子进程还没执行到 `start` 就被连带杀掉；
+ * 旧 conhost 下这也是竞态而非保证行为。对照：首次启动的 `openBrowserWhenReady()` 可靠，
+ * 因为那里父进程会继续活着做服务。
+ * 两道修（行为不变，只把"最后一步"变成**确定发生**）：
+ *   ① `openBrowserThenExit`：await 到 cmd 退出再 exit(0)（3 s 兜底防挂）——
+ *      浏览器是 ShellExecute 拉起的独立进程，不受本控制台生死影响；
+ *   ② `pauseThenExit`：失败路径同理 —— 原先 `exec('pause')` 不等待，控制台可能随父进程
+ *      一起消失，**错误信息根本来不及看**；现在父进程撑着控制台直到用户看完按了键（60 s 兜底）。
+ */
+const openBrowserThenExit = async (url) => {
+  await Promise.race([
+    new Promise((resolve) => exec(`start ${url}`, () => resolve())),
+    new Promise((resolve) => setTimeout(resolve, 3000)),
+  ])
+  process.exit(0)
+}
+const pauseThenExit = async (code = 1) => {
+  await Promise.race([
+    new Promise((resolve) => exec('pause', () => resolve())),
+    new Promise((resolve) => setTimeout(resolve, 60000)),
+  ])
+  process.exit(code)
+}
+
 async function pickPort() {
   /**
    * ⚠️ **2026-09-21 结构性修复（审计 B3）**：**探测整个候选端口段**，而不是只看首选端口。
@@ -75,8 +102,7 @@ async function pickPort() {
     if (await looksLikeOurApp(p)) {
       console.log(`  ℹ 检测到本工具已在 http://localhost:${p}/ 运行，直接打开浏览器（不再重复启动服务）。`)
       console.log('  ℹ 原因：同一时间只应运行一个本程序实例（多个实例会共用同一个临时解包目录，可能互相影响）。')
-      exec(`start http://localhost:${p}/`)
-      process.exit(0)
+      await openBrowserThenExit(`http://localhost:${p}/`)
     }
   }
   for (let p = PREFERRED_PORT; p <= PREFERRED_PORT + 20; p++) {
@@ -92,8 +118,7 @@ async function pickPort() {
       `请关掉占用这些端口的程序后重试，或用环境变量指定别的端口，例如：\n` +
       `    set TOTORO_PORT=4000 && totoro-heaven.exe\n`,
   )
-  exec('pause')
-  process.exit(1)
+  await pauseThenExit()
 }
 
 /**
@@ -138,10 +163,9 @@ function pidAlive(pid) {
 async function acquireStartupLock() {
   for (let attempt = 0; ; attempt++) {
     // 等待期间对方可能已把服务起起来（解包完就监听了）⇒ 直接打开浏览器退出，**绝不继续解包**
-    if (attempt > 0 && attempt % 2 === 0 && (await looksLikeOurApp(PREFERRED_PORT))) {
+      if (attempt > 0 && attempt % 2 === 0 && (await looksLikeOurApp(PREFERRED_PORT))) {
       console.log(`  ℹ 本工具已在 http://localhost:${PREFERRED_PORT}/ 运行，直接打开浏览器。`)
-      exec(`start http://localhost:${PREFERRED_PORT}/`)
-      process.exit(0)
+      await openBrowserThenExit(`http://localhost:${PREFERRED_PORT}/`)
     }
     try {
       // 'wx'：独占创建；已存在则抛 EEXIST ⇒ 走等待分支
@@ -169,8 +193,7 @@ async function acquireStartupLock() {
       if (attempt >= 60) {
         console.error('启动失败：另一个实例长时间未完成启动。请关闭所有本程序窗口后重试；')
         console.error('若反复出现，删除这个临时目录后再试：  %TEMP%\\totoro-heaven-runtime')
-        exec('pause')
-        process.exit(1)
+        await pauseThenExit()
       }
       await new Promise((r) => setTimeout(r, 500))
     }
@@ -204,8 +227,7 @@ async function extractAssets() {
     if (await looksLikeOurApp(PORT)) {
       releaseStartupLock()
       console.log(`  ℹ 本工具已在 http://localhost:${PORT}/ 运行（另一个实例先启动完了），直接打开浏览器。`)
-      exec(`start http://localhost:${PORT}/`)
-      process.exit(0)
+      await openBrowserThenExit(`http://localhost:${PORT}/`)
     }
   }
   for (const sub of ['server', 'public']) {
@@ -272,8 +294,7 @@ async function main() {
   if (await looksLikeOurApp(PORT)) {
     releaseStartupLock()
     console.log(`  ℹ 本工具已在 http://localhost:${PORT}/ 运行（另一个实例先启动完了），直接打开浏览器。`)
-    exec(`start http://localhost:${PORT}/`)
-    process.exit(0)
+    await openBrowserThenExit(`http://localhost:${PORT}/`)
   }
   if (!(await isPortFree(PORT))) {
     for (let p = PORT + 1; p <= PREFERRED_PORT + 20; p++) {
@@ -305,9 +326,8 @@ async function main() {
   releaseStartupLock()
 }
 
-main().catch((e) => {
+main().catch(async (e) => {
   releaseStartupLock()
   console.error('启动失败:', e)
-  exec('pause')
-  process.exit(1)
+  await pauseThenExit()
 })
