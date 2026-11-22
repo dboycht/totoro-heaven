@@ -57,10 +57,11 @@ const GROUP = {
   icon: 'mdi-map-marker-radius',
   hint: '与"你描的几何 / 签到落点 / 真实路径"有关',
   tabs: [
+    // 🆕 2026-11-22（用户口径）：「真实路径」提到最前（基路径 `/field` 的落点同步改，见 pages/field/index.vue）
+    { key: 'real-path', label: '真实路径', icon: 'mdi-map-marker-path' },
     { key: 'track-editor', label: '跑道编辑', icon: 'mdi-vector-polyline' },
     { key: 'mornsign-zone', label: '签到区域', icon: 'mdi-map-marker-radius-outline' },
     { key: 'free-path', label: '研途健行路径', icon: 'mdi-vector-curve' },
-    { key: 'real-path', label: '真实路径', icon: 'mdi-map-marker-path' },
   ],
 } as const
 

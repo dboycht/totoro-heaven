@@ -24,6 +24,25 @@ import { LOCAL_FREE_LINE_ID, TRACK_NAME_MAX } from '~/utils/mp/trackLibrary'
 const showSnackbar = useNotice()
 /** 顶栏「使用说明」对话框（原先摊在页面顶部的三段说明搬进了这里，页面只留控件与一行摘要） */
 const helpOpen = ref(false)
+
+/**
+ * 🆕 2026-11-22（用户口径，文案逐字用户原话）：**首次进入本页**弹一次介绍。
+ * 一次性标记存 localStorage（`mp_realpath_intro_seen_v1`）：**显示的当下就置位**——
+ * 关掉方式无关紧要（点「知道了」/点外面/ESC 都算看过），刷新 / 重开不再弹。
+ * ⚠️ 家族探针预置这个键 ⇒ 不会被弹窗挡住；弹窗本体由 `verify_realpath_intro.mjs` 专门钉住。
+ */
+const INTRO_SEEN_KEY = 'mp_realpath_intro_seen_v1'
+const introOpen = ref(false)
+onMounted(() => {
+  try {
+    if (!localStorage.getItem(INTRO_SEEN_KEY)) {
+      introOpen.value = true
+      localStorage.setItem(INTRO_SEEN_KEY, '1')
+    }
+  } catch {
+    /* localStorage 不可用（隐私模式等）⇒ 不弹，不影响本页功能 */
+  }
+})
 const rp = useRealPathExport()
 const lib = useTrackLibrary()
 /**
@@ -436,6 +455,23 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
         取回本人某一天真实跑过的轨迹 → 存成本机路径预设（跑步页可选）或导出分享；本页只读服务端，只读自己的记录。
       </span>
     </div>
+
+    <!-- 🆕 2026-11-22 首次进入介绍（文案逐字用户原话；见 script 里 INTRO_SEEN_KEY 的说明） -->
+    <v-dialog v-model="introOpen" max-width="560">
+      <v-card>
+        <v-card-title class="text-subtitle-1 d-flex align-center ga-2">
+          <v-icon color="primary">mdi-map-marker-path</v-icon>
+          真实路径 · 先看一眼
+        </v-card-title>
+        <v-card-text class="text-body-2">
+          你可以登录其他真实跑的同学的账户，导出TA跑的轨迹并作为路径保存在你的电脑中，这样的话就和真实环境完全一致了；记着多保存几种，不要只用几条太过于明显
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn color="primary" variant="flat" @click="introOpen = false">开始使用</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
 
     <v-dialog v-model="helpOpen" max-width="620">
       <v-card>
