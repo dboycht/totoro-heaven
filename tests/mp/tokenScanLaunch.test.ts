@@ -19,7 +19,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { TOKEN_SCAN_PS1, tokenScannerArgs } from '../../server/utils/tokenScanScript.ts'
+import { TOKEN_SCAN_PS1, tokenScanSupportedOn, tokenScannerArgs } from '../../server/utils/tokenScanScript.ts'
 import {
   SCAN_OUTPUT_LIMIT,
   condenseScanOutput,
@@ -42,6 +42,14 @@ function hasPowerShell(): boolean {
 const skipNoPs = { skip: !hasPowerShell(), timeout: 40000 }
 
 /* ---------- 纯逻辑（任何平台都跑） ---------- */
+
+test('平台硬闸：tokenScanSupportedOn 只有 win32 支持（Mac/Linux fail-closed，2026-11-22 Mac 门控）', () => {
+  assert.equal(tokenScanSupportedOn('win32'), true)
+  assert.equal(tokenScanSupportedOn('darwin'), false)
+  assert.equal(tokenScanSupportedOn('linux'), false)
+  // 缺省参数 = 当前进程平台（本测试三平台都跑，这里只断言"类型是布尔"，平台值交给上面三条）
+  assert.equal(typeof tokenScanSupportedOn(), 'boolean')
+})
 
 test('内嵌扫描脚本保持纯 ASCII（PS 5.1 按系统 ANSI 读无 BOM 文件，见 E14/E80）', () => {
   assert.match(TOKEN_SCAN_PS1, /^[\x00-\x7f]*$/)

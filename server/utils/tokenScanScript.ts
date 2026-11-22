@@ -57,6 +57,17 @@ export function tokenScannerArgs(script: string, callbackUrl: string, nonce: str
   ]
 }
 
+/**
+ * 🔒 平台硬闸（2026-11-22 Mac 门控）：扫描器用 Win32 调试 API
+ * （`OpenProcess` / `ReadProcessMemory` / `VirtualQueryEx`）读 **Windows 微信**的进程内存 ⇒
+ * 只有 `win32` 支持。Mac（darwin）/Linux 上 `/api/local/token-scan/start` **fail-closed**；
+ * 前端的按钮灰禁（`composables/useClientPlatform.ts`，按 UA 判）只是 UI 引导，**这里才是判据**
+ * —— UA 可以伪造，`process.platform` 不会。Mac 拿 token 走「粘贴 → 读取真实账号与任务」。
+ */
+export function tokenScanSupportedOn(platform: string = process.platform): boolean {
+  return platform === 'win32'
+}
+
 export const TOKEN_SCAN_PS1 = `param(
   [Parameter(Mandatory=$true)][string]$CallbackUrl,
   [Parameter(Mandatory=$true)][string]$Nonce,

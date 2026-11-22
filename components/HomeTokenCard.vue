@@ -29,6 +29,7 @@
           color="success"
           prepend-icon="mdi-radar"
           :loading="tokenScanState.running"
+          :disabled="isMac"
           @click="emit('token-scan')"
         >
           一键获取 token
@@ -39,6 +40,10 @@
           清空本机数据
         </v-btn>
       </div>
+      <v-alert v-if="isMac" type="info" variant="tonal" density="compact" class="mt-2">
+        Mac 版暂不支持「一键获取 token」（扫描器只支持 Windows 微信客户端）——
+        请直接在上面粘贴 token，再点「读取真实账号与任务」。
+      </v-alert>
 
       <!-- 一键获取 token 的状态（扫描中 / 验活 / 就绪 / 失败） -->
       <v-alert
@@ -116,8 +121,10 @@
           </template>
         </div>
         <div v-if="!isRealSession && !cacheHasToken" class="text-caption mt-1 text-warning">
-          ⚠️ 本机当前没有可用 token（这份缓存也是旧版本存的、不含 token）—— 请先点上方「一键获取 token」，
-          之后再点「恢复」；<b>新版本此后会把 token 一起存下来</b>，以后就能一键恢复。
+          ⚠️ 本机当前没有可用 token（这份缓存也是旧版本存的、不含 token）——
+          <template v-if="isMac">请先粘贴 token 并点「读取真实账号与任务」，之后再点「恢复」</template>
+          <template v-else>请先点上方「一键获取 token」，之后再点「恢复」</template>；
+          <b>新版本此后会把 token 一起存下来</b>，以后就能一键恢复。
         </div>
         <div class="d-flex flex-wrap ga-2 mt-2">
           <v-btn size="small" variant="tonal" prepend-icon="mdi-history" @click="emit('restore-cached')">
@@ -168,6 +175,11 @@ const emit = defineEmits<{
   'restore-cached': []
   'clear-cached': []
 }>()
+
+/** 🆕 2026-11-22 Mac 门控：一键获取（内存扫描器）只支持 Windows ⇒ Mac 上按钮灰禁、提示走粘贴路线。
+ *  判据来自 UA（SSR 同口径，见 useClientPlatform.ts）——只是 UI 引导，不是安全边界；
+ *  服务端 `/api/local/token-scan/start` 另有 `tokenScanSupportedOn(process.platform)` 硬闸。 */
+const { isMac } = useClientPlatform()
 
 /** 会话 token（与页面同源：useMpSession 是单例状态）——复制动作取值用；显不显示由 acquiredThisVisit 判 */
 const { token: sessionToken } = useMpSession()

@@ -156,7 +156,21 @@
           三步上手（第一次使用请看这里）
         </v-card-title>
         <v-card-text>
-          <ol class="text-body-2 pl-4">
+          <ol v-if="isMac" class="text-body-2 pl-4">
+            <li class="mb-2">
+              用<b>抓包工具</b>（Fiddler / Charles 等）抓一条 <code>wxxcx.xtotoro.com</code> 的请求
+              （手机微信里打开小程序即可，Mac 版不需要电脑版微信）。
+            </li>
+            <li class="mb-2">
+              把请求头里 <code>Authorization: Bearer</code> 后面那串<b>粘贴到本页的 token 输入框</b>
+              → 点「<b>读取真实账号与任务</b>」（Mac 版暂不支持「一键获取 token」）。
+            </li>
+            <li class="mb-2">
+              进「<b>阳光跑</b>」→ 选线路 → 「开始跑步」（本地生成数据并结算）→ 看自检表 → 点「<b>真实提交</b>」→
+              <b>等到倒计时结束</b>（约 20 分钟：别关页面、别刷新、别在别的端登录账号）。
+            </li>
+          </ol>
+          <ol v-else class="text-body-2 pl-4">
             <li class="mb-2">
               <b>打开电脑版微信</b>并登录（本软件只能从<b>电脑版</b>微信里取 token，手机端取不到）。
             </li>
@@ -177,13 +191,14 @@
           </ol>
           <v-alert type="info" variant="tonal" density="compact" class="mt-2">
             token 只有<b>几天</b>有效期。过期时软件会提示：在小程序里<b>退出登录 → 用学号+姓名重新登录</b>，
-            回到本页再点一次「一键获取 token」即可。
+            <template v-if="isMac">回到本页重新粘贴 token 并读取即可。</template>
+            <template v-else>回到本页再点一次「一键获取 token」即可。</template>
             <br />（等价且更稳的做法：在微信里删除该小程序 → 重新打开 → 登录。两者都会解除微信绑定，请确认记得学号。）
           </v-alert>
           <!-- 版本提醒不在这里再写一遍：工作台顶端常驻的「请始终使用最新版本」卡片一直可见（同一句话不重复两次）。 -->
         </v-card-text>
         <v-card-actions>
-          <v-btn variant="text" prepend-icon="mdi-radar" @click="doTokenScanAndCloseGuide">知道了，立即获取 token</v-btn>
+          <v-btn v-if="!isMac" variant="text" prepend-icon="mdi-radar" @click="doTokenScanAndCloseGuide">知道了，立即获取 token</v-btn>
           <v-spacer />
           <v-btn color="primary" variant="flat" @click="closeGuide">知道了</v-btn>
         </v-card-actions>
@@ -233,6 +248,10 @@ const {
 } = useMpReal()
 // 全局提示（唯一契约见 composables/useNotice.ts；渲染在 app.vue —— 普通矩形提示条，点一下关闭）
 const showSnackbar = useNotice()
+
+/** 🆕 2026-11-22 Mac 门控：首次教程与 token 相关引导按平台分流（一键获取只支持 Windows，
+ *  Mac 走「抓包粘贴」路线，见 composables/useClientPlatform.ts 的口径说明） */
+const { isMac } = useClientPlatform()
 
 /**
  * 🆕 2026-11-21（用户验收口径）：「复制 token」按钮与「✅ 已获取 token」横幅只在**本轮显式获取成功**后出现。

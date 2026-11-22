@@ -6,10 +6,26 @@
  */
 import { assertLocalRequest, beginScan, localCallbackOrigin } from '../../../utils/tokenScanState'
 import { launchTokenScanner } from '../../../utils/tokenScanRunner'
+import { tokenScanSupportedOn } from '../../../utils/tokenScanScript'
 import { logInfo } from '../../../utils/logger'
 
 export default defineEventHandler((event) => {
   assertLocalRequest(event)
+
+  /**
+   * 🆕 2026-11-22（Mac 门控，fail-closed）：扫描器用 Win32 调试 API 读 **Windows 微信**进程内存
+   * ⇒ 非 win32 平台一律拒绝，绝不启动一个注定失败的扫描。前端的按钮灰禁
+   * （`composables/useClientPlatform.ts`，按 UA 判）只是引导，**这里才是硬闸**。
+   * Mac 拿 token 走「粘贴 → 读取真实账号与任务」（输入框本来就与平台无关）。
+   */
+  if (!tokenScanSupportedOn()) {
+    logInfo('token', `平台 ${process.platform} 不支持一键扫描，已拒绝（fail-closed）`)
+    return {
+      ok: false,
+      nonce: '',
+      message: 'Mac 版暂不支持一键获取 token（扫描器只支持 Windows 微信客户端）——请直接粘贴 token，再点「读取真实账号与任务」。',
+    }
+  }
 
   /**
    * 回传地址**按请求实际来的地址族**拼（`localCallbackOrigin`，纯函数、有单测）——

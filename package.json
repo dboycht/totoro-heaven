@@ -16,7 +16,8 @@
     "check:wiring": "node scripts/check-wiring.mjs",
     "selftest:wiring": "node scripts/selftest-check-wiring.mjs",
     "verify": "npm run test:mp && npm run typecheck:mp && npm run typecheck:ui && npm run typecheck:vue && npm run check:wiring && npm run selftest:wiring",
-    "sea": "powershell -NoProfile -ExecutionPolicy Bypass -File pack/sea/build-sea.ps1"
+    "sea": "powershell -NoProfile -ExecutionPolicy Bypass -File pack/sea/build-sea.ps1",
+    "mac": "node pack/mac/launch.mjs"
   },
   "dependencies": {
     "ky": "^1.2.3",
