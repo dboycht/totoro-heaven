@@ -53,5 +53,18 @@ export function useGameAchievements() {
     return true
   }
 
-  return { unlockedIds, unlock }
+  /**
+   * 清空全部成就解锁状态（游戏「设置」用，2026-11-23，1.3.9）。
+   * 只删本机 `totoro-game:achievements`，**不动**软件解锁状态、登录态与服务端数据。
+   */
+  const reset = (): void => {
+    unlockedIds.value = new Set<string>()
+    try {
+      localStorage.removeItem(ACHIEVEMENTS_STORAGE_KEY)
+    } catch {
+      // 隐私模式等读不到 localStorage：内存里已清空，本局生效
+    }
+  }
+
+  return { unlockedIds, unlock, reset }
 }

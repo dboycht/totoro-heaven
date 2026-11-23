@@ -10,7 +10,8 @@
  *     通关后输入名字「郑永康」→「kskblzdjd」；解锁状态持久（localStorage），
  *     toast 队列在**全局**（app.vue）——跳转工作台也不丢；
  *   - 通关结算：定格 + 恭喜 + 名字输入（记入本机排行榜，可跳过）+ 再来一局；
- *   - 成就/排行榜面板 `AchievementPanel`（右上角入口；打开暂停、关闭恢复）。
+ *   - 成就/排行榜面板 `AchievementPanel`（右上角入口；打开暂停、关闭恢复）；
+ *   - 游戏设置 `GameSettingsPanel`（左上角「⚙ 设置」；清除本机成就/排行榜数据，二次确认）。
  *
  * ⚠️ 本页**不挂全局布局**（`layout: false`）：否则顶栏的「工作台 / 跑步 / 我的场地」
  *    会把"这里有个跑步工具"直接写在脸上（实测被探针抓到过）。
@@ -106,12 +107,22 @@ onBeforeUnmount(() => {
   gameRef.value?.dispose()
 })
 
-// ── 成就/排行榜面板：打开暂停（原版 stop 定格）、关闭恢复（play 原地续跑）；通关定格时不恢复 ──
+// ── 面板：打开暂停（原版 stop 定格）、关闭恢复（play 原地续跑）；通关定格时不恢复 ──
 const panelOpen = ref(false)
+const settingsOpen = ref(false)
+const syncPause = () => {
+  if (panelOpen.value || settingsOpen.value) gameRef.value?.pause()
+  else gameRef.value?.resume()
+}
 const onPanelToggle = () => {
   panelOpen.value = !panelOpen.value
-  if (panelOpen.value) gameRef.value?.pause()
-  else gameRef.value?.resume()
+  if (panelOpen.value) settingsOpen.value = false
+  syncPause()
+}
+const onSettingsToggle = () => {
+  settingsOpen.value = !settingsOpen.value
+  if (settingsOpen.value) panelOpen.value = false
+  syncPause()
 }
 
 // 通关遮罩显示时按空格 / ↑ 再来一局（与原版 game over 后按键复活的手感一致）
@@ -138,6 +149,9 @@ useHead({ title: '龙猫天堂' })
 
     <!-- 成就/排行榜入口（右上角；打开时游戏暂停，关闭恢复） -->
     <button type="button" class="play-meta-btn" @click="onPanelToggle">🏆 成就 · 排行榜</button>
+
+    <!-- 设置入口（左上角；清除本机成就/排行榜数据，二次确认） -->
+    <button type="button" class="play-settings-btn" @click="onSettingsToggle">⚙ 设置</button>
 
     <div class="play-stage">
       <ChibiRunGame ref="gameRef" @unlock="onUnlock" @achieve="onAchieve" @win="onWin" />
@@ -179,6 +193,9 @@ useHead({ title: '龙猫天堂' })
 
     <!-- 成就/排行榜面板（隐藏式成就：未解锁只显示灰色问号块） -->
     <AchievementPanel :open="panelOpen" @close="onPanelToggle" />
+
+    <!-- 设置面板（只清本机游戏数据；打开时暂停，关闭恢复） -->
+    <GameSettingsPanel :open="settingsOpen" @close="onSettingsToggle" />
   </div>
 </template>
 
@@ -212,13 +229,13 @@ useHead({ title: '龙猫天堂' })
   background: rgba(18, 16, 28, 0.82);
   color: #ffe9f3;
 }
-/* 成就/排行榜入口（右上角，像素风小按钮）
+/* 成就/排行榜入口（右上角）+ 设置入口（左上角），像素风小按钮
    ⚠️ z-index 必须高于通关结算遮罩（.play-win = 30）：通关结算界面里也要能打开
    面板看排行榜/成就（e2e 实测：低于 30 时遮罩吃掉点击，面板打不开） */
-.play-meta-btn {
+.play-meta-btn,
+.play-settings-btn {
   position: absolute;
   top: 10px;
-  right: 12px;
   z-index: 35;
   appearance: none;
   border: 2px solid #4a4460;
@@ -231,7 +248,14 @@ useHead({ title: '龙猫天堂' })
   border-radius: 999px;
   padding: 4px 14px;
 }
-.play-meta-btn:active {
+.play-meta-btn {
+  right: 12px;
+}
+.play-settings-btn {
+  left: 12px;
+}
+.play-meta-btn:active,
+.play-settings-btn:active {
   transform: translateY(1px);
 }
 /* 舞台铺满整屏；画布（由组件按视口算高度）钉在舞台底部 ⇒ 地面贴着屏幕下缘，上方是天空留白 */

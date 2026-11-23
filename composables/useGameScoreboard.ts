@@ -51,5 +51,18 @@ export function useGameScoreboard() {
     persist()
   }
 
-  return { entries, add }
+  /**
+   * 清空本机排行榜（游戏「设置」用，2026-11-23，1.3.9）。
+   * 只删本机 `totoro-game:scoreboard`，不入库、不上传，不影响软件解锁与登录。
+   */
+  const reset = (): void => {
+    entries.value = []
+    try {
+      localStorage.removeItem(SCOREBOARD_STORAGE_KEY)
+    } catch {
+      // 隐私模式等读不到 localStorage：内存里已清空，本局生效
+    }
+  }
+
+  return { entries, add, reset }
 }
