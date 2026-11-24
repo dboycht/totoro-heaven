@@ -2535,15 +2535,16 @@ const paceItems = computed<{ value: number; label: string }[]>(() => {
     for (const x of PACE_PRESETS) items.push({ value: x.value, label: String(x.label) })
   }
   /**
-   * ⚠️ 必须把"实际值"塞进选项里，否则 Vuetify 在列表里找不到它时会**回退显示原始秒数**
+   * ⚠️ 必须把**当前值**塞进选项里，否则 Vuetify 在列表里找不到它时会**回退显示原始秒数**
    *    （issue #13 截图里那个"514"就是这么来的）。真实路径带归档用时 ⇒ 这里显示的就是归档反算值。
+   *
+   * 🔴 2026-11-24 修：**只加这一行**。上一版还把 `ytuPlannedPace`（预览出来的计划值）也当成
+   *    "本次实际会用这个"塞进来 ⇒ 下拉里出现两三条同名同义的项（用户实测问到"为啥会有两个"）。
+   *    计划值本来就有它的展示位置（研途健行块的「本次将生成」），不该混进"档位选择"里。
    */
-  const actual = run.value.paceSecPerKm
-  const planned = ytuPlannedPace.value
-  for (const p of [actual, planned]) {
-    if (!Number.isFinite(p) || p <= 0) continue
-    if (items.some((x) => x.value === p)) continue
-    items.unshift({ value: p, label: `${formatPace(p)} /km（本次实际会用这个）` })
+  const actual = Number(run.value.paceSecPerKm)
+  if (Number.isFinite(actual) && actual > 0 && !items.some((x) => x.value === actual)) {
+    items.unshift({ value: actual, label: `${formatPace(actual)} /km（当前值 · 本次结算按它算）` })
   }
   return items
 })
