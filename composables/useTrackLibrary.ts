@@ -21,6 +21,7 @@ import {
   FREE_ROUTE_CHOICE_KEY,
   PRESET_CHOICE_KEY,
   isValidTrackEntry,
+  isDemoTrackEntry,
   autoPresetName,
   conflictOwnerText,
   entryIdOf,
@@ -61,6 +62,17 @@ export function useTrackLibrary() {
    * 与 `entries` 同生命周期（`useState` 内存态，刷新即归零）。
    */
   const loaded = useState<boolean>('mpTrackLibraryLoaded', () => false)
+  /**
+   * 🆕 2026-11-24（演示模式补齐）：**演示预设**（只进内存，绝不落盘）。
+   *
+   * 为什么单开一份：演示预设要出现在 `entries` 里（跑步页的线路/预设判据、真实路径列表、
+   * 「随机选一条」全都读 `entries`），但**不能**写进 `localStorage` —— 否则退出演示后
+   * 真实模式里还留着假几何，用户可能拿它去跑真实提交。
+   *
+   * 所以：`load()` 把这份垫在最前；`persist()` 落盘时按 `DEMO_TRACK_ID_PREFIX` 剔除；
+   * `clearDemoPresets()` 从内存里摘掉。判据本体在算法层 `isDemoTrackEntry()`（纯函数、有单测）。
+   */
+  const demoEntries = useState<TrackRouteEntry[]>('mpDemoTrackEntries', () => [])
   /**
    * 🆕 2026-09-22（用户批准）：**「本机路径」下拉的选择**，按任务各记各的（`{[taskId]: lineId}`）。
    *
@@ -174,7 +186,8 @@ export function useTrackLibrary() {
         /* 忽略 */
       }
     }
-    entries.value = merged
+    /** 演示预设垫在最前（真实条目里永远不含它们：落盘时已剔除） */
+    entries.value = [...demoEntries.value, ...merged]
     /** 🆕 2026-09-25：标记"读过本机库了" ⇒ 门禁从此可以把"没有几何"当作**确定结论**（`undefined` 才是未知） */
     loaded.value = true
     if (migrated) persist()
@@ -194,7 +207,8 @@ export function useTrackLibrary() {
   const persist = (): boolean => {
     if (!import.meta.client) return false
     try {
-      localStorage.setItem(TRACK_LIBRARY_KEY, JSON.stringify(entries.value))
+      /** 🔴 演示预设只进内存：落盘前按 id 前缀剔除（判据 `isDemoTrackEntry()`） */
+      localStorage.setItem(TRACK_LIBRARY_KEY, JSON.stringify(entries.value.filter((e) => !isDemoTrackEntry(e))))
       return true
     } catch {
       return false
@@ -216,6 +230,8 @@ export function useTrackLibrary() {
     if (!target) return { removed: false, persisted: true }
     const id = entryIdOf(target)
     entries.value = entries.value.filter((e) => entryIdOf(e) !== id)
+    /** 🆕 演示条目被删 ⇒ 同步从内存那份里摘掉，否则下次 `load()` 又垫回来（"删不掉"） */
+    if (isDemoTrackEntry(target)) demoEntries.value = demoEntries.value.filter((e) => entryIdOf(e) !== id)
     return { removed: true, persisted: persist() }
   }
 
@@ -400,6 +416,51 @@ export function useTrackLibrary() {
   }
 
   /**
+   * 🆕 2026-11-24（演示模式补齐）：**装载演示预设**（只进内存）。
+   *
+   * 逐条走 `upsert()`（固定 id），于是命名/查重/留痕与真实预设完全同一条路径；
+   * 唯一的区别是落盘时会按 id 前缀剔除（见 `persist()`），所以刷新/退出演示即消失。
+   * 返回真正装上的条数（命名撞车等异常会让某条装不上，界面据此如实提示）。
+   */
+  const seedDemoPresets = (
+    drafts: Array<{ id: string; lineId: string; lineName: string; outer: LatLng[]; inner: LatLng[]; presetName: string; freeShape?: unknown; realPath?: unknown }>,
+  ): number => {
+    /**
+     * ⚠️ 先把旧的演示条目摘掉：重复点「载入演示数据」不许堆出两套同名预设
+     * （`upsert` 按 id 覆盖本可以，但上一轮若命名不同就会堆叠）。
+     */
+    const before = entries.value.filter((e) => !isDemoTrackEntry(e))
+    entries.value = before
+    demoEntries.value = []
+    const made: TrackRouteEntry[] = []
+    for (const d of drafts) {
+      const res = upsert({
+        id: d.id,
+        lineId: d.lineId,
+        lineName: d.lineName,
+        outer: d.outer,
+        inner: d.inner,
+        presetName: d.presetName,
+        freeShape: d.freeShape as never,
+        realPath: d.realPath as never,
+      })
+      if (res.ok) made.push(res.entry)
+    }
+    demoEntries.value = made
+    entries.value = [...made, ...entries.value.filter((e) => !isDemoTrackEntry(e))]
+    persist()
+    return made.length
+  }
+
+  /** 🆕 2026-11-24：**摘掉演示预设**（退出演示 / 清空本机数据时调用；真实条目一条不动） */
+  const clearDemoPresets = () => {
+    if (!demoEntries.value.length) return
+    demoEntries.value = []
+    entries.value = entries.value.filter((e) => !isDemoTrackEntry(e))
+    persist()
+  }
+
+  /**
    * 取一条预设（🆕 2026-11-03：**先按预设 id，找不到再按 `lineId` 退回该地点最新保存的那条**）。
    * ⚠️ 退回是为了兼容旧调用方（它们传的是 `lineId`，如「跑道编辑」里选的线路）；
    *    要精确取某一条请传预设 id（列表里就是 `e.id`）。
@@ -425,6 +486,10 @@ export function useTrackLibrary() {
     loaded,
     load,
     persist,
+    // 🆕 2026-11-24（演示模式补齐）：演示预设只进内存；`seedDemoPresets` 由 `useMpDemo().enableDemo()` 调
+    demoEntries,
+    seedDemoPresets,
+    clearDemoPresets,
     upsert,
     remove,
     rename,

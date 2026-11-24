@@ -25,6 +25,7 @@
  *   ③ **提交口径不变**：导出的路径只是**本机几何**，跑步页提交仍走原版报文（本功能一行都没碰 `submitPayload`）。
  */
 import { MpApiWrapper } from '~/src/wrappers/MpApiWrapper'
+import { DEMO_ARCH_MONTHS, DEMO_ARCH_RECORDS, DEMO_SESSION, demoArchPoints } from '~/src/mp/demo'
 import { logInfo, logWarn } from '~/composables/useEventLog'
 import {
   REAL_PATH_BUNDLE_FILE,
@@ -134,10 +135,18 @@ export function useRealPathExport() {
   /** 上一次成功的提示（空串 = 没提示） */
   const notice = useState<string>('mpRealPathNotice', () => '')
 
+  /**
+   * 🆕 2026-11-24（演示模式补齐）：演示模式走**本地假归档**，一个请求都不发。
+   * 判据来自 `useMpDemo().demoMode`（唯一开关），**不看 token 长得像不像演示**。
+   */
+  const { demoMode } = useMpDemo()
   const token = computed(() => String(sessionToken.value ?? session.value?.token ?? ''))
   /** 读这一列请求都要带的基础参数（与 `real/submit.ts` 的读判定同口径） */
   const apiOptions = computed(() => ({ token: token.value, baseUrl: session?.value?.baseUrl }))
-  const snCode = computed(() => String(real.profile.value?.snCode ?? ''))
+  /** 演示模式如实显示演示学号（`DEMO2026001`），不冒充真实档案 */
+  const snCode = computed(() =>
+    demoMode.value ? String(DEMO_SESSION.userInfo.snCode) : String(real.profile.value?.snCode ?? ''),
+  )
   const hasToken = computed(() => Boolean(token.value))
 
   const days = computed<RealPathDay[]>(() => groupRecordsByDay(records.value))
@@ -174,6 +183,20 @@ export function useRealPathExport() {
 
   /** 读学期/月份列表（只读） */
   const loadMonths = async (): Promise<RealPathMonth[]> => {
+    /** 🆕 演示模式：直接给本地假月份表（不发请求、不需要 token） */
+    if (demoMode.value) {
+      error.value = ''
+      const out: RealPathMonth[] = DEMO_ARCH_MONTHS.map((m) => ({
+        monthId: String(m.monthId),
+        monthName: String(m.monthName),
+        isCurrent: Boolean(m.isCurrent),
+      }))
+      months.value = out
+      if (!activeMonthId.value) activeMonthId.value = pickMonthId(out)
+      notice.value = `演示数据：${out.length} 个月份（不是从服务端读的）`
+      logInfo('realpath', '演示月份表已载入', { count: out.length })
+      return out
+    }
     if (!hasToken.value) {
       error.value = '还没有登录态：请先回「工作台」点「一键获取 token」'
       return []
@@ -214,6 +237,30 @@ export function useRealPathExport() {
    * 口径与 `composables/real/submit.ts` 的读判定**逐字相同**（`rowNumber: 1000`）。
    */
   const loadRecords = async (monthId?: string): Promise<RealPathRecord[]> => {
+    /** 🆕 演示模式：按 `YYYY-MM` 前缀从本地假归档筛一个月出来 */
+    if (demoMode.value) {
+      error.value = ''
+      if (!months.value.length) await loadMonths()
+      const useMonth = pickMonthId(months.value, monthId) || '2026-11'
+      const list: RealPathRecord[] = DEMO_ARCH_RECORDS.filter((r) => String(r.date).startsWith(useMonth)).map((r) => ({
+        scoreId: String(r.scoreId),
+        paperId: String(r.paperId),
+        date: String(r.date),
+        startTime: String(r.startTime),
+        km: r.km,
+        usedTime: String(r.usedTime),
+        fitDegree: r.fitDegree,
+        passType: r.passType,
+      }))
+      records.value = list
+      activeMonthId.value = useMonth
+      selectedDate.value = ''
+      selectedScoreId.value = ''
+      clearDetail()
+      notice.value = `演示数据：这个月有 ${list.length} 条成绩（不是从服务端读的）`
+      logInfo('realpath', '演示归档已载入', { count: list.length, monthId: useMonth })
+      return list
+    }
     if (!hasToken.value) {
       error.value = '还没有登录态：请先回「工作台」点「一键获取 token」'
       return []
@@ -299,6 +346,23 @@ export function useRealPathExport() {
     if (!id) {
       error.value = '还没选成绩：先在上面点一条'
       return []
+    }
+    /** 🆕 演示模式：从本地假轨迹里取（`demo-` 场次号） */
+    if (demoMode.value) {
+      busy.value = 'detail'
+      error.value = ''
+      notice.value = ''
+      selectedScoreId.value = id
+      const pts = demoArchPoints(id)
+      points.value = pts.length ? pts : null
+      busy.value = ''
+      if (!pts.length) {
+        error.value = '演示数据里没有这条的轨迹（只有 4 条编好的）'
+        return []
+      }
+      logInfo('realpath', '读到演示轨迹', { scoreId: id, points: pts.length })
+      notice.value = `演示数据：读到 ${pts.length} 个轨迹点（不是服务端返回）`
+      return pts
     }
     if (!hasToken.value) {
       error.value = '还没有登录态：请先回「工作台」点「一键获取 token」'
@@ -856,6 +920,8 @@ export function useRealPathExport() {
     error,
     notice,
     hasToken,
+    /** 🆕 2026-11-24：演示模式（界面据此换提示、不显示"还没有登录态"） */
+    demoMode,
     snCode,
     selectedRecord,
     selection,

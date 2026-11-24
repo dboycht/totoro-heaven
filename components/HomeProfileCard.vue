@@ -2,10 +2,10 @@
   <v-card height="100%">
     <v-card-title class="d-flex align-center flex-wrap ga-2">
       <v-icon color="secondary" class="mr-2">mdi-account-details-outline</v-icon>
-      真实账号
+      {{ demoMode ? '演示账号（假数据）' : '真实账号' }}
       <v-spacer />
       <v-btn
-        v-if="realStatus === 'ready' || realStatus === 'loading'"
+        v-if="!demoMode && (realStatus === 'ready' || realStatus === 'loading')"
         size="small"
         variant="text"
         prepend-icon="mdi-refresh"
@@ -25,7 +25,10 @@
         </v-list>
       </template>
       <v-alert v-else type="info" variant="tonal" density="compact">
-        还没读取真实账号。填入 token 后点左侧「读取真实账号与任务」。
+        <template v-if="demoMode">
+          演示模式：账号/学校/校区都是编好的（学号带 <code>DEMO</code> 前缀）。要读真实账号，先在左侧粘 token 点「读取真实账号与任务」。
+        </template>
+        <template v-else>还没读取真实账号。填入 token 后点左侧「读取真实账号与任务」。</template>
       </v-alert>
 
       <!-- 未验证学校：只提示"判分口径未实测"，不阻断（<b>读到档案后才显示</b>，否则还不知道是哪所学校） -->
@@ -86,6 +89,8 @@ import type { RunGateResult } from '~/utils/mp/schoolGate'
 
 /** 工作台「真实账号」卡：脱敏档案 + 未验证学校提示 + 一票否决项 + 三合一门禁状态（含读取失败重试） */
 defineProps<{
+  /** 🆕 2026-11-24（演示模式补齐）：演示态 ⇒ 标题改成「演示账号（假数据）」、不显示刷新按钮 */
+  demoMode?: boolean
   realProfileMasked: {
     snCode: string
     studentName: string

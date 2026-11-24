@@ -46,6 +46,12 @@ onMounted(() => {
 const rp = useRealPathExport()
 const lib = useTrackLibrary()
 /**
+ * 🆕 2026-11-24（演示模式补齐）：**这一页能不能读** —— 真实模式要求 token；演示模式读本地假归档。
+ * 界面上四个"读"按钮的 disabled 之前只看 `hasToken`，于是演示模式按钮全是灰的
+ * （探针实测：点不动「读月份」，D4–D6 全红）。
+ */
+const canRead = computed(() => rp.hasToken.value || rp.demoMode.value)
+/**
  * 当前生效的任务（真实优先、演示兜底）—— 与「跑道编辑」**同一套取法**（那里也是这两行），
  * 不新造 `useActiveTask`：多一处"任务来源"就多一处会漂移的口径。
  */
@@ -62,7 +68,7 @@ onMounted(() => {
    */
   autoRestoreFromCache()
   // 月份列表是"可选的便利"：读不到不影响"直接读最近成绩"这条路
-  if (rp.hasToken.value && !rp.months.value.length) void rp.loadMonths()
+  if (canRead.value && !rp.months.value.length) void rp.loadMonths()
 })
 
 /** 任务里下发的线路（用于"存到哪个地点"的下拉；没有任务就只有本机键） */
@@ -451,6 +457,7 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
       <v-icon color="primary">mdi-map-marker-path</v-icon>
       <span class="text-subtitle-1 font-weight-bold">真实路径</span>
       <v-btn size="x-small" variant="tonal" prepend-icon="mdi-help-circle-outline" @click="helpOpen = true">使用说明</v-btn>
+      <v-chip v-if="rp.demoMode.value" size="x-small" color="info" variant="tonal">演示数据</v-chip>
       <span class="text-caption text-medium-emphasis">
         取回本人某一天真实跑过的轨迹 → 存成本机路径预设（跑步页可选）或导出分享；本页只读服务端，只读自己的记录。
       </span>
@@ -496,8 +503,13 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
       </v-card>
     </v-dialog>
 
-    <v-alert v-if="!rp.hasToken.value" type="warning" variant="tonal" density="compact" class="mb-3">
+    <v-alert v-if="!rp.hasToken.value && !rp.demoMode.value" type="warning" variant="tonal" density="compact" class="mb-3">
       还没有登录态：请先回「工作台」点「一键获取 token」，再回本页。
+    </v-alert>
+    <!-- 🆕 2026-11-24（演示模式补齐）：演示下这页不再只剩一句"没有登录态"，改用本地假归档演示全流程 -->
+    <v-alert v-else-if="rp.demoMode.value" type="info" variant="tonal" density="compact" class="mb-3">
+      当前是<b>演示数据</b>：月份、成绩、轨迹都是本机编好的（2 个月 / 4 条），不发请求、不碰真实账号；
+      可以照常「读取这条的轨迹」→ 存为本机预设 / 导出分享包。退出演示（读取真实数据或清空本机数据）后这些假数据消失。
     </v-alert>
 
     <v-row dense>
@@ -508,7 +520,7 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
             <v-icon color="primary">mdi-account-search-outline</v-icon>
             我的成绩归档
             <v-spacer />
-            <v-btn size="small" variant="tonal" prepend-icon="mdi-refresh" :loading="rp.busy.value === 'months'" :disabled="!rp.hasToken.value" @click="doLoadMonths">
+            <v-btn size="small" variant="tonal" prepend-icon="mdi-refresh" :loading="rp.busy.value === 'months'" :disabled="!canRead" @click="doLoadMonths">
               读月份
             </v-btn>
           </v-card-title>
@@ -521,7 +533,7 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
                 variant="flat"
                 prepend-icon="mdi-database-search"
                 :loading="rp.busy.value === 'records'"
-                :disabled="!rp.hasToken.value"
+                :disabled="!canRead"
                 @click="doLoadRecords()"
               >
                 读取最近成绩
@@ -531,7 +543,7 @@ const recordLabel = (r: { startTime: string; km: number | null; passType: number
                 variant="tonal"
                 prepend-icon="mdi-refresh"
                 :loading="rp.busy.value === 'records'"
-                :disabled="!rp.hasToken.value || !monthCache.size"
+                :disabled="!canRead || !monthCache.size"
                 @click="doReloadRecords"
               >
                 重新读取

@@ -1,5 +1,15 @@
 <template>
   <div>
+    <v-alert v-if="demoMode" type="info" variant="tonal" density="compact" class="mb-3">
+      <div class="font-weight-bold">
+        <v-icon class="mr-1" size="18">mdi-flask-outline</v-icon>当前是演示数据
+      </div>
+      <div class="text-body-2">
+        下面三个点位是编的（名字带「演示」），可以照常调方向 / 落点带 / 噪声；改的是本机配置，不发请求。
+        真实点位要用真实 token 读取账号后才会出现。
+      </div>
+    </v-alert>
+
     <v-alert type="info" variant="tonal" density="compact" class="mb-3">
       <div class="font-weight-bold">
         <v-icon class="mr-1" size="18">mdi-map-marker-radius-outline</v-icon>签到区域编辑
@@ -216,6 +226,8 @@
 import { sampleDistribution, ZONE_LIMITS, type MornSignZone } from '~/utils/mp/mornSignZone'
 
 const { task: state, status, loadMornSignTask } = useMpMorningSign()
+/** 🆕 2026-11-24（演示模式补齐）：演示态提示 */
+const { demoMode } = useMpDemo()
 const zoneLib = useMornSignZone()
 const showSnackbar = useNotice()
 

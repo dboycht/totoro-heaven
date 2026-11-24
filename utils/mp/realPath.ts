@@ -56,6 +56,19 @@ export interface RealPathMeta {
   exportedAt: string
 }
 
+/**
+ * 演示数据的场次号前缀（2026-11-24，演示模式补齐）。
+ *
+ * 判据只有一个：`scoreId` 以 `demo-` 开头。真实场次号形如 `sunrunId202611011234`，
+ * 不会碰撞；演示预设只进内存（`useTrackLibrary` 落盘时按条目 id 剔除），退出演示即消失。
+ */
+export const DEMO_SCORE_ID_PREFIX = 'demo-'
+
+/** 这个场次号是不是演示数据（判据唯一：前缀；空/非字符串一律 false） */
+export function isDemoScoreId(raw: unknown): boolean {
+  return String(raw ?? '').trim().startsWith(DEMO_SCORE_ID_PREFIX)
+}
+
 /** 成绩归档里的一条（只取本功能要用的字段；其余原样留着不猜） */export interface RealPathRecord {
   scoreId: string
   /**

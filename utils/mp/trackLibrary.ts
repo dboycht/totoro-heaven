@@ -841,6 +841,20 @@ export function isRealPathEntry(e: { realPath?: unknown } | null | undefined): b
   return Boolean(e && typeof e === 'object' && e.realPath)
 }
 
+/**
+ * 演示预设的 **id 前缀**（2026-11-24，演示模式补齐）。
+ *
+ * 判据：条目 id 以 `demo-preset-` 开头 —— 只由 `composables/demo/presets.ts` 生成。
+ * 用途：`useTrackLibrary` 落盘时**剔除演示条目**（演示数据只进内存），退出演示即消失；
+ * 真实模式永远不含它，所以任何提交链路都不会碰到演示几何。
+ */
+export const DEMO_TRACK_ID_PREFIX = 'demo-preset-'
+
+/** 这条本机条目是不是演示预设（判据唯一：id 前缀） */
+export function isDemoTrackEntry(e: { id?: unknown; lineId?: unknown } | null | undefined): boolean {
+  return entryIdOf(e).startsWith(DEMO_TRACK_ID_PREFIX)
+}
+
 /** 一组本机条目按"是不是真实路径"拆开（列表分组用；两组都保持库内原有顺序） */
 export function splitRealPathEntries(entries: TrackRouteEntry[] | null | undefined): {
   drawn: TrackRouteEntry[]

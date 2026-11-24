@@ -29,7 +29,13 @@
       <v-btn to="/credits" variant="text" prepend-icon="mdi-heart-outline" class="text-none">鸣谢</v-btn>
       <v-spacer />
 
-      <v-chip :color="isRealSession ? 'success' : 'default'" variant="tonal" size="small" class="mr-2">
+      <!-- 🆕 2026-11-24（演示模式补齐）：演示态常驻标记 —— 之前只有跑步页有一枚 chip，
+           切到记录/我的场地/数据页就看不出"现在看的是假数据" -->
+      <v-chip v-if="demoMode" color="info" variant="tonal" size="small" class="mr-2">
+        <v-icon start size="16">mdi-flask-outline</v-icon>
+        演示数据（不发请求）
+      </v-chip>
+      <v-chip v-else :color="isRealSession ? 'success' : 'default'" variant="tonal" size="small" class="mr-2">
         <v-icon start size="16">{{ isRealSession ? 'mdi-cellphone-link' : 'mdi-information-outline' }}</v-icon>
         {{ isRealSession ? '真实数据' : '未连接' }}
       </v-chip>
@@ -63,6 +69,8 @@ import { useMpSession } from '~/composables/useMpSession'
 
 // 1.1.x 起唯一后端为微信小程序（wxxcx.xtotoro.com），会话由 mp_session 承载
 const { isLoggedIn, session } = useMpSession()
+/** 🆕 2026-11-24：演示态（顶栏常驻标记用；与跑步页那枚 chip 同一个开关 `useMpDemo().demoMode`） */
+const { demoMode } = useMpDemo()
 const { logoutAndClearSession } = useMpReal()
 const showSnackbar = useNotice()
 

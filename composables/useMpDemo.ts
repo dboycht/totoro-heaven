@@ -16,6 +16,9 @@
  * 真实提交（`sunRunExercises` 等）在 `composables/useMpReal.ts`，本文件的 `finish()` 只生成本地报文预览。
  * （本次结构整理后 `finish()` 已搬到 `demo/runner.ts`，语义不变。）
  */
+import { DEMO_RECORDS_SEED } from '~/src/mp/demo'
+import { useTrackLibrary } from './useTrackLibrary'
+import { demoPresetDrafts } from './demo/presets'
 import { useDemoRecords } from './demo/records'
 import { useDemoRunner } from './demo/runner'
 import { useDemoState } from './demo/state'
@@ -42,9 +45,19 @@ export function useMpDemo() {
    *    这里传的是**闭包**：只在用户真正点「清空本机数据 / 退出登录」时才求值，
    *    那时 `records` / `runner` 早已构造完毕（不会踩到"暂时性死区"）。
    */
+  /**
+   * 🆕 2026-11-24（演示模式补齐）：演示预设走本机路线库（只进内存），预置记录走本机记录。
+   * 两者都由本组装器注入给 `demo/state.ts`（那一层不许反向依赖装配层）。
+   */
+  const lib = useTrackLibrary()
   const state = useDemoState({
     resetRecords: () => records.resetRecords(),
     stopRunTimer: () => runner.stopTimer(),
+    seedDemoData: () => {
+      lib.seedDemoPresets(demoPresetDrafts())
+      records.mutateRecords(() => DEMO_RECORDS_SEED.map((r) => ({ ...r })))
+    },
+    clearDemoPresets: () => lib.clearDemoPresets(),
   })
   const records = useDemoRecords(state.demoMode)
   const runner = useDemoRunner(state, records)

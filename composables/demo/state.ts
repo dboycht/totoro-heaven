@@ -38,7 +38,7 @@ import {
   normalizeYtuLaps,
   parseStoredYtuLaps,
 } from '~/utils/mp/ytuRun'
-import { DEMO_LINES, DEMO_TASK } from '~/src/mp/demo'
+import { DEMO_LINES, DEMO_TASK, DEMO_TASK_YTU } from '~/src/mp/demo'
 
 export type RunStatus = 'idle' | 'running' | 'paused' | 'finished'
 
@@ -221,6 +221,16 @@ export interface DemoStateHooks {
   resetRecords: () => void
   /** 停止跑步计时器（= `demo/runner.ts` 的 `stopTimer`） */
   stopRunTimer: () => void
+  /**
+   * 🆕 2026-11-24（演示模式补齐）：**装载演示预设与本机记录**，以及退出时摘掉演示预设。
+   *
+   * 为什么也走注入：它们分别住在 `useTrackLibrary()`（内存预设）与 `demo/records.ts`（本机记录），
+   * 由组装器 `useMpDemo.ts` 注入，避免 `demo/state.ts` 反向依赖装配层（会成环）。
+   * 语义：`seed()` 只进内存/演示键；`clearPresets()` 只摘演示预设，真实条目一条不动。
+   */
+  seedDemoData: () => void
+  /** 摘掉演示预设（退出演示 / 清空本机数据时调用） */
+  clearDemoPresets: () => void
 }
 
 /**
@@ -294,16 +304,26 @@ export function useDemoState(hooks: DemoStateHooks) {
    * **载入演示数据**（唯一的演示入口）：填假任务 / 假线路 / 假开关并打开演示开关。
    * 只用于"不接触真实账号也能看界面与报文"；**不发任何网络请求**。
    */
-  const enableDemo = () => {
+  const enableDemo = (mode: 'sunrun' | 'ytu' = 'sunrun') => {
     demoMode.value = true
-    setTask(DEMO_TASK)
-    setLines(DEMO_LINES)
+    /**
+     * 🆕 2026-11-24（演示模式补齐）：演示任务分两种形态 ——
+     *   · `sunrun`（默认）：下发两条线路，走阳光跑/自由跑那套界面；
+     *   · `ytu`：**不下发线路**（`runPointList: []`），才看得到「研途健行」专有的
+     *     目标里程 / 圈数 / 配速块（判据是 `routeRequirementOf(task).kind === 'free'`，不是白名单）。
+     */
+    const ytu = mode === 'ytu'
+    setTask(ytu ? DEMO_TASK_YTU : DEMO_TASK)
+    setLines(ytu ? [] : DEMO_LINES)
     run.value = createRunState()
+    /** 演示预设（只进内存）+ 预置本机记录：否则跑步页「开始跑步」是灰的、记录页首屏全 0 */
+    hooks.seedDemoData()
   }
 
-  /** 退出演示（例如开始读真实数据时调用） */
+  /** 退出演示（例如开始读真实数据时调用）：演示预设一并摘掉（只进内存，摘掉即消失） */
   const disableDemo = () => {
     demoMode.value = false
+    hooks.clearDemoPresets()
   }
 
   /**
@@ -313,6 +333,7 @@ export function useDemoState(hooks: DemoStateHooks) {
    */
   const clearLocalData = () => {
     demoMode.value = false
+    hooks.clearDemoPresets()
     // ⚠️ 先停计时器再重置 run：否则计时器会继续对着**新的** idle run 状态推进（旧实现漏了这一步）
     hooks.stopRunTimer()
     task.value = null

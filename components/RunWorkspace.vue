@@ -1798,9 +1798,13 @@ const staleSettlement = computed(() =>
  */
 const freeRunBlocked = computed(() => isFreeRun && Boolean(freeRunUnsupported.value))
 
-/** 载入演示数据（按需功能，不发任何请求） */
+/**
+ * 载入演示数据（按需功能，不发任何请求）。
+ * 🆕 2026-11-24：按**当前标签**选演示任务形态 —— 研途健行页要「无下发线路」那种任务，
+ * 否则看不到目标里程/圈数/配速块（判据 `routeRequirementOf(task).kind === 'free'`）。
+ */
 const doEnableDemo = () => {
-  enableDemo()
+  enableDemo(isYtuTab.value ? 'ytu' : 'sunrun')
   showSnackbar('已载入演示数据（假数据，不发请求）', 'info')
 }
 

@@ -18,6 +18,7 @@
  * 实测：同账号连读两次一致、服务端按 token 认人（改 `stuNumber` 参数不影响返回）。
  */
 import { MpApiWrapper } from '~/src/wrappers/MpApiWrapper'
+import { DEMO_SIGN_ARCH, DEMO_SIGN_TASK } from '~/src/mp/demo'
 import { normalizeMornSignPaper, type MornSignResult } from '~/utils/mp/morningSign'
 import {
   buildMornSignArchParams,
@@ -33,6 +34,11 @@ import { useMpSession } from './useMpSession'
 export function useMpMorningSign() {
   const { session } = useMpSession()
   const { profile } = useRealState()
+  /**
+   * 🆕 2026-11-24（演示模式补齐）：演示态用**本地假任务/假记录**展示页面。
+   * 只影响"读"；`submitMornSign` 在演示态一律拒绝（提交永远只认真实 token）。
+   */
+  const { demoMode } = useMpDemo()
 
   /** 归一化后的签到任务（null = 还没读过） */
   const task = useState<MornSignResult | null>('mpMornSignTask', () => null)
@@ -84,6 +90,14 @@ export function useMpMorningSign() {
     const sn = snCodeOf()
     // ③ 清空：失败/竞态时宁可显示"暂无"，也不许拿旧月份的数据冒充新月份
     arch.value = null
+    /** 🆕 演示模式：本地假记录（不发请求） */
+    if (demoMode.value) {
+      arch.value = { ...DEMO_SIGN_ARCH }
+      archStatus.value = 'ready'
+      archError.value = ''
+      logInfo('real', '演示：读到本月签到记录（本地假数据）', { records: DEMO_SIGN_ARCH.records.length })
+      return true
+    }
     if (!t || t.startsWith('demo-')) {
       archStatus.value = 'error'
       archError.value = '需要真实 token 才能读取签到记录（演示 token 不能查真实数据）'
@@ -161,6 +175,14 @@ export function useMpMorningSign() {
     const fromProfile = String(profile.value?.snCode ?? '')
     const fromSession = String(session.value?.userInfo?.snCode ?? '')
     const sn = fromProfile || fromSession
+    /** 🆕 演示模式：本地假任务（只展示；提交仍要真实 token） */
+    if (demoMode.value) {
+      task.value = { kind: 'ok', task: DEMO_SIGN_TASK }
+      status.value = 'ready'
+      error.value = ''
+      logInfo('real', '演示：读到早操签到任务（本地假数据）', { points: DEMO_SIGN_TASK.signPointList.length })
+      return true
+    }
     if (!t || t.startsWith('demo-')) {
       status.value = 'error'
       error.value = '需要真实 token 才能读取早操签到（演示 token 不能查真实数据）'
@@ -217,6 +239,8 @@ export function useMpMorningSign() {
 
   async function submitMornSign(pointId: string): Promise<MornSignSubmitOutcome & { ok: boolean }> {
     if (submitting.value) return { accepted: false, message: '正在提交中，请勿重复点击', raw: '', ok: false }
+    /** 🆕 演示模式：**绝不提交**（假 qrCode 只能看） */
+    if (demoMode.value) return { accepted: false, message: '演示数据不能提交签到 —— 请先读取真实数据', raw: '', ok: false }
     const t = token()
     const fromProfile = String(profile.value?.snCode ?? '')
     const fromSession = String(session.value?.userInfo?.snCode ?? '')

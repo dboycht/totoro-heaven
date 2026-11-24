@@ -14,6 +14,16 @@
       </div>
     </v-alert>
 
+    <!-- 🆕 2026-11-24（演示模式补齐）：演示态如实说明"这是假任务、提交会被拒绝" -->
+    <v-alert v-if="demoMode" type="info" variant="tonal" density="comfortable" class="mb-4">
+      <div class="font-weight-bold"><v-icon class="mr-1" size="18">mdi-flask-outline</v-icon>当前是演示数据</div>
+      <div class="text-body-2">
+        下面这份签到任务、时段、点位与本月记录都是本机编好的（点位名带「演示」、二维码带 <code>DEMO-</code>），
+        不发请求、不碰真实账号。<b>「提交签到」在演示态一律被拒绝</b>（假 qrCode 只能看）——
+        真正提交必须先用真实 token 读取账号。
+      </div>
+    </v-alert>
+
     <v-card>
       <v-card-title class="d-flex align-center flex-wrap ga-2">
         <span class="text-subtitle-1">签到任务</span>
@@ -267,6 +277,8 @@ const {
   archMonth,
   loadMornSignArch,
 } = useMpMorningSign()
+/** 🆕 2026-11-24（演示模式补齐）：演示态提示（假任务 / 提交被拒） */
+const { demoMode } = useMpDemo()
 /** 月份下拉（最近 6 个月，最新在前） */
 const monthOptions = recentMonthOptions()
 const { profile: realProfile } = useMpReal()

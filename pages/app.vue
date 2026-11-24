@@ -79,7 +79,8 @@
 
       <v-col cols="12" md="6">
         <HomeProfileCard
-          :real-profile-masked="realProfileMasked"
+          :demo-mode="demoMode"
+          :real-profile-masked="profileMaskedForCard"
           :real-status="realStatus"
           :real-school-notice="realSchoolNotice"
           :real-switches="realSwitches"
@@ -305,6 +306,24 @@ const doTokenScanAndCloseGuide = () => {
  */
 const isRealSession = computed(() => Boolean(session.value?.token) && !session.value?.token?.startsWith('demo-'))
 /** 跑步页当前用的是真实任务还是演示任务 */
+/**
+ * 🆕 2026-11-24（演示模式补齐）：演示态给「真实账号」卡一张**编好的档案**（学号带 `DEMO` 前缀）。
+ *
+ * ⚠️ 刻意**不写 `session`**：演示 token 若进了会话，别的链路（签到、提交、诊断）就会把它当登录态，
+ *    "演示不影响真实链路"这条纪律就破了。这里只是给卡片一个 prop —— 传值，不落盘、不进报文。
+ */
+const profileMaskedForCard = computed(() => {
+  if (!demoMode.value) return realProfileMasked.value
+  const u = DEMO_SESSION.userInfo
+  return {
+    snCode: u.snCode,
+    studentName: u.studentName,
+    schoolName: u.schoolName,
+    campusId: u.schoolCampusCode,
+    className: '—',
+  }
+})
+
 const usingRealTask = computed(() => Boolean(realTask.value))
 const activeTask = computed(() => realTask.value ?? task.value)
 const lineNames = computed(() => (activeTask.value?.runPointList ?? []).map((line) => line.pointName).join('、') || '—')
