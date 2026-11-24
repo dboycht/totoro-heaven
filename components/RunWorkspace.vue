@@ -505,7 +505,12 @@
                 :disabled="isBusy"
                 @click="pickRandomRealPathPreset"
               >
-                随机选一条（真实路径）
+                随机选一条
+                <!-- 🆕 2026-11-24（用户口径"按钮字太多，其备注使用悬停注释来展示"）：括号里的说明改成悬停注释 -->
+                <v-tooltip activator="parent" location="top" max-width="360">
+                  当前地点有 ≥2 条「真实路径」预设时才出现；从这些真实路径里均匀随机抽一条
+                  （与手动选走下同一条持久化路径，刷新后仍是它）。
+                </v-tooltip>
               </v-btn>
             </div>
             <div v-if="!isYtuTab && presetItems.length && presetPreferredUnavailable" class="text-caption text-warning mb-2">
@@ -709,12 +714,18 @@
                 :items="paceItems"
                 item-title="label"
                 item-value="value"
-                label="配速档位（按里程与时间要求四等分；结算在这一档内随机）"
+                label="配速档位"
                 density="comfortable"
                 :disabled="isBusy"
                 class="mb-1"
                 @update:model-value="onPaceSelect"
-              />
+              >
+                <!-- 🆕 2026-11-24：长说明从 label 挪进悬停注释（label 太长会被截成"配速档位（按里程与时间要求四等分；结算在这一…"） -->
+                <v-tooltip activator="parent" location="start" max-width="380">
+                  按<b>本次里程</b>与任务的<b>时间要求</b>换算出配速上下限，四等分出「最高速 / 中速 / 低速」三档；
+                  结算时在所选档位的那一段内随机抽一个（避开整分钟）。
+                </v-tooltip>
+              </v-select>
               <div class="text-caption text-medium-emphasis mb-2">{{ ytuWindowText }}</div>
               <v-alert type="success" variant="tonal" density="compact" class="mb-2">
                 <div class="font-weight-bold">本次将生成</div>
@@ -735,12 +746,17 @@
                 :items="paceItems"
                 item-title="label"
                 item-value="value"
-                label="配速档位（按里程与时间要求四等分；结算在这一档内随机）"
+                label="配速档位"
                 density="comfortable"
                 :disabled="isBusy"
                 class="mb-1"
                 @update:model-value="onPaceSelect"
-              />
+              >
+                <v-tooltip activator="parent" location="start" max-width="380">
+                  按<b>本次里程</b>与任务的<b>时间要求</b>换算出配速上下限，四等分出「最高速 / 中速 / 低速」三档；
+                  结算时在所选档位的那一段内随机抽一个（避开整分钟）。
+                </v-tooltip>
+              </v-select>
               <div v-if="paceGearsForUi" class="text-caption text-medium-emphasis">
                 本次计划里程 <b>{{ pacePlanKmForUi }} km</b> ⇒ 配速区间
                 <b>{{ formatPace(Math.round(paceWindowForUi.lo)) }}~{{ formatPace(Math.round(paceWindowForUi.hi)) }} /km</b>
@@ -762,7 +778,11 @@
                 :disabled="isBusy"
                 @click="randomizeRealPathPace"
               >
-                随机配速（在所选档位段内抽，避开整分钟如 6'11"）
+                随机配速
+                <v-tooltip activator="parent" location="top" max-width="380">
+                  在<b>所选档位</b>那一段内随机抽一个配速（以该分界点为中心、区间 ÷ 4 为半径），
+                  并避开整分钟（如 6'11"）；点一次换一个，结算改用抽到的值。
+                </v-tooltip>
               </v-btn>
             </div>
 
