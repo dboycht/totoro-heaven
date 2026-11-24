@@ -8,7 +8,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { newRunSeed, planRealisticRun, randomRealPathPace, runPaceWindow } from '../../utils/mp/realism.ts'
+import { newRunSeed, paceGearPoints, planRealisticRun, randomRealPathPace, runPaceWindow } from '../../utils/mp/realism.ts'
 import type { RunPaceWindow } from '../../utils/mp/realism.ts'
 import { generateCorridorRoute } from '../../utils/mp/generateRoute.ts'
 import { evaluateRunAgainstTask } from '../../utils/mp/taskRules.ts'
@@ -73,24 +73,35 @@ test('planRealisticRun：同种子可复现、不同种子有差异', () => {
   assert.ok(targets.size >= 8, `20 个种子只产生 ${targets.size} 种里程，多样性不足`)
 })
 
-test('planRealisticRun：窗口很窄时会被夹紧（不会越界）', () => {
-  // 只允许 12 km/h（= 5'00"/km），时长窗口放宽
+test('planRealisticRun：没有任何区间可言时才用速度窗兜底（退化成一个点 ⇒ 就是它）', () => {
+  /**
+   * 🔄 2026-11-24：有时长窗时**按时长窗**（用户口径"窗口限制一般是时间"），所以这里
+   * **刻意不给时长窗**，才会走速度窗兜底；速度只有一个值 ⇒ 退化成一个点。
+   */
   const plan = planRealisticRun({
     requiredKm: 3.2,
     minSpeedKmh: 12,
     maxSpeedKmh: 12,
-    minMinutes: 5,
-    maxMinutes: 60,
     seed: 5,
   })
   assert.equal(plan.paceSecPerKm, 300)
 })
 
-test('planRealisticRun：不传 basePace 时用 5\'50"~6\'20" 随机，传了则以其为基线', () => {
-  const withBase = planWith(9, 390)
-  assert.ok(Math.abs(withBase.paceSecPerKm - 390) <= 390 * 0.03 + 1, `实际 ${withBase.paceSecPerKm}`)
-  const auto = planWith(9)
-  assert.ok(auto.paceSecPerKm >= 330 && auto.paceSecPerKm <= 400, `实际 ${auto.paceSecPerKm}`)
+test('planRealisticRun：**任务没有任何窗口**时才用基线（±3% / 5\'50"~6\'20"）；有窗口就按档位采样', () => {
+  /**
+   * 🔄 2026-11-24：有可用区间时忽略基线（按档位段内随机）；基线只在"两个窗都没下发"时兜底。
+   */
+  const noWindowBase = planRealisticRun({ requiredKm: 3.2, basePaceSecPerKm: 390, seed: 9 })
+  assert.ok(Math.abs(noWindowBase.paceSecPerKm - 390) <= 390 * 0.03 + 1, `实际 ${noWindowBase.paceSecPerKm}`)
+  const noWindowAuto = planRealisticRun({ requiredKm: 3.2, seed: 9 })
+  assert.ok(noWindowAuto.paceSecPerKm >= 330 && noWindowAuto.paceSecPerKm <= 400, `实际 ${noWindowAuto.paceSecPerKm}`)
+  /** 有窗口（南航演示任务）⇒ 基线在哪都不影响"按档位采样"这个事实：结果落在时长窗内 */
+  const withWindow = planWith(9, 390)
+  const w = runPaceWindow(
+    { requiredKm: NUAA_TASK.mileage, minMinutes: NUAA_TASK.minTime, maxMinutes: NUAA_TASK.maxTime },
+    withWindow.targetKm,
+  )
+  assert.ok(withWindow.paceSecPerKm >= w.lo && withWindow.paceSecPerKm <= w.hi, `实际 ${withWindow.paceSecPerKm} 应落在 ${w.lo}~${w.hi}`)
 })
 
 test('newRunSeed：连续取值互不相同', () => {
@@ -159,35 +170,47 @@ const FREE_WINDOW: RunPaceWindow = {
   conflict: false,
 }
 
-test('🔴 randomRealPathPace：结果**不是整分钟**（6\'00" 这种一眼假的不许出现）', () => {
+test('🔴 randomRealPathPace：结果**不是整分钟**（整分钟看起来假）', () => {
   for (let i = 0; i < 50; i++) {
-    const pace = randomRealPathPace({ basePaceSecPerKm: 360, window: FREE_WINDOW, targetKm: 3.2, rng: () => i / 50 })
+    const pace = randomRealPathPace({ gear: 'mid', window: FREE_WINDOW, basePaceSecPerKm: 360, targetKm: 3.2, rng: () => i / 50 })
     assert.notEqual(pace % 60, 0, `第 ${i} 次随机出了整分钟配速 ${pace}`)
   }
 })
 
-test('randomRealPathPace：落在任务允许区间内（与模拟跑同一个采样器）', () => {
+test('randomRealPathPace：落在**所选档位的段内**（以分界点为中心、区间 ÷ 4 为半径）', () => {
   const win = windowOf({ requiredKm: 3.2, minSpeedKmh: 3, maxSpeedKmh: 15, minMinutes: 10, maxMinutes: 25 })
-  for (let i = 0; i < 50; i++) {
-    const pace = randomRealPathPace({ basePaceSecPerKm: 360, window: win, targetKm: 3.2 })
-    assert.ok(pace >= win.lo && pace <= win.hi, `配速 ${pace} 越出 [${win.lo}, ${win.hi}]`)
+  const gears = paceGearPoints(win)!
+  for (const g of gears) {
+    const seen: number[] = []
+    for (let i = 0; i < 60; i++) {
+      const pace = randomRealPathPace({ gear: g.key, window: win, targetKm: 3.2, rng: () => i / 60 })
+      assert.ok(pace >= Math.floor(g.lo) && pace <= Math.ceil(g.hi), `${g.key} 抽出 ${pace} 越出档内范围 ${g.lo}~${g.hi}`)
+      seen.push(pace)
+    }
+    assert.ok(new Set(seen).size >= 8, `${g.key} 档 60 次只抽出 ${new Set(seen).size} 种配速，随机性不足`)
+    /** 中心值本身不是唯一解（否则又变成"固定值"） */
+    assert.ok(seen.some((x) => x !== g.paceSecPerKm), `${g.key} 档抽来抽去都是中心值 ${g.paceSecPerKm}`)
   }
+  /** 三档互不相同：最高速档整体快于低速档 */
+  assert.ok(gears[0]!.paceSecPerKm < gears[1]!.paceSecPerKm && gears[1]!.paceSecPerKm < gears[2]!.paceSecPerKm)
 })
 
 test('randomRealPathPace：可复现（注入 rng）且通常有变化', () => {
-  const a = randomRealPathPace({ basePaceSecPerKm: 360, window: FREE_WINDOW, targetKm: 3.2, rng: () => 0.5 })
-  const b = randomRealPathPace({ basePaceSecPerKm: 360, window: FREE_WINDOW, targetKm: 3.2, rng: () => 0.5 })
+  const a = randomRealPathPace({ gear: 'mid', window: FREE_WINDOW, basePaceSecPerKm: 360, targetKm: 3.2, rng: () => 0.5 })
+  const b = randomRealPathPace({ gear: 'mid', window: FREE_WINDOW, basePaceSecPerKm: 360, targetKm: 3.2, rng: () => 0.5 })
   assert.equal(a, b, '同一 rng 必须同一个结果')
   const set = new Set<number>()
-  for (let i = 0; i < 30; i++) set.add(randomRealPathPace({ basePaceSecPerKm: 360, window: FREE_WINDOW, targetKm: 3.2, rng: () => i / 30 }))
+  for (let i = 0; i < 30; i++) {
+    set.add(randomRealPathPace({ gear: 'mid', window: FREE_WINDOW, basePaceSecPerKm: 360, targetKm: 3.2, rng: () => i / 30 }))
+  }
   assert.ok(set.size >= 10, `30 个 rng 只产生 ${set.size} 种配速，多样性不足`)
 })
 
-test('randomRealPathPace：基线在区间外时也不越界（越界基线不会把结果顶到界外）', () => {
+test('randomRealPathPace：区间不可用时退回基线口径，仍不越界', () => {
   // 研途健行式窄窗：514~875，而默认策略 6'00"=360 远在快侧之外
   const win = windowOf({ requiredKm: 2.4, minSpeedKmh: 4, maxSpeedKmh: 7, minMinutes: 20, maxMinutes: 35 })
   for (let i = 0; i < 50; i++) {
-    const pace = randomRealPathPace({ basePaceSecPerKm: 360, window: win, targetKm: 2.4, rng: () => i / 50 })
-    assert.ok(pace >= win.lo && pace <= win.hi, `配速 ${pace} 越出 [${win.lo}, ${win.hi}]`)
+    const pace = randomRealPathPace({ gear: 'slow', window: win, basePaceSecPerKm: 360, targetKm: 2.4, rng: () => i / 50 })
+    assert.ok(pace >= Math.floor(win.lo) && pace <= Math.ceil(win.hi), `配速 ${pace} 越出 [${win.lo}, ${win.hi}]`)
   }
 })

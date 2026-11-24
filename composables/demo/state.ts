@@ -23,7 +23,7 @@
  */
 import type { MpRunLine, MpScoreDetailRequest, MpScoreRequest, MpSunrunTask } from '~/src/mp/types'
 import type { LatLng } from '~/utils/mp/routeSimilarity'
-import type { RunPlan } from '~/utils/mp/realism'
+import type { PaceGearKey, RunPlan } from '~/utils/mp/realism'
 // 🆕 2026-11-03（1.3.6 需求②）：换圈图的控制点类型（判据与求值都在纯模块 `utils/mp/laneProfile.ts`）
 import type { LanePoint } from '~/utils/mp/laneProfile'
 import type { TaskCheckResult } from '~/utils/mp/taskRules'
@@ -66,6 +66,14 @@ export interface DemoRunState {
   targetKm: number
   /** 目标配速（秒/公里）——真实感规划后的本次实际配速（非整分钟） */
   paceSecPerKm: number
+  /**
+   * 🆕 2026-11-24（用户口径）：**配速档位** —— 配速区间四等分后的三个分界点之一
+   * （`最高速 0.25 / 中速 0.5 / 低速 0.75`，判据在 `utils/mp/realism.ts` 的 `PACE_GEARS`）。
+   *
+   * 模拟路径：结算时在**这个档位段内**随机抽一个配速（`sampleGearPace`）；
+   * 真实路径：点「随机配速」时按它抽；没点则仍按「随机值 → 归档用时 → 档位值」取值。
+   */
+  paceGear: PaceGearKey
   /** 本次真实感规划（超跑里程 / 配速 / 预计时长） */
   plan: RunPlan | null
   /** 模拟倍速：1 / 10 / 60 / 600 */
@@ -165,6 +173,8 @@ export const createRunState = (): DemoRunState => ({
   lineId: '',
   targetKm: 0,
   paceSecPerKm: 360,
+  /** 默认「中速」（区间正中）；用户在下拉里选档位后写它 */
+  paceGear: 'mid',
   plan: null,
   speed: 60,
   elapsedS: 0,

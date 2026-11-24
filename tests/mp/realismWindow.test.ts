@@ -10,15 +10,16 @@
  * 时长 20~35 分钟 / 2.4 km ⇒ 500~875 秒/公里，交集 = **514~875**；
  * 界面默认策略 6'00" = 360 秒/公里 远在快侧之外 ⇒ 每次都夹成 **514**（截图里那个裸数字 514 就是它）。
  *
- * ## 钉住的四件事
- *   ① `runPaceWindow` 真的取**交集**（速度窗 ∩ 时长窗），并且窗口缺失时不假装有；
+ * ## 钉住的四件事（🔄 2026-11-24 口径：**以时长窗为准**，速度窗只兜底）
+ *   ① `runPaceWindow` 有时长窗时**按时长窗**（时长 ÷ 里程，所以里程会影响上下限）、没有时长窗才用速度窗，
+ *      窗口缺失时不假装有；两窗无交集仍标 `conflict`（只作提示，结果按时长窗）；
  *   ② **基线在区间外** ⇒ 采样落在区间内、**不贴边界**、且多个种子**互不相同**（这才是"随机性"）；
  *   ③ **基线在区间内** ⇒ 尊重用户设置（只在它附近 ±3%，不被无谓地拉走）；
- *   ④ 两窗**矛盾**（任务参数本身有错）⇒ 如实标 `conflict`，并以速度窗为准（不静默）。
+ *   ④ 两窗**矛盾**（任务参数本身有错）⇒ 如实标 `conflict`，结果仍按时长窗（不静默、也不偷换成速度窗）。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createRngFromSeed, runPaceWindow, sampleRunPace, planRealisticRun } from '../../utils/mp/realism.ts'
+import { createRngFromSeed, paceWindowCrossNote, runPaceWindow, sampleRunPace, planRealisticRun } from '../../utils/mp/realism.ts'
 
 /** 2026-09-25 实测的「研途健行」任务参数（研究生院） */
 const YANTU = {
@@ -40,20 +41,33 @@ const NUAA = {
 
 const paceSeconds = (km: number, minutes: number) => (minutes * 60) / km
 
-test('runPaceWindow：速度窗 ∩ 时长窗（研途健行实测参数 ⇒ 514~875 秒/公里）', () => {
+test('runPaceWindow：有时长窗 ⇒ **以时长窗为准**（研途健行实测参数 ⇒ 491.8~860.7 秒/公里）', () => {
   const w = runPaceWindow(YANTU, 2.44)
-  // 速度 4~7 km/h ⇒ 3600/7 = 514.28（最快）、3600/4 = 900（最慢）
+  // 速度窗照算（界面要显示"任务还下了速度窗"）：4~7 km/h ⇒ 3600/7 = 514.28（最快）、3600/4 = 900（最慢）
   assert.ok(Math.abs(w.speedLo - 3600 / 7) < 1e-9, `speedLo=${w.speedLo}`)
   assert.equal(w.speedHi, 900)
   // 时长 20~35 分钟 / 2.44 km ⇒ 491.8 ~ 860.7
   assert.ok(Math.abs(w.timeLo - paceSeconds(2.44, 20)) < 1e-9, `timeLo=${w.timeLo}`)
   assert.ok(Math.abs(w.timeHi - paceSeconds(2.44, 35)) < 1e-9, `timeHi=${w.timeHi}`)
-  // 交集 = [max(514.28, 491.8), min(900, 860.7)] = [514.28, 860.7]
-  assert.ok(Math.abs(w.lo - 3600 / 7) < 1e-9, `交集下限应是速度窗给的 ${3600 / 7}，实际 ${w.lo}`)
-  assert.ok(Math.abs(w.hi - paceSeconds(2.44, 35)) < 1e-9, `交集上限应是时长窗给的，实际 ${w.hi}`)
+  // 🔄 2026-11-24：上下限**直接取时长窗**（不再与速度窗求交集）
+  assert.ok(Math.abs(w.lo - paceSeconds(2.44, 20)) < 1e-9, `下限应是时长窗给的 ${paceSeconds(2.44, 20)}，实际 ${w.lo}`)
+  assert.ok(Math.abs(w.hi - paceSeconds(2.44, 35)) < 1e-9, `上限应是时长窗给的，实际 ${w.hi}`)
   assert.equal(w.hasSpeedWindow, true)
   assert.equal(w.hasTimeWindow, true)
+  // 两窗**有**交集（514.28~860.7）⇒ 不算矛盾；只是上下限按时长窗取
   assert.equal(w.conflict, false)
+})
+
+test('runPaceWindow：**里程越大配速越快**（4 km 真实路径与 3.2 km 任务的差别）', () => {
+  const time = { minMinutes: 10, maxMinutes: 25 }
+  const w32 = runPaceWindow({ requiredKm: 3.2, ...time }, 3.2)
+  const w40 = runPaceWindow({ requiredKm: 4, ...time }, 4)
+  assert.ok(Math.abs(w32.lo - (10 * 60) / 3.2) < 1e-9, `3.2 km 下限 ${w32.lo}`)
+  assert.ok(Math.abs(w40.lo - (10 * 60) / 4) < 1e-9, `4 km 下限 ${w40.lo}`)
+  assert.ok(Math.abs(w40.hi - (25 * 60) / 4) < 1e-9, `4 km 上限 ${w40.hi}`)
+  // 同一时间窗下，4 km 的配速区间整体更快（数值更小）且更窄
+  assert.ok(w40.lo < w32.lo && w40.hi < w32.hi, `4 km 区间应整体更快：${w40.lo}~${w40.hi} vs ${w32.lo}~${w32.hi}`)
+  assert.ok(w40.hi - w40.lo < w32.hi - w32.lo, '4 km 的区间应更窄')
 })
 
 test('runPaceWindow：只给速度窗 / 只给时长窗 / 都不给，都不假装有', () => {
@@ -75,11 +89,12 @@ test('runPaceWindow：只给速度窗 / 只给时长窗 / 都不给，都不假�
   assert.equal(none.conflict, false)
 })
 
-test('runPaceWindow：两窗矛盾 ⇒ conflict=true、回落到速度窗，且说明里带上两侧窗口（不静默）', () => {
+test('runPaceWindow：两窗矛盾 ⇒ conflict=true，但**仍按时长窗**生成（不偷换速度窗）', () => {
   const w = runPaceWindow({ requiredKm: 3.27, minSpeedKmh: 8, maxSpeedKmh: 15, minMinutes: 60, maxMinutes: 90 }, 3.27)
   assert.equal(w.conflict, true)
-  assert.equal(w.lo, 3600 / 15)
-  assert.equal(w.hi, 3600 / 8)
+  // 🔄 2026-11-24：结果按时长窗（60~90 分钟 / 3.27 km）
+  assert.ok(Math.abs(w.lo - paceSeconds(3.27, 60)) < 1e-9, `下限 ${w.lo}`)
+  assert.ok(Math.abs(w.hi - paceSeconds(3.27, 90)) < 1e-9, `上限 ${w.hi}`)
   const detail = String(w.conflictDetail ?? '')
   assert.ok(detail.includes('无交集'), detail)
   assert.ok(detail.includes('速度窗') && detail.includes('时长窗'), detail)
@@ -114,13 +129,26 @@ test('⭐ 基线在区间内（南航 6\'30" 策略）：尊重用户设置，�
   }
 })
 
-test('采样：区间退化成一个点（极端任务）⇒ 如实返回那个点，不假装随机', () => {
-  const w = runPaceWindow({ requiredKm: 3.2, minSpeedKmh: 12, maxSpeedKmh: 12, minMinutes: 5, maxMinutes: 60 }, 3.2)
-  assert.equal(w.lo, 300)
-  assert.equal(w.hi, 300)
+test('采样：时长窗退化成一个点（极端任务）⇒ 如实返回那个点，不假装随机', () => {
+  const w = runPaceWindow({ requiredKm: 3.2, minSpeedKmh: 12, maxSpeedKmh: 12, minMinutes: 10, maxMinutes: 10 }, 3.2)
+  assert.equal(w.lo, 600 / 3.2)
+  assert.equal(w.hi, 600 / 3.2)
   for (let seed = 0; seed < 5; seed++) {
-    assert.equal(sampleRunPace({ basePaceSecPerKm: 360, window: w, rng: createRngFromSeed(seed) }, 3.2), 300)
+    assert.equal(sampleRunPace({ basePaceSecPerKm: 360, window: w, rng: createRngFromSeed(seed) }, 3.2), 600 / 3.2)
   }
+})
+
+test('paceWindowCrossNote：时长窗越出速度窗时给一句如实说明，一致时为空串', () => {
+  // 3.2 km / 10~25 分钟 ⇒ 187.5~468.75 秒/公里（最快 19.2 km/h），速度窗只允许 3~15 km/h（≥240）
+  const crossed = runPaceWindow({ requiredKm: 3.2, minSpeedKmh: 3, maxSpeedKmh: 15, minMinutes: 10, maxMinutes: 25 }, 3.2)
+  const note = paceWindowCrossNote(crossed)
+  assert.ok(note.includes('按时长窗'), note)
+  assert.ok(note.includes('速度窗'), note)
+  // 两窗一致（速度窗就是时间窗换出来的那个范围）⇒ 不提醒
+  const aligned = runPaceWindow({ requiredKm: 3.2, minSpeedKmh: 240 / 3600 * 60, maxSpeedKmh: 3600 / 187.5, minMinutes: 10, maxMinutes: 25 }, 3.2)
+  assert.equal(paceWindowCrossNote(aligned), '')
+  // 没有速度窗 ⇒ 也没什么可提醒
+  assert.equal(paceWindowCrossNote(runPaceWindow({ requiredKm: 3.2, minMinutes: 10, maxMinutes: 25 }, 3.2)), '')
 })
 
 test('planRealisticRun：端点表现 —— 端到端口径未变（区间内、时长窗内、非整分钟）', () => {

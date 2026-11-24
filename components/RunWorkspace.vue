@@ -336,7 +336,8 @@
             <template v-if="isRealPathRun">
               这次选的预设来自「真实路径」⇒ 流程是<b>「选择路径 → 检验 → 提交」</b>：
               轨迹按导出的原始点列<b>原样</b>使用（不切圈、不降采样、不叠加换道），没有道次可换；
-              里程原样，<b>配速与用时取归档里那场真实跑的记录</b>（没带用时则用上方选的配速策略，可点「随机配速」抖到非整分钟，如 6'11"）。
+              里程按<b>这条路径的点列实测</b>，配速与用时优先取归档里那场真实跑的记录（没带用时则用上方选的档位点，
+              可点「随机配速」在该档位段内随机抽一个，如 6'11"）。
             </template>
             <template v-else>
               这次选的预设没有"内外双圈"（折线路径等）⇒ 没有道次可换，<b>不参与换圈</b>。
@@ -398,7 +399,7 @@
                 里程会<b>略超</b>任务要求、配速<b>非整分钟</b>，拟合度含"GPS 精度下降期" → 数值不是整数（避免一眼假）。
               </div>
               <div class="text-body-2">
-                <b>「模拟倍速 / 配速策略」不是最终结果</b> —— 它们只决定<b>本地如何生成这次的轨迹数据</b>
+                <b>「模拟倍速 / 配速档位」不是最终结果</b> —— 它们只决定<b>本地如何生成这次的轨迹数据</b>
                 （里程/时长/配速/拟合度都按任务约束算出来）。
                 正确顺序是：<b>先点上面的按钮（「开始跑步」模拟 / 真实路径则「结算」）出数据</b> → 看下方自检表 → 再点「<b>真实提交</b>」。
                 提交的数值就是自检表里那一组（提交前还会再按报备时长真实等待）。
@@ -708,7 +709,7 @@
                 :items="paceItems"
                 item-title="label"
                 item-value="value"
-                label="配速策略（基线，实际按任务允许区间采样）"
+                label="配速档位（按里程与时间要求四等分；结算在这一档内随机）"
                 density="comfortable"
                 :disabled="isBusy"
                 class="mb-1"
@@ -722,24 +723,31 @@
                   速度 <b>{{ ytuPreview.speedKmh.toFixed(1) }} km/h</b>　·　里程 <b>{{ formatYtuTargetKm(ytuPreview.km) }} km</b>
                 </div>
                 <div class="text-caption mt-1">
-                  开跑时会在这个区间内重新采样一次（所以每次跑的数都不一样，但始终落在任务允许范围内）。
+                  开跑时会按<b>所选档位</b>在这个区间内重新采样一次（每次跑的数都不一样，但始终落在任务允许范围内）。
                 </div>
               </v-alert>
             </div>
 
             <!-- 其余（非"未下发线路"的）任务：配速策略只有一个下拉，口径与旧版一致 -->
-            <v-select
-              v-if="!routeIsFree"
-              v-model="run.paceSecPerKm"
-              :items="paceItems"
-              item-title="label"
-              item-value="value"
-              label="配速策略（基线，实际按任务允许区间采样）"
-              density="comfortable"
-              :disabled="isBusy"
-              class="mb-3"
-              @update:model-value="onPaceSelect"
-            />
+            <div v-if="!routeIsFree" class="mb-3">
+              <v-select
+                v-model="run.paceSecPerKm"
+                :items="paceItems"
+                item-title="label"
+                item-value="value"
+                label="配速档位（按里程与时间要求四等分；结算在这一档内随机）"
+                density="comfortable"
+                :disabled="isBusy"
+                class="mb-1"
+                @update:model-value="onPaceSelect"
+              />
+              <div v-if="paceGearsForUi" class="text-caption text-medium-emphasis">
+                本次计划里程 <b>{{ pacePlanKmForUi }} km</b> ⇒ 配速区间
+                <b>{{ formatPace(Math.round(paceWindowForUi.lo)) }}~{{ formatPace(Math.round(paceWindowForUi.hi)) }} /km</b>
+                （四等分，三档见下拉）
+              </div>
+              <div v-if="paceWindowNote" class="text-caption text-warning mt-1">{{ paceWindowNote }}</div>
+            </div>
 
             <!-- 🆕 2026-11-18（用户口径）：真实路径的配速来源 + 「随机」按钮。
                  有归档用时 ⇒ 结算用归档；没有 ⇒ 用上方选的值，但可以用这个按钮抖到非整分钟（如 6'11"）。 -->
@@ -754,7 +762,7 @@
                 :disabled="isBusy"
                 @click="randomizeRealPathPace"
               >
-                随机配速（避开整分钟，如 6'11"）
+                随机配速（在所选档位段内抽，避开整分钟如 6'11"）
               </v-btn>
             </div>
 
@@ -1379,6 +1387,8 @@ import { fitRequirementOf, routeRequirementOf, taskPaperIdOf } from '~/utils/mp/
 import { laneLoop, laneRatioFor, ringLengthM } from '~/utils/mp/trackEditor'
 // 🆕 2026-09-22（审计 B2）：非官方路径的"一圈" = 画的圈（与跑步页 lapLengthM 同一基准）
 import { freePathLapLengthM } from '~/utils/mp/freePathGeometry'
+/** 🆕 2026-11-24：真实路径的里程按点列实测（`pathLengthMeters`，与跑步引擎同一个函数） */
+import { pathLengthMeters } from '~/utils/mp/routeSimilarity'
 import {
   FREE_RUN_KM_MAX,
   FREE_RUN_KM_MIN,
@@ -1401,7 +1411,16 @@ import {
   ytuRunPreview,
 } from '~/utils/mp/ytuRun'
 // 🆕 2026-09-29（issue #13）：配速**在任务允许区间内采样**（本次实际配速与"任务允许区间"同源）
-import { newRunSeed, planRealisticRun, randomRealPathPace, runPaceWindow } from '~/utils/mp/realism'
+import {
+  PACE_GEARS,
+  newRunSeed,
+  paceGearPoints,
+  paceWindowCrossNote,
+  planRealisticRun,
+  previewPlannedKm,
+  randomRealPathPace,
+  runPaceWindow,
+} from '~/utils/mp/realism'
 // 🆕 2026-11-03（1.3.6 需求②）「每轮换圈」：圈数/每圈用时/斜率校验/初始图 —— 全是纯函数（有单测）
 import {
   DEFAULT_LANE_COUNT,
@@ -2083,21 +2102,65 @@ const lanePlanSupports = computed(
  * 🆕 2026-11-04（真实路径流程 =「选择路径 → 检验 → 提交」）：
  * **这次真要用的那条预设是不是"真实路径导出"**（判据 = 预设带 `realPath` 元信息，与引擎同一条 `lanePlanEntry`）。
  * 是 ⇒ 不模拟：按钮变成「结算（真实路径原样）」，轨迹原样、里程原样，配速/用时按
- * 「随机值 → 归档真实用时 → 用户在「配速策略」里选的值」三级取值（`runner.start` 同口径）。
+ * 「随机值 → 归档真实用时 → 用户所选档位点」三级取值（`runner.start` 同口径）。
  */
 const isRealPathRun = computed(() => Boolean(lanePlanEntry.value?.realPath))
 /**
  * 🆕 2026-11-18（用户口径）：**真实路径的配速来源**。
  * ① 归档里有那场真实跑的用时（`usedTime` + `km`）⇒ 结算用归档值（`resolveRealPathPace`）；
- * ② 没有 ⇒ 用用户在「配速策略」里选的值；此时下方那个「随机」按钮可以一键抖动到非整分钟
+ * ② 没有 ⇒ 用用户所选**档位点**（区间四等分）；此时下方那个「随机」按钮在该档位段内抽一个
  *   （例：不是 6'00"，而是 6'11"）。
  */
 const realPathMetaNow = computed(() => lanePlanEntry.value?.realPath)
+/**
+ * 这条真实路径的**里程**（km）。
+ * 🔄 2026-11-24（用户口径"对于真实路径直接计算即可"）：**优先按点列实测**（几何就是这次要提交的轨迹），
+ *    归档里的 `km` 只是服务端当时报的数（与点列可能差几十米），实测算不出才回退它、再回退任务里程。
+ */
 const realPathKm = computed(() => {
+  const shape = lanePlanEntry.value?.freeShape
+  const pts = shape?.kind === 'curve' ? shape.points : []
+  const measured = pathLengthMeters(pts as { latitude: number; longitude: number }[]) / 1000
+  if (measured > 0.05) return Number(measured.toFixed(3))
   const km = Number(realPathMetaNow.value?.km)
   if (Number.isFinite(km) && km > 0) return km
   return taskMileageKm.value || YTU_TARGET_KM_FALLBACK
 })
+
+/**
+ * 🆕 2026-11-24（用户口径）：**界面算配速档位用的计划里程**。
+ *   · 真实路径 ⇒ 点列实测（与结算完全同一个数）；
+ *   · 模拟路径 ⇒ 「超跑系数中值」预估（`previewPlannedKm`，结算时仍用真随机超跑值，差 1~2%）。
+ */
+const pacePlanKmForUi = computed(() => {
+  if (isRealPathRun.value) return realPathKm.value
+  /**
+   * 研途健行页上方显示的是**目标里程**（用户自己设的那个数），档位就按它算 —— 与那一块的
+   * 「任务允许区间」文案同源；官方线路任务没有这块文案，用超跑预览更贴近结算时的实际里程。
+   */
+  if (routeIsFree.value) return ytuTargetKmForUi.value || YTU_TARGET_KM_FALLBACK
+  return previewPlannedKm(taskMileageKm.value || YTU_TARGET_KM_FALLBACK)
+})
+/**
+ * 🆕 2026-11-24：**界面档位用的配速区间** —— 以时间窗为主（时长要求 ÷ 里程），速度窗只兜底。
+ * 与跑步引擎 `runPaceWindow` 同一个函数，所以"界面显示的档位"就是"结算会用的段"。
+ */
+const paceWindowForUi = computed(() =>
+  runPaceWindow(
+    {
+      requiredKm: pacePlanKmForUi.value,
+      minSpeedKmh: activeTask.value?.minSpeed,
+      maxSpeedKmh: activeTask.value?.maxSpeed,
+      minMinutes: activeTask.value?.minTime,
+      maxMinutes: activeTask.value?.maxTime,
+    },
+    pacePlanKmForUi.value,
+  ),
+)
+/** 三个档位点（区间不可用时为 null ⇒ 下拉退回旧的三档基线） */
+const paceGearsForUi = computed(() => paceGearPoints(paceWindowForUi.value))
+/** 按时长窗生成、但时长窗与任务速度窗不一致时的一句如实说明（空串 = 不用提醒） */
+const paceWindowNote = computed(() => paceWindowCrossNote(paceWindowForUi.value))
 const realPathHasRecordedTime = computed(() => {
   const meta = realPathMetaNow.value
   const seconds = parseDuration(meta?.usedTime ?? '')
@@ -2106,7 +2169,7 @@ const realPathHasRecordedTime = computed(() => {
 const realPathPaceSourceText = computed(() =>
   realPathHasRecordedTime.value
     ? '归档记录（那场真实跑的用时）；点「随机配速」可改成随机值'
-    : '你在上方选择的配速策略（这条路径没带真实用时）',
+    : '你在上方选择的配速档位点（这条路径没带真实用时；想更随机就点下面的按钮）',
 )
 /** 随机按钮用的任务允许区间（与模拟跑、界面显示同一处判据） */
 const realPathPaceWindow = computed(() =>
@@ -2128,6 +2191,8 @@ const realPathPaceWindow = computed(() =>
  */
 const randomizeRealPathPace = () => {
   const pace = randomRealPathPace({
+    /** 🆕 2026-11-24：以**当前所选档位**为中心、区间 ÷ 4 为半径抽（用户口径） */
+    gear: run.value.paceGear,
     basePaceSecPerKm: run.value.paceSecPerKm,
     window: realPathPaceWindow.value,
     targetKm: realPathKm.value,
@@ -2140,7 +2205,7 @@ const randomizeRealPathPace = () => {
 }
 /**
  * 随机配速只属于**当前这条真实路径**：换预设就清掉。
- * 用户手改「配速策略」下拉也清掉（他明确选了别的档，随机值不该再压着它）。
+ * 用户手改「配速档位」下拉也清掉（他明确选了别的档，随机值不该再压着它）。
  */
 watch(
   () => lanePlanEntry.value?.id,
@@ -2150,6 +2215,10 @@ watch(
 )
 const onPaceSelect = (v: unknown) => {
   const n = Number(v)
+  /** 🆕 2026-11-24：选中的是四等分档位之一 ⇒ 记下档位键（结算按它在段内随机） */
+  const hit = paceGearsForUi.value?.find((g) => g.paceSecPerKm === n)
+  if (hit) run.value.paceGear = hit.key
+  /** 用户明确选了别的档 ⇒ 之前那笔"随机配速"不该再压着它 */
   if (run.value.realPathPaceSeconds && n > 0 && n !== run.value.realPathPaceSeconds) {
     run.value.realPathPaceSeconds = undefined
   }
@@ -2316,7 +2385,10 @@ const speedItems = [
   { value: 60, label: '60×（约 21 秒）' },
   { value: 600, label: '600×（约 2 秒，看结果用）' },
 ]
-/** 配速策略（真实学生的常见区间；实际会按"任务允许区间"采样，见 utils/mp/realism.ts 的 sampleRunPace） */
+/**
+ * **兜底**的三档基线：只在"任务两个窗都没下发"（算不出区间）时出现在下拉里。
+ * 正常任务走四等分档位（`PACES_GEARS` → `paceGearsForUi`）。
+ */
 const PACE_PRESETS = [
   { value: 330, label: `5'30" /km（较快）` },
   { value: 360, label: `6'00" /km（常规）` },
@@ -2401,7 +2473,7 @@ watch([() => activeTask.value?.taskId, () => activeTask.value?.paperId, () => ac
   ytuPreviewSeed.value = newRunSeed()
 })
 /**
- * **任务的允许配速区间**（交集）+ 本次**将要生成**的三件套（配速 / 时长 / 速度）。
+ * **任务的允许配速区间**（2026-11-24 起以时长窗为准）+ 本次**将要生成**的三件套（配速 / 时长 / 速度）。
  *
  * ⚠️ 三个数字都来自纯函数（`runPaceWindow` / `ytuRunPreview`），**与跑步引擎同一处判据** ——
  *    这正是 issue #13 里"右下角的配速无效"要修的那一条（旧实现是"时长 ÷ 里程"现算的，与配速字段不同源）。
@@ -2429,6 +2501,7 @@ const ytuPlannedPace = computed(() => {
     maxSpeedKmh: activeTask.value?.maxSpeed,
     minMinutes: activeTask.value?.minTime,
     maxMinutes: activeTask.value?.maxTime,
+    gear: run.value.paceGear,
     basePaceSecPerKm: run.value.paceSecPerKm,
     seed: ytuPreviewSeed.value,
   }).paceSecPerKm)
@@ -2444,7 +2517,27 @@ const ytuLapEstimate = computed(() => estimateLaps(ytuTargetKmForUi.value, selec
  *     `title = 值本身`，见 `vuetify/lib/composables/list-items.js` 的 "Not an existing item" 分支）。
  */
 const paceItems = computed<{ value: number; label: string }[]>(() => {
-  const items: { value: number; label: string }[] = PACE_PRESETS.map((x) => ({ value: x.value, label: String(x.label) }))
+  const items: { value: number; label: string }[] = []
+  const gears = paceGearsForUi.value
+  if (gears) {
+    /**
+     * 🆕 2026-11-24（用户口径）：下拉不再给固定基线，而是**按本次里程与时间要求四等分出来的三个档位**
+     * （最高速 / 中速 / 低速）。标签里带上该档的随机范围，用户看得见"点随机配速会落在哪一段"。
+     */
+    for (const g of gears) {
+      items.push({
+        value: g.paceSecPerKm,
+        label: `${g.label} · ${formatPace(g.paceSecPerKm)} /km（档内 ${formatPace(Math.round(g.lo))}~${formatPace(Math.round(g.hi))}）`,
+      })
+    }
+  } else {
+    /** 区间不可用（任务两个窗都没下发）⇒ 退回旧的三档固定基线，行为与旧版逐字一致 */
+    for (const x of PACE_PRESETS) items.push({ value: x.value, label: String(x.label) })
+  }
+  /**
+   * ⚠️ 必须把"实际值"塞进选项里，否则 Vuetify 在列表里找不到它时会**回退显示原始秒数**
+   *    （issue #13 截图里那个"514"就是这么来的）。真实路径带归档用时 ⇒ 这里显示的就是归档反算值。
+   */
   const actual = run.value.paceSecPerKm
   const planned = ytuPlannedPace.value
   for (const p of [actual, planned]) {

@@ -1,19 +1,20 @@
 /**
  * 任务窗口冲突的"冗余提示"单测（2026-09-21 用户要求）
  *
- * 背景：任务的**速度窗**（配速上下限）与**时长窗**（跑多久）偶尔会**互相矛盾**（任务参数本身有错），
- * 此时 `planRealisticRun` 只能以速度窗为准 —— 结果必然违反时长窗。
+ * 背景：任务的**速度窗**（配速上下限）与**时长窗**（跑多久）偶尔会**互相矛盾**（任务参数本身有错）。
+ * 🔄 2026-11-24（用户口径"窗口限制一般是时间"）：矛盾时 `planRealisticRun` **以时长窗为准**，
+ *    于是结果必然违反速度窗（旧版是以速度窗为准、违反时长窗）。
  * 用户判断"这种情况基本不可能"，所以**不做结构性处理，只做冗余提示**：如实标记 + 可读说明
  * （含两侧窗口与里程，方便用户直接发给开发者核对）。
  *
  * 钉住三件事：① 正常任务**不带**冲突标记（不污染常规产物）；② 矛盾任务**一定**被标出来且说明可读；
- *            ③ 标出来的那种情况**确实**违反了时长窗（证明这个告警不是多余的）。
+ *            ③ 标出来的那种情况**确实**违反了速度窗（证明这个告警不是多余的）。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { planRealisticRun } from '../../utils/mp/realism.ts'
 
-test('正常任务：不带 windowConflict 标记，配速落在速度窗内', () => {
+test('正常任务：不带 windowConflict 标记，配速落在时长窗内', () => {
   const plan = planRealisticRun({
     requiredKm: 3.27,
     minSpeedKmh: 8,
@@ -24,15 +25,17 @@ test('正常任务：不带 windowConflict 标记，配速落在速度窗内', (
   })
   assert.equal(plan.windowConflict, undefined, '正常任务不该带冲突标记')
   assert.equal(plan.windowConflictDetail, undefined)
-  // 速度窗 8~15 km/h ⇒ 配速 240~450 秒/公里
-  assert.ok(plan.paceSecPerKm >= 239 && plan.paceSecPerKm <= 451, `配速 ${plan.paceSecPerKm} 应落在速度窗内`)
+  // 时长窗 15~30 分钟 / 3.27 km ⇒ 配速 275~551 秒/公里（按时长窗；速度窗 240~450 只作展示）
+  const timeLo = (15 * 60) / plan.targetKm
+  const timeHi = (30 * 60) / plan.targetKm
+  assert.ok(plan.paceSecPerKm >= timeLo - 2 && plan.paceSecPerKm <= timeHi + 2, `配速 ${plan.paceSecPerKm} 应落在时长窗 ${timeLo}~${timeHi} 内`)
   // 时长落在时长窗内（15~30 分钟）
   assert.ok(plan.durationSeconds >= 15 * 60 - 2 && plan.durationSeconds <= 30 * 60 + 2, `时长 ${plan.durationSeconds} 应落在时长窗内`)
 })
 
 test('任务参数矛盾（速度窗与时长窗无交集）：必须标记冲突并给出可读说明', () => {
-  // 速度窗 8~15 km/h ⇒ 配速 240~450 秒/公里；时长窗 60~90 分钟 / 3.27 km ⇒ 配速约 1090~1640 秒/公里
-  // 两者无交集（最长也只要 450 秒/公里 ≈ 25 分钟）⇒ 只能以速度窗为准
+  // 速度窗 8~15 km/h ⇒ 配速 240~450 秒/公里；时长窗 60~90 分钟 / 3.27 km ⇒ 配速约 1101~1651 秒/公里
+  // 两者无交集 ⇒ 按时长窗（用户口径"窗口一般是时间"）
   const plan = planRealisticRun({
     requiredKm: 3.27,
     minSpeedKmh: 8,
@@ -47,8 +50,11 @@ test('任务参数矛盾（速度窗与时长窗无交集）：必须标记冲�
   assert.ok(detail.includes('速度窗'), detail)
   assert.ok(detail.includes('时长窗'), detail)
   assert.ok(detail.includes('发给开发者'), '要明确请用户把参数发给开发者（用户要求）')
-  // 证明确实违反了时长窗 —— 这正是必须告警的原因
-  assert.ok(plan.durationSeconds < 60 * 60, `时长 ${plan.durationSeconds} 秒应短于时长窗下限 3600 秒`)
+  // 证明确实违反了速度窗 —— 这正是必须告警的原因（按时长窗 ⇒ 配速 1101~1651 秒/公里 ≈ 2.2~3.3 km/h）
+  const speedKmh = 3600 / plan.paceSecPerKm
+  assert.ok(speedKmh < 8, `速度 ${speedKmh.toFixed(2)} km/h 应低于任务速度窗下限 8 km/h（按时长窗的必然结果）`)
+  // 时长确实落在时长窗内（60~90 分钟）
+  assert.ok(plan.durationSeconds >= 60 * 60 - 2 && plan.durationSeconds <= 90 * 60 + 2, `时长 ${plan.durationSeconds} 秒应落在时长窗内`)
 })
 
 test('只给速度窗（任务没给时长）时不算冲突', () => {

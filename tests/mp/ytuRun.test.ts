@@ -87,15 +87,17 @@ test('⭐ ytuRunPreview：时长与速度都**从配速同源算出**（不许�
   assert.equal(bad.speedKmh, 0)
 })
 
-test('paceWindowText：把"交集"如实说成人话；没有窗口时不编数字；冲突时给开发者的指引', () => {
+test('paceWindowText：把生效区间如实说成人话；没有窗口时不编数字；冲突时给开发者的指引', () => {
+  // 🔄 2026-11-24：有时长窗 ⇒ 区间按**时间要求**换算出来（不再报"速度要求 + 时长要求"的合成口径）
   const both = paceWindowText({ lo: 514, hi: 875, hasSpeedWindow: true, hasTimeWindow: true })
-  assert.ok(both.includes('速度要求') && both.includes('时长要求'), both)
+  assert.ok(both.includes('按时间要求换算'), both)
   assert.ok(both.includes(`8'34"`) && both.includes(`14'35"`), both)
   assert.ok(both.includes('km/h'), both)
   const speedOnly = paceWindowText({ lo: 240, hi: 450, hasSpeedWindow: true, hasTimeWindow: false })
-  assert.ok(speedOnly.includes('速度要求') && !speedOnly.includes('时长要求'), speedOnly)
+  assert.ok(speedOnly.includes('按速度要求换算'), speedOnly)
   assert.ok(paceWindowText({ lo: 0, hi: Infinity, hasSpeedWindow: false, hasTimeWindow: false }).includes('没有下发'), '没窗口要如实说')
-  assert.ok(paceWindowText({ lo: 240, hi: 450, hasSpeedWindow: true, hasTimeWindow: true, conflict: true }).includes('发给开发者'))
+  const conflict = paceWindowText({ lo: 240, hi: 450, hasSpeedWindow: true, hasTimeWindow: true, conflict: true })
+  assert.ok(conflict.includes('发给开发者') && conflict.includes('按时长窗'), conflict)
   // 退化成一点
   const point = paceWindowText({ lo: 300, hi: 300, hasSpeedWindow: true, hasTimeWindow: true })
   assert.ok(point.includes(`5'00"`), point)

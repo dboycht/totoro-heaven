@@ -26,7 +26,7 @@ import { routeRequirementOf, taskPaperIdOf } from '~/utils/mp/taskShape'
 // 🆕 2026-09-22「非官方路径绘制」：本机条目带 freeShape 时，几何用它展开（纯模块，与跑道编辑页预览同源）
 import { resolveFreePathGeometry } from '~/utils/mp/freePathGeometry'
 import { freeRouteGeometryChoice, resolveEntryName, type TrackRouteEntry } from '~/utils/mp/trackLibrary'
-import { newRunSeed, planRealisticRun, type RunPlan } from '~/utils/mp/realism'
+import { newRunSeed, paceGearOf, planRealisticRun, runPaceWindow, type RunPlan } from '~/utils/mp/realism'
 // 🆕 2026-10-07（用户要求）：本机记录 id（真实提交成功后要按它 / 按 settledAtMs 认领这一条）
 import { newLocalRecordId } from '~/utils/mp/recordState'
 // 🆕 2026-09-29（issue #13）：研途健行的"目标里程"归一化入口（与跑步页显示**同一个函数**）
@@ -273,7 +273,8 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
 
     // 真实感规划：里程**略超**任务要求（+0.3%~+4.0%）、配速**非整分钟**且**落在任务允许区间内**。
     // ⚠️ 2026-09-29（issue #13）：配速不再是"基线 ±3% 再夹到边界"（那会让每次提交都是同一个边界值），
-    //    改由 `planRealisticRun` 的 `runPaceWindow()` + `sampleRunPace()` 在**交集内采样**
+    //    改由 `planRealisticRun` 的 `runPaceWindow()` + `sampleGearPace()` 在**所选档位段内采样**
+    //    （2026-11-24：区间以时长窗为准，档位 = 区间四等分的三个分界点）
     //    （口径与"任务允许区间"的显示同源，见 `utils/mp/realism.ts`）。
     // ⚠️ 阳光跑分支一定已经有 task（上面刚校验过），这里显式收窄类型，避免 TS 认为可能为 null。
     const sunrunTask = task.value
@@ -294,6 +295,8 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
             maxSpeedKmh: sunrunTask.maxSpeed,
             minMinutes: sunrunTask.minTime,
             maxMinutes: sunrunTask.maxTime,
+            /** 🆕 2026-11-24：模拟路径也按**所选档位段内随机**（与真实路径同一套口径） */
+            gear: run.value.paceGear,
             basePaceSecPerKm: run.value.paceSecPerKm,
             seed: newRunSeed(),
           })
@@ -352,8 +355,17 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
           run.value.error = '这条真实路径预设的几何是空的（点数不足）：请回「我的场地 → 真实路径」重新导出，或换一条路径'
           return
         }
+        /**
+         * 🆕 2026-11-24（用户口径）：真实路径的**里程按点列实测**（"对于真实路径直接计算即可"）。
+         * 归档的 `realPath.km` 只是服务端当时报的数，与点列长度可能差几十米；而配速上下限、
+         * 时长都是按这个里程算的（4 km 的路径与 3.2 km 的路径，同一个时间窗换出的配速完全不同）。
+         * 实测算不出（点太少/坐标坏了）才退回归档值。
+         */
+        const measuredKm = pathLengthMeters(raw) / 1000
         const metaKm = Number(trackEntry.realPath.km)
-        const km = Number.isFinite(metaKm) && metaKm > 0 ? metaKm : pathLengthMeters(raw) / 1000
+        const km = measuredKm > 0.05
+          ? Number(measuredKm.toFixed(3))
+          : (Number.isFinite(metaKm) && metaKm > 0 ? metaKm : run.value.targetKm)
         const rawPoints = raw.map((p) => ({ latitude: p.latitude.toFixed(6), longitude: p.longitude.toFixed(6) }))
         const metaLapM = Number(trackEntry.realPath.lapLengthM)
         /**
@@ -364,9 +376,24 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
          */
         const picked = Number(run.value.realPathPaceSeconds ?? 0)
         const recorded = resolveRealPathPace(trackEntry.realPath.usedTime, km)
+        /**
+         * 🆕 2026-11-24：没有随机值、也没有归档用时 ⇒ 回落**所选档位点**（而不是那个可能与
+         * 实测里程不匹配的裸 `paceSecPerKm`）。档位点的窗口同样按实测里程 + 任务时间窗算。
+         */
+        const fallbackWindow = runPaceWindow(
+          {
+            requiredKm: km,
+            minSpeedKmh: task.value?.minSpeed,
+            maxSpeedKmh: task.value?.maxSpeed,
+            minMinutes: task.value?.minTime,
+            maxMinutes: task.value?.maxTime,
+          },
+          km,
+        )
+        const gearFallback = paceGearOf(fallbackWindow, run.value.paceGear)?.paceSecPerKm
         const paceSecPerKm = picked > 0
           ? Math.max(1, Math.round(picked))
-          : (recorded?.paceSecPerKm ?? run.value.paceSecPerKm)
+          : (recorded?.paceSecPerKm ?? gearFallback ?? run.value.paceSecPerKm)
         const durationSeconds = picked > 0 ? Math.max(1, Math.round(km * paceSecPerKm)) : (recorded?.usedTimeSeconds ?? 0)
         run.value = {
           ...createRunState(),

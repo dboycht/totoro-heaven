@@ -142,7 +142,8 @@ export function ytuRunPreview(targetKm: number, paceSecPerKm: number, fallbackKm
  *
  * 用户 2026-09-29 提出的口径（原话）："上级要求的不仅有时间要求还有配速要求，
  * 我们先将配速要求转化为时间要求，然后取两个区间的交集，以交集为中心进行波动"。
- * 所以这里要把**交集**如实报出来（配速 + 对应速度 + 对应时长），让用户一眼看懂"为什么是这个配速"。
+ * 🔄 2026-11-24（用户口径"窗口限制一般是时间"）：上下限改成**以时长窗为准**（速度窗只兜底），
+ * 这里如实报出**实际生效的区间**（配速 + 对应速度 + 对应时长），让用户一眼看懂"为什么是这个配速"。
  */
 export function paceWindowText(input: {
   lo: number
@@ -151,7 +152,7 @@ export function paceWindowText(input: {
   hasTimeWindow: boolean
   conflict?: boolean
 }): string {
-  if (input.conflict) return '任务参数自相矛盾（速度窗与时长窗无交集）：本次按速度窗生成，建议把任务参数发给开发者核对'
+  if (input.conflict) return '任务参数自相矛盾（速度窗与时长窗无交集）：本次按时长窗生成，建议把任务参数发给开发者核对'
   const hasSpan = Number.isFinite(input.hi) && Number.isFinite(input.lo) && input.hi > input.lo
   if (!hasSpan) {
     if (Number.isFinite(input.hi) && Number.isFinite(input.lo) && input.hi === input.lo) {
@@ -159,10 +160,9 @@ export function paceWindowText(input: {
     }
     return '本任务没有下发配速/时长要求（不由我们编一个区间）'
   }
-  const parts: string[] = []
-  if (input.hasSpeedWindow) parts.push('速度要求')
-  if (input.hasTimeWindow) parts.push('时长要求')
-  return `任务允许区间（${parts.join(' + ') || '任务要求'}）：${paceTextOf(input.lo)} ~ ${paceTextOf(input.hi)} /km（速度 ${speedTextOf(input.lo)} ~ ${speedTextOf(input.hi)}）`
+  /** 实际生效的是哪一个窗（2026-11-24：有时长窗就是它，否则才是速度窗） */
+  const source = input.hasTimeWindow ? '按时间要求换算' : '按速度要求换算'
+  return `任务允许区间（${source}）：${paceTextOf(input.lo)} ~ ${paceTextOf(input.hi)} /km（速度 ${speedTextOf(input.lo)} ~ ${speedTextOf(input.hi)}）`
 }
 
 const speedTextOf = (secPerKm: number) =>
