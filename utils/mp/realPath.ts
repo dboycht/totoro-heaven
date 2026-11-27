@@ -240,6 +240,152 @@ export function pathLengthM(points: RealPathPoint[]): number {
 }
 
 /**
+ * **首尾修剪**：把一条真实路径裁成"更短但仍达标"的一段（2026-11-27 用户口径，纯函数）。
+ *
+ * ## 用户原话要点
+ * > "在跑步界面…可以将相关的数据点进行修剪，也就是[删掉]起点和终点左右的数据点，
+ * >  并确保最终形成的长度是大于课程要求的，然后再进入后面的计算，这样的话可以减少重复度；
+ * >  这类计算是在计算配速之前发生的。"
+ *
+ * ## 为什么修剪
+ * 真实路径预设是**某一场真实跑的原样点列**；每次原样提交 ⇒ 首尾坐标、里程、时长都与归档那一场
+ * 逐字相同（重复度最高）。首尾各裁掉一段后起点与终点都挪开，提交的才是"另一场"的轨迹。
+ *
+ * ## 三条判据（缺一不可）
+ *   ① **下限**：修剪后里程 ≥ `要求里程 × (1 + 超跑系数)`，超跑系数在 0.3%~4% 内随机
+ *      （与 `utils/mp/realism.ts` 的模拟路径同一区间，两端风格一致）；
+ *   ② **幅度**：在"原始里程 − 下限"这段余量里随机吃掉 10%~95%（用户 2026-11-27 口径"数量随机"）；
+ *   ③ **分配**：裁掉的总量按 25%~75% 随机分给首、尾两端 —— 只裁一端等于起点或终点没挪。
+ *
+ * 余量不足（原始 ≤ 下限 + 5 m）⇒ **不修剪**，`skipped` 里写清原因（绝不凭空造一段）。
+ *
+ * ⚠️ 纯函数：不联网、不写盘；随机源可注入（`rng`，单测用）。
+ *    调用方必须在**算配速之前**用它的点列 —— 配速 = 用时 ÷ 里程，里程变了配速才跟着变。
+ */
+export interface RealPathTrimPlan {
+  /** 对应哪条预设（引擎据此确认不是上一轮留下的残留） */
+  entryId: string
+  /** 修剪后的点列（`skipped` 非空时 = 原样点列） */
+  points: RealPathPoint[]
+  /** 原始里程（km，3 位小数） */
+  originalKm: number
+  /** 修剪后里程（km，3 位小数；`skipped` 非空时 = 原始里程） */
+  trimmedKm: number
+  /** 首端裁掉多少米 */
+  trimStartM: number
+  /** 尾端裁掉多少米 */
+  trimEndM: number
+  /** 本次抽到的超跑系数（0.003~0.04） */
+  overshootRatio: number
+  /** 原始点数 / 保留点数 */
+  sourcePoints: number
+  keptPoints: number
+  /** 不修剪的原因（空串 = 真的修剪了） */
+  skipped: string
+}
+
+/** 可裁比例区间（余量的 10%~95%） */
+export const REAL_PATH_TRIM_RATIO: readonly [number, number] = [0.1, 0.95]
+/** 首尾分配比例区间（25%~75%） */
+export const REAL_PATH_TRIM_SPLIT: readonly [number, number] = [0.25, 0.75]
+/** 超跑系数区间（与 `realism.ts` 的 0.3%~4.0% 同一口径） */
+export const REAL_PATH_TRIM_OVERSHOOT: readonly [number, number] = [0.003, 0.04]
+/** 余量少于这么多米就不修剪（连 5 m 都裁不到，没有意义） */
+export const REAL_PATH_TRIM_MIN_BUDGET_M = 5
+
+export function planRealPathTrim(
+  points: RealPathPoint[],
+  opts: {
+    entryId?: string
+    /** 课程要求里程（km；≤ 0 = 没有要求可对照 ⇒ 不修剪） */
+    requiredKm: number
+    rng?: () => number
+    ratioRange?: readonly [number, number]
+    splitRange?: readonly [number, number]
+    overshootRange?: readonly [number, number]
+  },
+): RealPathTrimPlan {
+  const rng = opts.rng ?? Math.random
+  const entryId = String(opts.entryId ?? '')
+  const list = (Array.isArray(points) ? points : [])
+    .filter((p) => p && Number.isFinite(Number(p.latitude)) && Number.isFinite(Number(p.longitude)))
+    .map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
+  const originalM = pathLengthM(list)
+  const originalKm = Number((originalM / 1000).toFixed(3))
+  const skip = (reason: string): RealPathTrimPlan => ({
+    entryId,
+    points: list,
+    originalKm,
+    trimmedKm: originalKm,
+    trimStartM: 0,
+    trimEndM: 0,
+    overshootRatio: 0,
+    sourcePoints: list.length,
+    keptPoints: list.length,
+    skipped: reason,
+  })
+  const requiredKm = Number(opts.requiredKm)
+  if (!(requiredKm > 0)) return skip('没有要求里程可对照（自由跑 / 未读到任务里程）')
+  if (list.length < 4) return skip(`点太少（${list.length} 点），不修剪`)
+  const [ovLo, ovHi] = opts.overshootRange ?? REAL_PATH_TRIM_OVERSHOOT
+  const overshootRatio = ovLo + rng() * (ovHi - ovLo)
+  const floorM = requiredKm * (1 + overshootRatio) * 1000
+  const budgetM = originalM - floorM
+  if (!(budgetM > REAL_PATH_TRIM_MIN_BUDGET_M)) {
+    return skip(
+      `原始 ${originalKm.toFixed(2)} km 只比要求 ${requiredKm.toFixed(2)} km 多 ${Math.max(0, Math.round(budgetM))} m` +
+        `（下限 ${(floorM / 1000).toFixed(3)} km），不够修剪`,
+    )
+  }
+  const [rLo, rHi] = opts.ratioRange ?? REAL_PATH_TRIM_RATIO
+  const trimM = budgetM * (rLo + rng() * (rHi - rLo))
+  const [sLo, sHi] = opts.splitRange ?? REAL_PATH_TRIM_SPLIT
+  const startShare = sLo + rng() * (sHi - sLo)
+  const trimStartM = trimM * startShare
+  const trimEndM = trimM - trimStartM
+
+  /** 累计弧长（`cum[i]` = 第 0 点到第 i 点的里程，米） */
+  const cum: number[] = [0]
+  for (let i = 1; i < list.length; i++) cum.push(cum[i - 1]! + distanceM(list[i - 1]!, list[i]!))
+  /** 首端：第一个"距起点已超过裁剪量"的点 */
+  let iStart = 0
+  while (iStart < list.length - 1 && cum[iStart]! < trimStartM) iStart++
+  /** 尾端：最后一个"距终点仍超过裁剪量"的点 */
+  let iEnd = list.length - 1
+  while (iEnd > 0 && originalM - cum[iEnd]! < trimEndM) iEnd--
+  const kept = iEnd >= iStart ? list.slice(iStart, iEnd + 1) : []
+  if (kept.length < 3) return skip('修剪后点数不足 3 个，不修剪')
+  const trimmedKm = Number((pathLengthM(kept) / 1000).toFixed(3))
+  /** 3 位小数四舍五入到米级，允许半点误差；真低于下限就整条不修剪（宁可不裁也不越线） */
+  if (!(trimmedKm * 1000 + 0.5 >= floorM)) {
+    return skip(`修剪后 ${trimmedKm.toFixed(3)} km 低于下限 ${(floorM / 1000).toFixed(3)} km，不修剪`)
+  }
+  return {
+    entryId,
+    points: kept,
+    originalKm,
+    trimmedKm,
+    trimStartM: Number(trimStartM.toFixed(1)),
+    trimEndM: Number(trimEndM.toFixed(1)),
+    overshootRatio,
+    sourcePoints: list.length,
+    keptPoints: kept.length,
+    skipped: '',
+  }
+}
+
+/** 界面一句话：这次修剪了什么（不修剪时如实说明原因） */
+export function realPathTrimText(plan: RealPathTrimPlan | null | undefined): string {
+  if (!plan) return ''
+  if (plan.skipped) return `首尾修剪：不修剪 —— ${plan.skipped}`
+  return (
+    `首尾修剪：${plan.originalKm.toFixed(2)} km → ${plan.trimmedKm.toFixed(2)} km` +
+    `（首 ${Math.round(plan.trimStartM)} m / 尾 ${Math.round(plan.trimEndM)} m；` +
+    `${plan.sourcePoints} → ${plan.keptPoints} 点），每次载入重抽`
+  )
+}
+
+/**
  * **从一次真实跑里切出"一圈"**（本功能的关键一步，纯函数）。
  *
  * ## 为什么必须切
