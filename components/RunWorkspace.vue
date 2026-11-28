@@ -334,10 +334,10 @@
           </v-card-title>
           <v-card-text class="text-caption text-medium-emphasis">
             <template v-if="isRealPathRun">
-              这次选的预设来自「真实路径」⇒ 流程是<b>「选择路径 → 首尾修剪 → 检验 → 提交」</b>：
-              轨迹取导出的原始点列（不切圈、不降采样、不叠加换道），但会<b>先裁掉首尾各一段</b>
-              （余量里随机裁 10%~95%，裁完里程仍 ≥ 要求 × (1 + 0.3%~4%)，每次载入重抽），
-              这样每次提交的轨迹与里程都不是归档那一场的复刻 —— 没有道次可换；
+              这次选的预设来自「真实路径」⇒ 流程是<b>「选择路径 → 尾部修剪 → 检验 → 提交」</b>：
+              轨迹取导出的原始点列（不切圈、不降采样、不叠加换道），但会<b>先裁掉末尾一段</b>
+              （余量里随机裁 10%~95%，裁完里程仍 ≥ 要求 × (1 + 0.3%~4%)，每次载入重抽）；
+              <b>起点保留</b>，所以轨迹开头与那场真跑一致，只有收尾被截短 —— 没有道次可换；
               里程按<b>修剪后的点列实测</b>，配速与用时优先取归档里那场真实跑的记录（没带用时则用上方选的档位点，
               可点「随机配速」在该档位段内随机抽一个，如 6'11"）。
             </template>
@@ -773,7 +773,7 @@
               <div class="text-caption text-medium-emphasis mb-1">
                 这条真实路径的配速来源：<b>{{ realPathPaceSourceText }}</b>
               </div>
-              <!-- 🆕 2026-11-27（用户口径）：首尾修剪 —— 裁了多少、裁完多长，如实报数 -->
+              <!-- 🆕 2026-11-27（用户口径）：尾部修剪 —— 裁了多少、裁完多长，如实报数（2026-11-28 起只裁末尾） -->
               <div v-if="realPathTrimNote" class="text-caption text-medium-emphasis mb-1">
                 {{ realPathTrimNote }}
               </div>
@@ -1415,7 +1415,7 @@ import { laneLoop, laneRatioFor, ringLengthM } from '~/utils/mp/trackEditor'
 import { freePathLapLengthM } from '~/utils/mp/freePathGeometry'
 /** 🆕 2026-11-24：真实路径的里程按点列实测（`pathLengthMeters`，与跑步引擎同一个函数） */
 import { pathLengthMeters } from '~/utils/mp/routeSimilarity'
-/** 🆕 2026-11-27（用户口径）：真实路径的**首尾修剪**（判据/随机/文案都在纯模块里，界面只负责"什么时候抽"） */
+/** 🆕 2026-11-27（用户口径）：真实路径的**尾部修剪**（判据/随机/文案都在纯模块里，界面只负责"什么时候抽"；2026-11-28 起只裁末尾） */
 import { planRealPathTrim, realPathTrimText } from '~/utils/mp/realPath'
 import {
   FREE_RUN_KM_MAX,
@@ -1768,7 +1768,7 @@ watchEffect(() => {
 const doStart = () => {
   run.value.runType = tabRunType.value
   /**
-   * ⚠️ 2026-11-27：这里**故意不重抽**首尾修剪 —— 重抽只发生在「载入」（换预设 / 改要求里程 /
+   * ⚠️ 2026-11-27：这里**故意不重抽**尾部修剪 —— 重抽只发生在「载入」（换预设 / 改要求里程 /
    * 重置 / 重新生成 / 进页面）。判据：界面上的「本次计划里程」必须就是这次结算用的那个数，
    * 否则又变成"界面说 2.9 km、实际按 2.2 km 结算"（与 1.1.x 起就钉住的同源纪律冲突）。
    */
@@ -2134,7 +2134,7 @@ const lanePlanSupports = computed(
 /**
  * 🆕 2026-11-04（真实路径流程 =「选择路径 → 检验 → 提交」）：
  * **这次真要用的那条预设是不是"真实路径导出"**（判据 = 预设带 `realPath` 元信息，与引擎同一条 `lanePlanEntry`）。
- * 是 ⇒ 不模拟：按钮变成「结算（真实路径）」，轨迹取导出点列（🆕 2026-11-27 起先做首尾修剪），
+ * 是 ⇒ 不模拟：按钮变成「结算（真实路径）」，轨迹取导出点列（🆕 2026-11-27 起先做尾部修剪），
  *    里程按修剪后实测，配速/用时按
  * 「随机值 → 归档真实用时 → 用户所选档位点」三级取值（`runner.start` 同口径）。
  */
@@ -2405,7 +2405,7 @@ const submitBlockedNote = computed(() => {
  * 与 `doStart()` 同一入口（口径只有一处），只是先把上一次的结算与轨迹清干净。
  */
 /**
- * 🆕 2026-11-27：**重置 = 一次重新载入** ⇒ 真实路径的首尾修剪跟着重抽
+ * 🆕 2026-11-27：**重置 = 一次重新载入** ⇒ 真实路径的尾部修剪跟着重抽
  * （同一预设连着交两笔也不会是同一条轨迹/里程）。
  */
 const doReset = () => {
@@ -2415,7 +2415,7 @@ const doReset = () => {
 const regenerateRun = () => {
   reset()
   run.value.runType = tabRunType.value
-  /** 🆕 2026-11-27：重新生成也算一次「载入」⇒ 重抽首尾修剪（否则重跑出来的还是同一条） */
+  /** 🆕 2026-11-27：重新生成也算一次「载入」⇒ 重抽尾部修剪（否则重跑出来的还是同一条） */
   redrawRealPathTrim()
   start()
   logInfo('run', '本地校验未通过 ⇒ 重新生成轨迹', {
@@ -2497,7 +2497,7 @@ const realPathRequiredKm = computed(() =>
 
 /**
  * 🆕 2026-11-27（用户口径"具体的裁剪数量是随机的…每次载入重随机"）：
- * **重抽一次首尾修剪**，写进共享状态（引擎与界面读同一份）。
+ * **重抽一次尾部修剪**，写进共享状态（引擎与界面读同一份）。
  * 判据与随机全在纯模块 `planRealPathTrim`；这里只负责"什么时候抽"：
  * 进页面 / 换预设 / 改要求里程 / 点「重置」/ 点「重新生成」—— 都是"载入"这一侧，
  * 「结算」那一侧不重抽（否则界面显示的里程与结算用的里程会分叉）。
@@ -2520,7 +2520,7 @@ const redrawRealPathTrim = () => {
 const realPathTrimNote = computed(() => (isRealPathRun.value ? realPathTrimText(run.value.realPathTrim) : ''))
 
 watch(
-  /** 🆕 2026-11-27：换预设 / 改要求里程都重抽一次首尾修剪（`immediate` ⇒ 进页面就有一条可结算的） */
+  /** 🆕 2026-11-27：换预设 / 改要求里程都重抽一次尾部修剪（`immediate` ⇒ 进页面就有一条可结算的） */
   [() => lanePlanEntry.value?.id, () => realPathRequiredKm.value],
   () => {
     if (run.value.realPathPaceSeconds) run.value.realPathPaceSeconds = undefined

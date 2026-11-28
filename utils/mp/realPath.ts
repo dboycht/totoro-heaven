@@ -240,22 +240,25 @@ export function pathLengthM(points: RealPathPoint[]): number {
 }
 
 /**
- * **首尾修剪**：把一条真实路径裁成"更短但仍达标"的一段（2026-11-27 用户口径，纯函数）。
+ * **尾部修剪**：把一条真实路径的**末尾**裁掉一段，得到"更短但仍达标"的一段
+ * （2026-11-27 初版"首尾各裁"→ **2026-11-28 用户更正：只截断末尾，起点保持原样**；纯函数）。
  *
  * ## 用户原话要点
- * > "在跑步界面…可以将相关的数据点进行修剪，也就是[删掉]起点和终点左右的数据点，
+ * > 2026-11-27："在跑步界面…可以将相关的数据点进行修剪，也就是[删掉]起点和终点左右的数据点，
  * >  并确保最终形成的长度是大于课程要求的，然后再进入后面的计算，这样的话可以减少重复度；
  * >  这类计算是在计算配速之前发生的。"
+ * > 2026-11-28："修改相关的截断算法，只截断末尾不截断开始。"
  *
  * ## 为什么修剪
- * 真实路径预设是**某一场真实跑的原样点列**；每次原样提交 ⇒ 首尾坐标、里程、时长都与归档那一场
- * 逐字相同（重复度最高）。首尾各裁掉一段后起点与终点都挪开，提交的才是"另一场"的轨迹。
+ * 真实路径预设是**某一场真实跑的原样点列**；每次原样提交 ⇒ 里程/时长/轨迹都与归档那一场
+ * 逐字相同（重复度最高）。裁掉末尾一段后终点挪开、里程变短，提交的才是"另一场"的轨迹。
+ * ⚠️ 起点**故意保持原样**（用户 2026-11-28 口径）：这样轨迹开头仍与那场真跑一致，
+ *    只有收尾那一段被截掉 —— 想保留"从入口进场"的那种开头观感时用它。
  *
- * ## 三条判据（缺一不可）
+ * ## 两条判据
  *   ① **下限**：修剪后里程 ≥ `要求里程 × (1 + 超跑系数)`，超跑系数在 0.3%~4% 内随机
  *      （与 `utils/mp/realism.ts` 的模拟路径同一区间，两端风格一致）；
- *   ② **幅度**：在"原始里程 − 下限"这段余量里随机吃掉 10%~95%（用户 2026-11-27 口径"数量随机"）；
- *   ③ **分配**：裁掉的总量按 25%~75% 随机分给首、尾两端 —— 只裁一端等于起点或终点没挪。
+ *   ② **幅度**：在"原始里程 − 下限"这段余量里随机吃掉 10%~95%（用户 2026-11-27 口径"数量随机"）。
  *
  * 余量不足（原始 ≤ 下限 + 5 m）⇒ **不修剪**，`skipped` 里写清原因（绝不凭空造一段）。
  *
@@ -271,7 +274,7 @@ export interface RealPathTrimPlan {
   originalKm: number
   /** 修剪后里程（km，3 位小数；`skipped` 非空时 = 原始里程） */
   trimmedKm: number
-  /** 首端裁掉多少米 */
+  /** 首端裁掉多少米（2026-11-28 起恒为 0 —— 只裁末尾，起点原样保留） */
   trimStartM: number
   /** 尾端裁掉多少米 */
   trimEndM: number
@@ -286,8 +289,11 @@ export interface RealPathTrimPlan {
 
 /** 可裁比例区间（余量的 10%~95%） */
 export const REAL_PATH_TRIM_RATIO: readonly [number, number] = [0.1, 0.95]
-/** 首尾分配比例区间（25%~75%） */
-export const REAL_PATH_TRIM_SPLIT: readonly [number, number] = [0.25, 0.75]
+/**
+ * @deprecated 2026-11-28（用户口径"只截断末尾"）：不再有首尾分配，这个常量只为兼容旧引用保留，
+ * 值恒等于"全给末尾"。新代码别再用它。
+ */
+export const REAL_PATH_TRIM_SPLIT: readonly [number, number] = [0, 1]
 /** 超跑系数区间（与 `realism.ts` 的 0.3%~4.0% 同一口径） */
 export const REAL_PATH_TRIM_OVERSHOOT: readonly [number, number] = [0.003, 0.04]
 /** 余量少于这么多米就不修剪（连 5 m 都裁不到，没有意义） */
@@ -301,6 +307,7 @@ export function planRealPathTrim(
     requiredKm: number
     rng?: () => number
     ratioRange?: readonly [number, number]
+    /** @deprecated 2026-11-28：只裁末尾，不再有首尾分配（传了也忽略） */
     splitRange?: readonly [number, number]
     overshootRange?: readonly [number, number]
   },
@@ -339,10 +346,13 @@ export function planRealPathTrim(
   }
   const [rLo, rHi] = opts.ratioRange ?? REAL_PATH_TRIM_RATIO
   const trimM = budgetM * (rLo + rng() * (rHi - rLo))
-  const [sLo, sHi] = opts.splitRange ?? REAL_PATH_TRIM_SPLIT
-  const startShare = sLo + rng() * (sHi - sLo)
-  const trimStartM = trimM * startShare
-  const trimEndM = trimM - trimStartM
+  /**
+   * 🆕 2026-11-28（用户口径"只截断末尾不截断开始"）：**整段都从末尾裁**。
+   * 起点保持原点列的第 0 点 ⇒ 轨迹开头与那场真跑完全一致，只有收尾被截短。
+   * ⚠️ 第三次 `rng()` 调用（旧的首尾分配）已删除 —— 随机序列少一个数，单测的固定 rng 期望值跟着改了。
+   */
+  const trimStartM = 0
+  const trimEndM = trimM
 
   /** 累计弧长（`cum[i]` = 第 0 点到第 i 点的里程，米） */
   const cum: number[] = [0]
@@ -377,10 +387,10 @@ export function planRealPathTrim(
 /** 界面一句话：这次修剪了什么（不修剪时如实说明原因） */
 export function realPathTrimText(plan: RealPathTrimPlan | null | undefined): string {
   if (!plan) return ''
-  if (plan.skipped) return `首尾修剪：不修剪 —— ${plan.skipped}`
+  if (plan.skipped) return `尾部修剪：不修剪 —— ${plan.skipped}`
   return (
-    `首尾修剪：${plan.originalKm.toFixed(2)} km → ${plan.trimmedKm.toFixed(2)} km` +
-    `（首 ${Math.round(plan.trimStartM)} m / 尾 ${Math.round(plan.trimEndM)} m；` +
+    `尾部修剪：${plan.originalKm.toFixed(2)} km → ${plan.trimmedKm.toFixed(2)} km` +
+    `（裁掉末尾 ${Math.round(plan.trimEndM)} m，起点保留；` +
     `${plan.sourcePoints} → ${plan.keptPoints} 点），每次载入重抽`
   )
 }

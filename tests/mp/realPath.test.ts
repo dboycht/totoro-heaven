@@ -49,7 +49,6 @@ import {
   REAL_PATH_TRIM_MIN_BUDGET_M,
   REAL_PATH_TRIM_OVERSHOOT,
   REAL_PATH_TRIM_RATIO,
-  REAL_PATH_TRIM_SPLIT,
   type RealPathMeta,
   type RealPathPoint,
 } from '../../utils/mp/realPath.ts'
@@ -776,10 +775,11 @@ test("resolveRealPathPace：配速超出常见范围 ⇒ null（坏数据当没�
 /* ══════════════════════════════════════════════════════════════════════════
  * 🆕 2026-11-27（用户口径）：**真实路径的首尾修剪**（`planRealPathTrim`）
  *
- * 用户原话要点："在跑步界面…可以将相关的数据点进行修剪，也就是[删掉]起点和终点左右的数据点，
- *  并确保最终形成的长度是大于课程要求的，然后再进入后面的计算，这样的话可以减少重复度；
+ * 用户原话要点（2026-11-27）："在跑步界面…可以将相关的数据点进行修剪，也就是[删掉]起点和终点
+ *  左右的数据点，并确保最终形成的长度是大于课程要求的，然后再进入后面的计算，这样的话可以减少重复度；
  *  这类计算是在计算配速之前发生的。"
- * 口径（2026-11-27 已确认）：① 首尾各裁一段、保留中间连续段；② 数量随机（余量的 10%~95%）；
+ * 🔄 2026-11-28 用户更正：**只截断末尾、不截断开始**（起点保持原点列第 0 点 ⇒ 轨迹开头与那场真跑一致）。
+ * 口径：① 只裁末尾、保留原点列的连续前缀；② 数量随机（余量的 10%~95%）；
  *  ③ 下限 = 要求 × (1 + 0.3%~4%)；④ 每次载入重随机。
  * ══════════════════════════════════════════════════════════════════════════ */
 
@@ -789,13 +789,14 @@ const straight = (totalM: number, stepM = 3): RealPathPoint[] => {
   return Array.from({ length: n }, (_, i) => ({ latitude: 31.99, longitude: 118.84 + (i * stepM) / mLng }))
 }
 
-test('planRealPathTrim：首尾各裁一段，裁后里程 ≥ 要求×(1+0.3%~4%) 且严格小于原始', () => {
+test('planRealPathTrim：只裁末尾（起点原样），裁后里程 ≥ 要求×(1+0.3%~4%) 且严格小于原始', () => {
   const points = straight(3270)
   const plan = planRealPathTrim(points, { entryId: 'e1', requiredKm: 2 })
   assert.equal(plan.skipped, '')
   assert.equal(plan.entryId, 'e1')
   assert.equal(plan.sourcePoints, points.length)
-  assert.ok(plan.trimStartM > 0 && plan.trimEndM > 0, '首尾都必须真的动（只裁一端等于起点或终点没挪）')
+  assert.equal(plan.trimStartM, 0, '2026-11-28 口径：起点不许动')
+  assert.ok(plan.trimEndM > 0, '末尾必须真的裁掉一段')
   assert.ok(plan.keptPoints < plan.sourcePoints, '点数必须变少')
   assert.ok(plan.trimmedKm < plan.originalKm, '修剪后必须更短')
   // ① 下限：≥ 要求 × (1 + 本次抽到的超跑系数)
@@ -805,20 +806,19 @@ test('planRealPathTrim：首尾各裁一段，裁后里程 ≥ 要求×(1+0.3%~4
   const budgetM = plan.originalKm * 1000 - floorM
   assert.ok(plan.trimmedKm * 1000 >= plan.originalKm * 1000 - 0.95 * budgetM - 3)
   assert.ok(plan.trimmedKm * 1000 <= plan.originalKm * 1000 - 0.1 * budgetM + 3)
-  // 裁掉的量 = 原始 − 修剪后（首尾各自按点取整 ⇒ 最多差两个采样点 = 6 m）
+  // 裁掉的量 = 原始 − 修剪后（末尾按点取整 ⇒ 最多差一个采样点）
   const cutM = plan.originalKm * 1000 - plan.trimmedKm * 1000
-  assert.ok(Math.abs(cutM - (plan.trimStartM + plan.trimEndM)) <= 6.5, `理论裁 ${plan.trimStartM + plan.trimEndM} m、实测裁 ${cutM} m`)
+  assert.ok(Math.abs(cutM - plan.trimEndM) <= 3.5, `理论裁 ${plan.trimEndM} m、实测裁 ${cutM} m`)
 })
 
-test('planRealPathTrim：随机源固定 ⇒ 比例可复现（rng=0 ⇒ 余量吃 10%、首 25% / 尾 75%）', () => {
+test('planRealPathTrim：随机源固定 ⇒ 比例可复现（rng=0 ⇒ 余量吃 10%，全在末尾）', () => {
   const points = straight(3270)
   const plan = planRealPathTrim(points, { requiredKm: 2, rng: () => 0 })
   assert.ok(Math.abs(plan.overshootRatio - REAL_PATH_TRIM_OVERSHOOT[0]) < 1e-9)
   const budgetM = plan.originalKm * 1000 - 2000 * (1 + REAL_PATH_TRIM_OVERSHOOT[0])
   const expectTrimM = budgetM * REAL_PATH_TRIM_RATIO[0]
-  assert.ok(Math.abs(plan.trimStartM + plan.trimEndM - expectTrimM) <= 0.3, '裁量 = 余量 × 10%')
-  const share = plan.trimStartM / (plan.trimStartM + plan.trimEndM)
-  assert.ok(Math.abs(share - REAL_PATH_TRIM_SPLIT[0]) < 0.01, `首端占比 ${share} 应等于 ${REAL_PATH_TRIM_SPLIT[0]}`)
+  assert.ok(Math.abs(plan.trimEndM - expectTrimM) <= 0.3, '裁量 = 余量 × 10%')
+  assert.equal(plan.trimStartM, 0, '起点不动')
 })
 
 test('planRealPathTrim：每次重抽 ⇒ 同一输入多次结果不同（不会每次都是同一个修剪量）', () => {
@@ -835,6 +835,7 @@ test('planRealPathTrim：随机 100 次都不越下限（"确保最终长度大�
     assert.equal(plan.skipped, '')
     assert.ok(plan.trimmedKm * 1000 + 0.5 >= 2000 * (1 + plan.overshootRatio), `第 ${i} 次越线：${plan.trimmedKm} km`)
     assert.ok(plan.trimmedKm > 2, `第 ${i} 次裁到不满足课程要求：${plan.trimmedKm} km`)
+    assert.equal(plan.trimStartM, 0, `第 ${i} 次动了起点`)
   }
 })
 
@@ -859,12 +860,12 @@ test('planRealPathTrim：没有要求里程 / 点太少 ⇒ 不修剪（绝不�
   assert.match(planRealPathTrim(points.slice(0, 3), { requiredKm: 2 }).skipped, /点太少/)
 })
 
-test('planRealPathTrim：保留的是原点列的连续子段（不重排、不插值、不改坐标）', () => {
+test('planRealPathTrim：保留的是原点列的前缀（起点不动、不重排、不插值、不改坐标）', () => {
   const points = straight(3270)
   const plan = planRealPathTrim(points, { requiredKm: 2 })
   const first = plan.points[0]!
   const startIndex = points.findIndex((p) => p.latitude === first.latitude && p.longitude === first.longitude)
-  assert.ok(startIndex > 0, '首点必须后移（起点真的挪开了）')
+  assert.equal(startIndex, 0, '2026-11-28 口径：首点必须还是原点列第 0 点')
   const last = plan.points[plan.points.length - 1]!
   const endIndex = points.findIndex((p) => p.latitude === last.latitude && p.longitude === last.longitude)
   assert.ok(endIndex < points.length - 1, '尾点必须前移（终点真的挪开了）')
