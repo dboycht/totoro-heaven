@@ -40,6 +40,46 @@
             蓝点 = 起点（与原始一致）· 绿点 = 最终终点 · 红点 = 从哪儿开始被裁 · <span style="color: #ef5350">红线</span>就是裁掉的那段
           </div>
 
+          <!-- 🆕 2026-11-28（用户要求）：插值前 vs 插值后 —— 放大看点**
+               全览里两套点都挤在一起看不出差别，所以另画一块 120 m 见方的放大窗：
+               灰点 = 原始顶点、绿点 = 重采样点（两套点明显错开，线却几乎重合）。 -->
+          <div class="text-caption mb-1">
+            放大 120 m（<span style="color:#9e9e9e">灰点 = 原始点</span> / <span style="color:#4caf50">绿点 = 重采样点</span>）
+            —— 点明显错开了，线几乎重合
+          </div>
+          <svg v-if="zoom" :viewBox="`0 0 ${zoom.w} ${zoom.h}`" class="w-100 mb-3" style="background: #161616; border-radius: 6px">
+            <polyline :points="zoom.rawLine" fill="none" stroke="#888" stroke-width="1.2" stroke-opacity="0.5" />
+            <polyline :points="zoom.sampledLine" fill="none" stroke="#4caf50" stroke-width="1.2" stroke-opacity="0.8" />
+            <circle v-for="(p, i) in zoom.raw" :key="`zr-${i}`" :cx="p.x" :cy="p.y" r="3" fill="#bbb" />
+            <circle v-for="(p, i) in zoom.sampled" :key="`zs-${i}`" :cx="p.x" :cy="p.y" r="2.6" fill="#4caf50" />
+          </svg>
+
+          <!-- 「差多少」的量化：形状差 vs 点位移，两个维度分开量 -->
+          <v-table v-if="metrics" density="compact" class="bg-transparent mb-2">
+            <tbody>
+              <tr>
+                <td class="text-body-2" style="width: 40%">点数 / 平均点距</td>
+                <td class="text-caption text-medium-emphasis">
+                  {{ metrics.rawCount }} 点 · {{ metrics.rawMeanStepM }} m ⟶
+                  {{ metrics.sampledCount }} 点 · {{ metrics.sampledMeanStepM }} m
+                </td>
+              </tr>
+              <tr>
+                <td class="text-body-2">形状差（线变了多少）</td>
+                <td class="text-caption text-medium-emphasis">
+                  原始顶点到重采样折线的最大偏离 <b>{{ metrics.shapeMaxM }} m</b>（点都在原线上，所以极小）
+                </td>
+              </tr>
+              <tr>
+                <td class="text-body-2">点位移（点挪了多少）</td>
+                <td class="text-caption text-medium-emphasis">
+                  重采样点到最近原始点：平均 <b>{{ metrics.shiftMeanM }} m</b> · 最大 <b>{{ metrics.shiftMaxM }} m</b>
+                  （≈ 原始点距的 1/4 ⇒ 每个点都换了位置）
+                </td>
+              </tr>
+            </tbody>
+          </v-table>
+
           <!-- 自检项 -->
           <v-table density="compact" class="bg-transparent">
             <tbody>
@@ -74,7 +114,7 @@
  * 哑组件：只画。数据来自 `run.realPathPlan`（引擎与界面同源的那一份），
  * 判据来自纯函数 `realPathPlanChecks`（有单测）。
  */
-import { pathLengthM, realPathPlanChecks, type RealPathGeometryPlan, type RealPathPoint } from '~/utils/mp/realPath'
+import { pathLengthM, realPathDiffMetrics, realPathPlanChecks, type RealPathGeometryPlan, type RealPathPoint } from '~/utils/mp/realPath'
 
 const props = defineProps<{
   modelValue: boolean
@@ -136,6 +176,31 @@ const finalEndPt = computed(() => proj.value(props.plan?.points[props.plan.point
 const cutStartPt = computed(() => (cutPoints.value.length ? proj.value(cutPoints.value[0]!) : null))
 
 const checks = computed(() => realPathPlanChecks(props.plan, { requiredKm: props.requiredKm, rawPoints: props.rawPoints }))
+/** 插值前 vs 插值后「差多少」（形状差 / 点位移分开量） */
+const metrics = computed(() => (props.plan ? realPathDiffMetrics(props.rawPoints, props.plan.sampled) : null))
+
+/**
+ * 放大窗：以重采样点列 15% 处为中心，取 120 m 见方的窗口，把两套点画成圆点 ——
+ * 全览尺度下 3~4 m 的点距根本看不出来，放大后才看得出"点错开了、线没变"。
+ */
+const ZOOM_M = 120
+const zoom = computed(() => {
+  const sampled = props.plan?.sampled ?? []
+  if (sampled.length < 10 || props.rawPoints.length < 2) return null
+  const center = sampled[Math.floor(sampled.length * 0.15)]!
+  const mLat = 111320
+  const mLng = 111320 * Math.cos((center.latitude * Math.PI) / 180)
+  const toXY = (p: RealPathPoint) => ({ x: (p.longitude - center.longitude) * mLng, y: -(p.latitude - center.latitude) * mLat })
+  const inWin = (q: { x: number; y: number }) => Math.abs(q.x) <= ZOOM_M / 2 && Math.abs(q.y) <= ZOOM_M / 2
+  const w = 900
+  const h = 460
+  const scale = h / ZOOM_M
+  const map = (q: { x: number; y: number }) => ({ x: q.x * scale + w / 2, y: q.y * scale + h / 2 })
+  const rawPts = props.rawPoints.map(toXY).filter(inWin).map(map)
+  const sPts = sampled.map(toXY).filter(inWin).map(map)
+  const line = (list: { x: number; y: number }[]) => list.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+  return { w, h, raw: rawPts, sampled: sPts, rawLine: line(rawPts), sampledLine: line(sPts) }
+})
 
 const coordText = (p?: RealPathPoint) => (p ? `${p.latitude.toFixed(6)}, ${p.longitude.toFixed(6)}` : '—')
 

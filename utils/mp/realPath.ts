@@ -705,6 +705,79 @@ export function realPathPlanChecks(
   return out
 }
 
+/**
+ * **重采样前后"差多少"的量化**（2026-11-28 用户要求："将插值前和插值后的轨迹也渲染，看差别有多大"）。
+ *
+ * 两个维度分开量，别混为一谈：
+ *   · **形状**（线）差多少：原始每个顶点到重采样折线的最大距离 —— 重采样点都落在原线上，所以它很小；
+ *   · **点**差多少：重采样点到**最近的原始顶点**的距离 —— 点换了位置，所以它不小（≈半个步长）。
+ * 这两个数放在一起看，就是"线几乎没变、点全换了"的量化证据。
+ */
+export interface RealPathDiffMetrics {
+  rawCount: number
+  sampledCount: number
+  /** 原始/重采样各自的平均点距（米） */
+  rawMeanStepM: number
+  sampledMeanStepM: number
+  /** 原始顶点到重采样折线的**最大**距离（米）——形状差 */
+  shapeMaxM: number
+  /** 重采样点到最近原始顶点的平均 / 最大距离（米）——点位移 */
+  shiftMeanM: number
+  shiftMaxM: number
+}
+
+export function realPathDiffMetrics(raw: RealPathPoint[], sampled: RealPathPoint[]): RealPathDiffMetrics {
+  const meanStep = (list: RealPathPoint[]): number => {
+    if (list.length < 2) return 0
+    return pathLengthM(list) / (list.length - 1)
+  }
+  const rawList = (raw ?? []).filter((p) => p && Number.isFinite(p.latitude) && Number.isFinite(p.longitude))
+  const sampledList = (sampled ?? []).filter((p) => p && Number.isFinite(p.latitude) && Number.isFinite(p.longitude))
+  /** 形状差：原始顶点 → 重采样折线（每个原始点取到各段的最短距离，取最大） */
+  let shapeMax = 0
+  if (rawList.length && sampledList.length >= 2) {
+    const stride = Math.max(1, Math.floor(rawList.length / 600))
+    for (let i = 0; i < rawList.length; i += stride) {
+      const p = rawList[i]!
+      let best = Infinity
+      for (let j = 1; j < sampledList.length; j++) {
+        const d = pointToSegmentM(p, sampledList[j - 1]!, sampledList[j]!)
+        if (d < best) best = d
+        if (best === 0) break
+      }
+      if (best > shapeMax) shapeMax = best
+    }
+  }
+  /** 点位移：重采样点 → 最近原始顶点 */
+  let shiftSum = 0
+  let shiftMax = 0
+  let shiftCount = 0
+  if (sampledList.length && rawList.length) {
+    const stride = Math.max(1, Math.floor(sampledList.length / 600))
+    for (let i = 0; i < sampledList.length; i += stride) {
+      const q = sampledList[i]!
+      let best = Infinity
+      for (const p of rawList) {
+        const d = distanceM(p, q)
+        if (d < best) best = d
+      }
+      if (!Number.isFinite(best)) continue
+      shiftSum += best
+      if (best > shiftMax) shiftMax = best
+      shiftCount++
+    }
+  }
+  return {
+    rawCount: rawList.length,
+    sampledCount: sampledList.length,
+    rawMeanStepM: Number(meanStep(rawList).toFixed(2)),
+    sampledMeanStepM: Number(meanStep(sampledList).toFixed(2)),
+    shapeMaxM: Number(shapeMax.toFixed(2)),
+    shiftMeanM: Number((shiftCount ? shiftSum / shiftCount : 0).toFixed(2)),
+    shiftMaxM: Number(shiftMax.toFixed(2)),
+  }
+}
+
 /** 界面**短行**：一行报完（完整原因放悬停提示，别把界面铺满） */
 export function realPathPlanShortText(plan: RealPathGeometryPlan | null | undefined): string {
   if (!plan) return ''

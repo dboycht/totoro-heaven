@@ -50,6 +50,7 @@ import {
   realPathPlanShortText,
   realPathPlanText,
   realPathPlanChecks,
+  realPathDiffMetrics,
   resampleRealPath,
   pointToSegmentM,
   REAL_PATH_TRIM_MIN_BUDGET_M,
@@ -1066,4 +1067,30 @@ test('realPathPlanChecks：能抓住被篡改的计划（起点被动过 / 长�
   const lying = { ...good, trimEndM: 900 }
   const lyingChecks = realPathPlanChecks(lying, { requiredKm: 3.2, rawPoints: points })
   assert.ok(lyingChecks.some((c) => c.label.includes('长度守恒') && !c.ok), '裁量与实测差太多必须报红')
+})
+
+test('realPathDiffMetrics：重采样前后"形状几乎没变、点全换了"——两个维度分开量', () => {
+  const raw = straight(4000, 3)
+  const plan = resampleRealPath(raw, { gapMaxCount: 0 })
+  const m = realPathDiffMetrics(raw, plan.points)
+  assert.equal(m.rawCount, raw.length)
+  assert.equal(m.sampledCount, plan.points.length)
+  assert.ok(m.shapeMaxM < 0.2, `形状差应极小（实测 ${m.shapeMaxM} m）`)
+  /**
+   * 点位移的量级：新点落在原始点阵之间，到**最近**原始点的平均距离 ≈ 原始步长 ÷ 4
+   * （3 m 步长 ⇒ ≈0.75 m；最大不超过半步长 1.5 m）——这是"点全换了"的量化口径。
+   */
+  assert.ok(m.shiftMeanM > 0.5 && m.shiftMeanM < 1.1, `点位移均值应≈步长/4（实测 ${m.shiftMeanM} m）`)
+  assert.ok(m.shiftMaxM <= 1.7, `点位移最大不应超过半步长（实测 ${m.shiftMaxM} m）`)
+})
+
+test('realPathDiffMetrics：没重采样时两项都为 0；整体挪 5 m 时两项都≈5 m', () => {
+  const raw = straight(4000, 3)
+  const same = realPathDiffMetrics(raw, raw)
+  assert.equal(same.shapeMaxM, 0)
+  assert.equal(same.shiftMeanM, 0)
+  const shifted = raw.map((p) => ({ latitude: p.latitude + 5 / 111320, longitude: p.longitude }))
+  const m = realPathDiffMetrics(raw, shifted)
+  assert.ok(Math.abs(m.shapeMaxM - 5) < 0.3, `形状差应≈5 m（实测 ${m.shapeMaxM}）`)
+  assert.ok(Math.abs(m.shiftMeanM - 5) < 0.3, `点位移应≈5 m（实测 ${m.shiftMeanM}）`)
 })
