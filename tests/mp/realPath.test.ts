@@ -47,6 +47,7 @@ import {
   planRealPathTrim,
   realPathTrimText,
   planRealPathGeometry,
+  realPathPlanShortText,
   realPathPlanText,
   resampleRealPath,
   pointToSegmentM,
@@ -1004,6 +1005,17 @@ test('planRealPathGeometry：200 次抽样都不越下限，且每次点数/里�
     assert.ok(Math.abs(plan.sampledPoints - Math.round((plan.resampledKm * 1000) / 3.42)) <= 6, `第 ${i} 次点数异常：${plan.sampledPoints}（resampledKm=${plan.resampledKm}）`)
     assert.ok(plan.keptPoints < plan.sampledPoints || plan.skipped !== '', `第 ${i} 次裁尾后点数没变少：${plan.keptPoints}/${plan.sampledPoints}`)
   }
+})
+
+test('realPathPlanShortText：一行报完（界面只放这句，完整原因在悬停里）', () => {
+  const plan = planRealPathGeometry(straight(4000), { requiredKm: 3.2 })
+  const short = realPathPlanShortText(plan)
+  assert.match(short, /重采样 \d+ → \d+ 点/)
+  assert.match(short, /(尾部裁 \d+ m|未修剪（余量不足）)/)
+  assert.match(short, /结算 \d+\.\d\d km/)
+  assert.ok(!short.includes('下限'), '短行里不放下限这类细节')
+  assert.ok(short.length < 80, `短行要短（实际 ${short.length} 字符）`)
+  assert.equal(realPathPlanShortText(null), '')
 })
 
 test('realPathPlanText：两段都报数，没做就如实说原因', () => {

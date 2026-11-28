@@ -423,7 +423,8 @@ export function paceWindowCrossNote(window: RunPaceWindow): string {
   const parts: string[] = []
   if (tooFast) parts.push(`最快档 ${fmt(fastestTime)}/km 快于任务速度窗的 ${fmt(fastestSpeed)}/km`)
   if (tooSlow) parts.push(`最慢档 ${fmt(slowestTime)}/km 慢于任务速度窗的 ${fmt(slowestSpeed)}/km`)
-  return `本次按时长窗生成（${parts.join('；')}）—— 任务自己的速度窗与时长窗本来就不一致`
+  /** 2026-11-28（用户口径"别铺满界面"）：压成一句短的，把"两窗本来就不一致"的判断留在句尾 */
+  return `按时长窗生成；${parts.join('；')}（任务两窗本就不一致）`
 }
 
 export function planRealisticRun(input: RunPlanInput): RunPlan {

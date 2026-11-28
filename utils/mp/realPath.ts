@@ -622,6 +622,16 @@ export function planRealPathGeometry(
   }
 }
 
+/** 界面**短行**：一行报完（完整原因放悬停提示，别把界面铺满） */
+export function realPathPlanShortText(plan: RealPathGeometryPlan | null | undefined): string {
+  if (!plan) return ''
+  const sample = plan.resampleSkipped
+    ? `重采样未做（${plan.resampleSkipped.includes('下限') ? '余量不足' : '点太少'}）`
+    : `重采样 ${plan.sourcePoints} → ${plan.sampledPoints} 点${plan.gapCount > 0 ? `（${plan.gapCount} 处断点）` : ''}`
+  const trim = plan.skipped ? '未修剪（余量不足）' : `尾部裁 ${Math.round(plan.trimEndM)} m`
+  return `${sample} · ${trim} · 结算 ${plan.finalKm.toFixed(2)} km`
+}
+
 /** 界面一句话：重采样换了几点、尾部裁了多少、结算里程多少（没做就如实说原因） */
 export function realPathPlanText(plan: RealPathGeometryPlan | null | undefined): string {
   if (!plan) return ''

@@ -334,13 +334,13 @@
           </v-card-title>
           <v-card-text class="text-caption text-medium-emphasis">
             <template v-if="isRealPathRun">
-              这次选的预设来自「真实路径」⇒ 流程是<b>「选择路径 → 尾部修剪 → 重采样 → 检验 → 提交」</b>：
-              <b>① 尾部修剪</b>：裁掉末尾一段（余量里随机裁 10%~95%，裁完里程仍 ≥ 要求 × (1 + 0.3%~4%)，
-              <b>起点保留</b> ⇒ 轨迹开头与那场真跑一致）；<br>
-              <b>② 重采样</b>：按约 3.4 m 一点重新取点（逐段 ±30% 随机、偶发 0~2 处断点），
-              新点全部落在原来那条线上 ⇒ <b>线还是那条线，点换了一批</b>；<br>
-              两步都<b>每次载入重抽</b>；里程按<b>重采样后的点列实测</b>，配速与用时优先取归档里那场真实跑的记录
-              （没带用时则用上方选的档位点，可点「随机配速」在该档位段内随机抽一个，如 6'11"）。
+              真实路径流程：<b>选择路径 → 尾部修剪 → 重采样 → 检验 → 提交</b>
+              <v-icon size="14" class="ml-1">mdi-information-outline</v-icon>
+              <v-tooltip activator="parent" location="top" max-width="460">
+                尾部修剪：裁掉末尾一段（余量里随机裁 10%~95%，裁完仍 ≥ 要求 × (1 + 0.3%~4%)，起点保留）。<br>
+                重采样：按约 3.4 m 一点重新取点（逐段 ±30%、偶发 0~2 处断点），新点落在原来那条线上。<br>
+                两步每次载入重抽；里程与配速都按重采样后的点列算。
+              </v-tooltip>
             </template>
             <template v-else>
               这次选的预设没有"内外双圈"（折线路径等）⇒ 没有道次可换，<b>不参与换圈</b>。
@@ -363,7 +363,7 @@
           </v-card-title>
           <v-card-text>
             <div v-if="isRealPathRun" class="text-caption text-medium-emphasis">
-              真实路径按导出的原始点列原样使用，不重新生成轨迹 ⇒ 抖动度在这里不起作用（原始数据自带真实 GPS 的样子）。
+              真实路径不重新生成轨迹 ⇒ 抖动度不适用（原始数据自带真实 GPS 的样子）。
             </div>
             <template v-else>
               <div class="d-flex align-center flex-wrap ga-3">
@@ -495,8 +495,7 @@
               class="text-caption text-medium-emphasis mb-2 d-flex flex-wrap align-center ga-2"
             >
               <span>
-                这个地点有 <b>{{ presetItems.length }}</b> 条预设，选中的那条决定<b>这次用哪套几何</b>
-                （新建 / 改名 / 删除都在「我的场地 → 跑道编辑」，保存时可给预设起名字）。
+                这个地点有 <b>{{ presetItems.length }}</b> 条预设（新建 / 改名 / 删除在「跑道编辑」）。
               </span>
               <!-- 🆕 2026-11-21（用户要求）：真实路径池 ≥2 条时给「随机选一条」——省去在长列表里挑 -->
               <v-btn
@@ -763,7 +762,7 @@
               <div v-if="paceGearsForUi" class="text-caption text-medium-emphasis">
                 本次计划里程 <b>{{ pacePlanKmForUi }} km</b> ⇒ 配速区间
                 <b>{{ formatPace(Math.round(paceWindowForUi.lo)) }}~{{ formatPace(Math.round(paceWindowForUi.hi)) }} /km</b>
-                （四等分，三档见下拉）
+                
               </div>
               <div v-if="paceWindowNote" class="text-caption text-warning mt-1">{{ paceWindowNote }}</div>
             </div>
@@ -772,11 +771,13 @@
                  有归档用时 ⇒ 结算用归档；没有 ⇒ 用上方选的值，但可以用这个按钮抖到非整分钟（如 6'11"）。 -->
             <div v-if="isRealPathRun" class="mb-3">
               <div class="text-caption text-medium-emphasis mb-1">
-                这条真实路径的配速来源：<b>{{ realPathPaceSourceText }}</b>
+                配速来源：<b>{{ realPathPaceSourceText }}</b>
               </div>
-              <!-- 🆕 2026-11-27（用户口径）：尾部修剪 —— 裁了多少、裁完多长，如实报数（2026-11-28 起只裁末尾） -->
+              <!-- 🆕 2026-11-27 / 11-28：重采样 + 尾部修剪的「短行」，完整原因收进悬停（用户口径"别铺满界面"） -->
               <div v-if="realPathTrimNote" class="text-caption text-medium-emphasis mb-1">
                 {{ realPathTrimNote }}
+                <v-icon size="14" class="ml-1">mdi-information-outline</v-icon>
+                <v-tooltip activator="parent" location="top" max-width="420">{{ realPathTrimDetail }}</v-tooltip>
               </div>
               <v-btn
                 block
@@ -818,9 +819,6 @@
               >
                 开始跑步
               </v-btn>
-              <div v-if="isRealPathRun" class="text-caption text-medium-emphasis">
-                真实路径不模拟：原样载入并结算，配速/用时取归档里那场真实跑的记录（没带用时则用上方选的值，可点「随机配速」避开整分钟，详见左边「跑圈设置」的说明）。
-              </div>
               <v-btn v-if="run.status === 'running'" color="warning" block prepend-icon="mdi-pause" @click="pause">暂停</v-btn>
               <v-btn v-if="run.status === 'paused'" color="primary" block prepend-icon="mdi-play" @click="resume">继续</v-btn>
               <v-btn
@@ -898,8 +896,7 @@
         </div>
       </v-alert>
       <v-alert v-else-if="hasConfigured" type="success" variant="tonal" density="compact" class="mt-3">
-        只列出你在「跑道编辑」里配置好的 <b>{{ configuredForTask }}</b> 条路线 —— 轨迹以<b>你描的真跑道</b>为基准生成；
-        官方模板只作对照（提交时服务端的拟合度仍按官方模板算）。
+        只列出你在「跑道编辑」里配置好的 <b>{{ configuredForTask }}</b> 条路线 —— 轨迹以它为准，官方模板只作对照（拟合度按官方模板算）。
       </v-alert>
       <v-alert v-else-if="libEntriesNotForTask" type="warning" variant="tonal" density="compact" class="mt-3">
         <div class="font-weight-bold">本机有 {{ libTotal }} 条跑道，但都不属于当前任务的线路。</div>
@@ -1417,7 +1414,7 @@ import { freePathLapLengthM } from '~/utils/mp/freePathGeometry'
 /** 🆕 2026-11-24：真实路径的里程按点列实测（`pathLengthMeters`，与跑步引擎同一个函数） */
 import { pathLengthMeters } from '~/utils/mp/routeSimilarity'
 /** 🆕 2026-11-27（用户口径）：真实路径的**尾部修剪**（判据/随机/文案都在纯模块里，界面只负责"什么时候抽"；2026-11-28 起只裁末尾） */
-import { planRealPathGeometry, realPathPlanText } from '~/utils/mp/realPath'
+import { planRealPathGeometry, realPathPlanShortText, realPathPlanText } from '~/utils/mp/realPath'
 import {
   FREE_RUN_KM_MAX,
   FREE_RUN_KM_MIN,
@@ -2211,9 +2208,7 @@ const realPathHasRecordedTime = computed(() => {
   return seconds > 0 && Number(meta?.km) > 0
 })
 const realPathPaceSourceText = computed(() =>
-  realPathHasRecordedTime.value
-    ? '归档记录（那场真实跑的用时）；点「随机配速」可改成随机值'
-    : '你在上方选择的配速档位点（这条路径没带真实用时；想更随机就点下面的按钮）',
+  realPathHasRecordedTime.value ? '归档记录（那场真跑的用时）' : '上方所选档位点（这条路径没带真实用时）',
 )
 /** 随机按钮用的任务允许区间（与模拟跑、界面显示同一处判据） */
 const realPathPaceWindow = computed(() =>
@@ -2519,8 +2514,10 @@ const redrawRealPathPlan = () => {
     { entryId: String(entry.id ?? ''), requiredKm: realPathRequiredKm.value },
   )
 }
-/** 界面一句话：修剪裁了多少、重采样换了几点、结算里程多少（没做就如实说原因） */
-const realPathTrimNote = computed(() => (isRealPathRun.value ? realPathPlanText(run.value.realPathPlan) : ''))
+/** 界面**短行**（一行报完：重采样点数 / 是否裁尾 / 结算里程） */
+const realPathTrimNote = computed(() => (isRealPathRun.value ? realPathPlanShortText(run.value.realPathPlan) : ''))
+/** 悬停里的**完整原因**（没裁时为什么没裁、抽到的下限是多少，都在这儿） */
+const realPathTrimDetail = computed(() => (isRealPathRun.value ? realPathPlanText(run.value.realPathPlan) : ''))
 
 watch(
   /** 🆕 2026-11-27：换预设 / 改要求里程都重抽一次尾部修剪（`immediate` ⇒ 进页面就有一条可结算的） */
