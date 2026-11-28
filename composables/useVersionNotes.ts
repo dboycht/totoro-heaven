@@ -15,8 +15,22 @@
  */
 import { parseVersionNotes, shouldShowVersionNotes, type ParsedVersionNotes } from '~/utils/mp/versionNotes'
 
-/** 「上次看过更新说明的版本」存在这里（换机器/清缓存 ⇒ 会再弹一次，符合预期） */
-export const VERSION_NOTES_SEEN_KEY = 'totoro_version_notes_seen_v1'
+/**
+ * 「上次看过更新说明的版本」存在这里（换机器/清缓存 ⇒ 会再弹一次，符合预期）。
+ *
+ * ⚠️ **2026-11-28 事故 + 修正**：dev 与打包版共用同一个 origin（`localhost:3000`）⇒
+ *   dev 测试时弹出的"本版没有填写更新说明"被点掉后，**打包版的正式文案就再也不弹了**
+ *   （用户实测：装好 1.3.10 启动没看到弹窗）。
+ *   修法两条：
+ *     ① 键名升到 `_v2`（一次性让所有人重新看到，旧的 v1 记录作废）；
+ *     ② **dev 用独立的键**（`…:dev`）—— 开发轮点掉只影响 dev，不吃掉打包版的那次。
+ */
+export const VERSION_NOTES_SEEN_KEY = 'totoro_version_notes_seen_v2'
+
+/** 本进程该读写哪个键：dev 与打包版分开记（见上面的口径） */
+export function versionNotesSeenKey(): string {
+  return import.meta.dev ? `${VERSION_NOTES_SEEN_KEY}:dev` : VERSION_NOTES_SEEN_KEY
+}
 
 export interface UseVersionNotesReturn {
   /** 当前运行版本（来自 `app.config.ts` → `package.json` 的 version） */
@@ -55,7 +69,7 @@ export function useVersionNotes(): UseVersionNotesReturn {
 
   onMounted(async () => {
     try {
-      seen.value = localStorage.getItem(VERSION_NOTES_SEEN_KEY)
+      seen.value = localStorage.getItem(versionNotesSeenKey())
     } catch {
       seen.value = null
     }
@@ -81,7 +95,7 @@ export function useVersionNotes(): UseVersionNotesReturn {
     open.value = false
     seen.value = version.value
     try {
-      localStorage.setItem(VERSION_NOTES_SEEN_KEY, version.value)
+      localStorage.setItem(versionNotesSeenKey(), version.value)
     } catch {
       /* 隐私模式/配额：内存里已记，只影响"下次启动还弹" —— 可静默 */
     }
