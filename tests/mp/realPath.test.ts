@@ -49,6 +49,7 @@ import {
   planRealPathGeometry,
   realPathPlanShortText,
   realPathPlanText,
+  realPathPlanChecks,
   resampleRealPath,
   pointToSegmentM,
   REAL_PATH_TRIM_MIN_BUDGET_M,
@@ -1026,4 +1027,43 @@ test('realPathPlanText：两段都报数，没做就如实说原因', () => {
   const noReq = realPathPlanText(planRealPathGeometry(straight(4000), { requiredKm: 0 }))
   assert.match(noReq, /不修剪/)
   assert.equal(realPathPlanText(null), '')
+})
+
+test('realPathPlanChecks：对"只裁末尾 + 重采样"的计划逐条自检全绿（含起点未动/前缀/长度守恒/不越下限）', () => {
+  const points = straight(4000)
+  const plan = planRealPathGeometry(points, { requiredKm: 3.2 })
+  const checks = realPathPlanChecks(plan, { requiredKm: 3.2, rawPoints: points })
+  assert.ok(checks.length >= 4, `应至少 4 条判据，实际 ${checks.length}`)
+  const bad = checks.filter((c) => !c.ok)
+  assert.deepEqual(bad, [], `自检有红项：${bad.map((b) => `${b.label}（${b.detail}）`).join('；')}`)
+  assert.ok(checks.some((c) => c.label.includes('起点未动')))
+  assert.ok(checks.some((c) => c.label.includes('只裁末尾')))
+  assert.ok(checks.some((c) => c.label.includes('长度守恒')))
+  assert.ok(checks.some((c) => c.label.includes('不越下限')))
+  assert.ok(checks.some((c) => c.label.includes('没有偷长度')))
+})
+
+test('realPathPlanChecks：计划为空 ⇒ 空数组；没做修剪时"不越下限"记为不适用', () => {
+  assert.deepEqual(realPathPlanChecks(null, { requiredKm: 3.2 }), [])
+  const noReq = planRealPathGeometry(straight(4000), { requiredKm: 0 })
+  const checks = realPathPlanChecks(noReq, { requiredKm: 0 })
+  const floor = checks.find((c) => c.label.includes('不越下限'))
+  assert.ok(floor && floor.ok && floor.detail.includes('未修剪'), JSON.stringify(floor))
+})
+
+test('realPathPlanChecks：能抓住被篡改的计划（起点被动过 / 长度对不上）——这就是调试按钮的意义', () => {
+  const points = straight(4000)
+  const good = planRealPathGeometry(points, { requiredKm: 3.2 })
+  /** 篡改 ①：把最终点列整体挪走 1 米（起点被动过） */
+  const shifted = {
+    ...good,
+    points: good.points.map((p) => ({ latitude: p.latitude + 1e-5, longitude: p.longitude })),
+  }
+  const shiftedChecks = realPathPlanChecks(shifted, { requiredKm: 3.2, rawPoints: points })
+  assert.ok(shiftedChecks.some((c) => c.label.includes('起点未动') && !c.ok), '起点被挪必须报红')
+  assert.ok(shiftedChecks.some((c) => c.label.includes('只裁末尾') && !c.ok), '不再是前缀必须报红')
+  /** 篡改 ②：裁量记录成 900 m（长度对不上） */
+  const lying = { ...good, trimEndM: 900 }
+  const lyingChecks = realPathPlanChecks(lying, { requiredKm: 3.2, rawPoints: points })
+  assert.ok(lyingChecks.some((c) => c.label.includes('长度守恒') && !c.ok), '裁量与实测差太多必须报红')
 })

@@ -779,6 +779,12 @@
                 <v-icon size="14" class="ml-1">mdi-information-outline</v-icon>
                 <v-tooltip activator="parent" location="top" max-width="420">{{ realPathTrimDetail }}</v-tooltip>
               </div>
+              <!-- 🆕 2026-11-28（用户要求"看一下截断对不对"）：调试面板 —— 三条线 + 逐条自检 -->
+              <div v-if="isRealPathRun && run.realPathPlan" class="mb-2">
+                <v-btn size="small" variant="text" prepend-icon="mdi-bug-outline" @click="planDebugOpen = true">
+                  调试：看截断对不对
+                </v-btn>
+              </div>
               <v-btn
                 block
                 variant="tonal"
@@ -1378,6 +1384,15 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <!-- 🆕 2026-11-28（用户要求"看一下截断对不对"）：截断/重采样调试面板 -->
+    <RealPathPlanDebugDialog
+      v-model="planDebugOpen"
+      :plan="run.realPathPlan ?? null"
+      :required-km="realPathRequiredKm"
+      :raw-points="realPathRawPoints"
+      :entry-name="lanePlanEntry?.customName ?? ''"
+    />
   </div>
 </template>
 
@@ -2514,6 +2529,15 @@ const redrawRealPathPlan = () => {
     { entryId: String(entry.id ?? ''), requiredKm: realPathRequiredKm.value },
   )
 }
+/** 调试面板开关 */
+const planDebugOpen = ref(false)
+/** 原始点列（未修剪、未重采样）—— 调试面板拿它当基准画"全量轨迹" */
+const realPathRawPoints = computed<{ latitude: number; longitude: number }[]>(() => {
+  const shape = lanePlanEntry.value?.freeShape
+  const pts = shape?.kind === 'curve' ? shape.points : []
+  return pts.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
+})
+
 /** 界面**短行**（一行报完：重采样点数 / 是否裁尾 / 结算里程） */
 const realPathTrimNote = computed(() => (isRealPathRun.value ? realPathPlanShortText(run.value.realPathPlan) : ''))
 /** 悬停里的**完整原因**（没裁时为什么没裁、抽到的下限是多少，都在这儿） */

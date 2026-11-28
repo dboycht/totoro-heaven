@@ -550,6 +550,12 @@ export interface RealPathGeometryPlan {
   entryId: string
   /** 最终点列（重采样 → 尾部修剪后） */
   points: RealPathPoint[]
+  /**
+   * 🆕 2026-11-28（用户要求"看着截断对不对"）：**重采样后、还没裁尾**的那份点列。
+   * `points` 是它的前缀（只裁末尾 ⇒ 剩下的就是前 N 个点），差集就是被裁掉的尾巴。
+   * 调试面板据此画三条线：原始灰线 / 最终绿线 / 被裁红线。
+   */
+  sampled: RealPathPoint[]
   /** 原始 / 重采样后 / 最终里程（km，3 位小数；都按各自点列实测） */
   originalKm: number
   resampledKm: number
@@ -607,6 +613,7 @@ export function planRealPathGeometry(
   return {
     entryId,
     points: finalPoints,
+    sampled: [...sampled],
     originalKm,
     resampledKm,
     finalKm: Number((pathLengthM(finalPoints) / 1000).toFixed(3)),
@@ -620,6 +627,82 @@ export function planRealPathGeometry(
     resampleSkipped,
     skipped: trim.skipped,
   }
+}
+
+/**
+ * **截断自检**（2026-11-28 用户要求"我要看一下你这个截断的对吗"）：
+ * 把"该成立的性质"变成可逐条判定的项，界面调试面板与单测共用同一份 ——
+ * 不靠肉眼看图，也不靠"我觉得对"。
+ *
+ * 判据（每条都能给出数字）：
+ *   ① 起点未动：最终点列第 0 点 = 重采样第 0 点（只裁末尾的必然结果）；
+ *   ② 只裁末尾：最终点列是重采样点列的**前缀**（逐点比对），且点数 = 重采样点数 − 被裁掉的点数；
+ *   ③ 长度守恒：`最终长度 + 裁掉的长度 ≈ 重采样长度`（±3 m，含按点取整）；
+ *   ④ 不越下限：做了修剪 ⇒ `最终里程 ≥ 要求 × (1 + 超跑系数)`；没做修剪 ⇒ 如实说明不适用；
+ *   ⑤ 重采样没有偷长度：`|重采样长度 − 原始长度|` 不超过原始的 1.5%（弦切顶点是有限度的）。
+ */
+export interface RealPathPlanCheck {
+  label: string
+  ok: boolean
+  detail: string
+}
+
+export function realPathPlanChecks(
+  plan: RealPathGeometryPlan | null | undefined,
+  opts: { requiredKm: number; rawPoints?: RealPathPoint[] } = { requiredKm: 0 },
+): RealPathPlanCheck[] {
+  if (!plan) return []
+  const out: RealPathPlanCheck[] = []
+  const first = plan.points[0]
+  const sampledFirst = plan.sampled[0]
+  out.push({
+    label: '起点未动',
+    ok: Boolean(first && sampledFirst) && first!.latitude === sampledFirst!.latitude && first!.longitude === sampledFirst!.longitude,
+    detail: first ? `最终首点 ${first.latitude.toFixed(6)}, ${first.longitude.toFixed(6)}` : '（没有点）',
+  })
+
+  /** 前缀比对：最终点列逐点等于重采样点列的前 N 个 */
+  const n = plan.points.length
+  const isPrefix = n <= plan.sampled.length && plan.points.every((p, i) => {
+    const q = plan.sampled[i]!
+    return p.latitude === q.latitude && p.longitude === q.longitude
+  })
+  out.push({
+    label: '只裁末尾（最终点列 = 重采样点列的前缀）',
+    ok: isPrefix,
+    detail: `${n} / ${plan.sampled.length} 点保留，砍掉 ${plan.sampled.length - n} 点`,
+  })
+
+  const finalM = pathLengthM(plan.points)
+  const sampledM = pathLengthM(plan.sampled)
+  const diff = sampledM - finalM
+  out.push({
+    label: '长度守恒（裁掉的量 = 重采样长度 − 最终长度）',
+    /** 容差 = 一个采样步长的量级：裁量按弧长算，切点按点取整（3.4~4.4 m 一步） */
+    ok: Math.abs(diff - plan.trimEndM) <= 8,
+    detail: `重采样 ${(sampledM / 1000).toFixed(3)} km − 最终 ${(finalM / 1000).toFixed(3)} km = ${diff.toFixed(1)} m（记录裁量 ${plan.trimEndM.toFixed(1)} m）`,
+  })
+
+  if (plan.skipped) {
+    out.push({ label: '不越下限', ok: true, detail: `未修剪（不适用）—— ${plan.skipped}` })
+  } else {
+    const floorKm = opts.requiredKm > 0 ? opts.requiredKm * (1 + plan.overshootRatio) : 0
+    out.push({
+      label: '不越下限',
+      ok: opts.requiredKm > 0 ? plan.finalKm + 0.0005 >= floorKm : true,
+      detail: opts.requiredKm > 0 ? `最终 ${plan.finalKm.toFixed(3)} km vs 下限 ${floorKm.toFixed(3)} km` : '没有要求里程（自由跑）',
+    })
+  }
+
+  if (opts.rawPoints && opts.rawPoints.length >= 2) {
+    const rawM = pathLengthM(opts.rawPoints)
+    out.push({
+      label: '重采样没有偷长度',
+      ok: rawM > 0 ? Math.abs(sampledM - rawM) <= rawM * 0.015 : true,
+      detail: `原始 ${(rawM / 1000).toFixed(3)} km → 重采样 ${(sampledM / 1000).toFixed(3)} km（差 ${((sampledM - rawM) / 1000).toFixed(3)} km）`,
+    })
+  }
+  return out
 }
 
 /** 界面**短行**：一行报完（完整原因放悬停提示，别把界面铺满） */
