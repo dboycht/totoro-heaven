@@ -84,7 +84,7 @@ export const VERSION_ENTRIES: VersionEntry[] = [
      *    全部换成该版正式用户向文案（HANDOVER §6 步骤 1）；编译闸 = `npm run sea` 的 [0/7-pre] →
      *    `pack/sea/check-release-art.mjs`（字符串字面量命中占位字样即拒编；注释豁免，历史残留一并拦）。
      */
-    date: '2026-11-27',
+    date: '2026-11-28',
     channel: 'stable',
     title: '真实路径首尾修剪（开发中）',
     highlights: [
