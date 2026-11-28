@@ -334,12 +334,13 @@
           </v-card-title>
           <v-card-text class="text-caption text-medium-emphasis">
             <template v-if="isRealPathRun">
-              这次选的预设来自「真实路径」⇒ 流程是<b>「选择路径 → 尾部修剪 → 检验 → 提交」</b>：
-              轨迹取导出的原始点列（不切圈、不降采样、不叠加换道），但会<b>先裁掉末尾一段</b>
-              （余量里随机裁 10%~95%，裁完里程仍 ≥ 要求 × (1 + 0.3%~4%)，每次载入重抽）；
-              <b>起点保留</b>，所以轨迹开头与那场真跑一致，只有收尾被截短 —— 没有道次可换；
-              里程按<b>修剪后的点列实测</b>，配速与用时优先取归档里那场真实跑的记录（没带用时则用上方选的档位点，
-              可点「随机配速」在该档位段内随机抽一个，如 6'11"）。
+              这次选的预设来自「真实路径」⇒ 流程是<b>「选择路径 → 尾部修剪 → 重采样 → 检验 → 提交」</b>：
+              <b>① 尾部修剪</b>：裁掉末尾一段（余量里随机裁 10%~95%，裁完里程仍 ≥ 要求 × (1 + 0.3%~4%)，
+              <b>起点保留</b> ⇒ 轨迹开头与那场真跑一致）；<br>
+              <b>② 重采样</b>：按约 3.4 m 一点重新取点（逐段 ±30% 随机、偶发 0~2 处断点），
+              新点全部落在原来那条线上 ⇒ <b>线还是那条线，点换了一批</b>；<br>
+              两步都<b>每次载入重抽</b>；里程按<b>重采样后的点列实测</b>，配速与用时优先取归档里那场真实跑的记录
+              （没带用时则用上方选的档位点，可点「随机配速」在该档位段内随机抽一个，如 6'11"）。
             </template>
             <template v-else>
               这次选的预设没有"内外双圈"（折线路径等）⇒ 没有道次可换，<b>不参与换圈</b>。
@@ -1416,7 +1417,7 @@ import { freePathLapLengthM } from '~/utils/mp/freePathGeometry'
 /** 🆕 2026-11-24：真实路径的里程按点列实测（`pathLengthMeters`，与跑步引擎同一个函数） */
 import { pathLengthMeters } from '~/utils/mp/routeSimilarity'
 /** 🆕 2026-11-27（用户口径）：真实路径的**尾部修剪**（判据/随机/文案都在纯模块里，界面只负责"什么时候抽"；2026-11-28 起只裁末尾） */
-import { planRealPathTrim, realPathTrimText } from '~/utils/mp/realPath'
+import { planRealPathGeometry, realPathPlanText } from '~/utils/mp/realPath'
 import {
   FREE_RUN_KM_MAX,
   FREE_RUN_KM_MIN,
@@ -2153,12 +2154,13 @@ const realPathMetaNow = computed(() => lanePlanEntry.value?.realPath)
  */
 const realPathKm = computed(() => {
   /**
-   * 🆕 2026-11-27（用户口径"起点和终点左右的数据点进行修剪…在计算配速之前发生"）：
-   * **修剪后的里程是唯一的结算口径**（引擎用它算配速/时长）⇒ 界面显示必须读同一份，
+   * 🆕 2026-11-27（用户口径"起点和终点左右的数据点进行修剪…在计算配速之前发生"）
+   * ＋ 🆕 2026-11-28（"加插值算法…数据点发生变化"）：
+   * **修剪 + 重采样后的里程是唯一的结算口径**（引擎用它算配速/时长）⇒ 界面显示必须读同一份，
    * 否则又变成"界面说 3.27 km、实际按 2.86 km 结算"。
    */
-  const trim = run.value.realPathTrim
-  if (trim && trim.entryId === String(lanePlanEntry.value?.id ?? '') && trim.trimmedKm > 0.05) return trim.trimmedKm
+  const plan = run.value.realPathPlan
+  if (plan && plan.entryId === String(lanePlanEntry.value?.id ?? '') && plan.finalKm > 0.05) return plan.finalKm
   const shape = lanePlanEntry.value?.freeShape
   const pts = shape?.kind === 'curve' ? shape.points : []
   const measured = pathLengthMeters(pts as { latitude: number; longitude: number }[]) / 1000
@@ -2410,13 +2412,13 @@ const submitBlockedNote = computed(() => {
  */
 const doReset = () => {
   reset()
-  redrawRealPathTrim()
+  redrawRealPathPlan()
 }
 const regenerateRun = () => {
   reset()
   run.value.runType = tabRunType.value
   /** 🆕 2026-11-27：重新生成也算一次「载入」⇒ 重抽尾部修剪（否则重跑出来的还是同一条） */
-  redrawRealPathTrim()
+  redrawRealPathPlan()
   start()
   logInfo('run', '本地校验未通过 ⇒ 重新生成轨迹', {
     fitDegree: run.value.result?.fitDegree ?? null,
@@ -2496,35 +2498,36 @@ const realPathRequiredKm = computed(() =>
 )
 
 /**
- * 🆕 2026-11-27（用户口径"具体的裁剪数量是随机的…每次载入重随机"）：
- * **重抽一次尾部修剪**，写进共享状态（引擎与界面读同一份）。
- * 判据与随机全在纯模块 `planRealPathTrim`；这里只负责"什么时候抽"：
+ * 🆕 2026-11-27（用户口径"具体的裁剪数量是随机的…每次载入重随机"）
+ * ＋ 🆕 2026-11-28（"只截断末尾"＋"加插值算法，让轨迹和原版差不多但数据点变化"）：
+ * **重抽一次几何计划（尾部修剪 + 重采样）**，写进共享状态（引擎与界面读同一份）。
+ * 判据与随机全在纯模块 `planRealPathGeometry`；这里只负责"什么时候抽"：
  * 进页面 / 换预设 / 改要求里程 / 点「重置」/ 点「重新生成」—— 都是"载入"这一侧，
  * 「结算」那一侧不重抽（否则界面显示的里程与结算用的里程会分叉）。
  * ⚠️ 跑动中（`running`/`paused`）不重抽：那一笔的轨迹已经定下来了，抽了只会让界面与结算分叉。
  */
-const redrawRealPathTrim = () => {
+const redrawRealPathPlan = () => {
   if (run.value.status === 'running' || run.value.status === 'paused') return
   const entry = lanePlanEntry.value
   const curve = entry?.freeShape?.kind === 'curve' ? entry.freeShape.points : []
   if (!entry?.realPath || curve.length < 2) {
-    run.value.realPathTrim = null
+    run.value.realPathPlan = null
     return
   }
-  run.value.realPathTrim = planRealPathTrim(
+  run.value.realPathPlan = planRealPathGeometry(
     curve.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) })),
     { entryId: String(entry.id ?? ''), requiredKm: realPathRequiredKm.value },
   )
 }
-/** 界面一句话（不修剪时如实说明原因，不粉饰） */
-const realPathTrimNote = computed(() => (isRealPathRun.value ? realPathTrimText(run.value.realPathTrim) : ''))
+/** 界面一句话：修剪裁了多少、重采样换了几点、结算里程多少（没做就如实说原因） */
+const realPathTrimNote = computed(() => (isRealPathRun.value ? realPathPlanText(run.value.realPathPlan) : ''))
 
 watch(
   /** 🆕 2026-11-27：换预设 / 改要求里程都重抽一次尾部修剪（`immediate` ⇒ 进页面就有一条可结算的） */
   [() => lanePlanEntry.value?.id, () => realPathRequiredKm.value],
   () => {
     if (run.value.realPathPaceSeconds) run.value.realPathPaceSeconds = undefined
-    redrawRealPathTrim()
+    redrawRealPathPlan()
   },
   { immediate: true },
 )

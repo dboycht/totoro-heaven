@@ -46,6 +46,10 @@ import {
   withRandomSuffix,
   planRealPathTrim,
   realPathTrimText,
+  planRealPathGeometry,
+  realPathPlanText,
+  resampleRealPath,
+  pointToSegmentM,
   REAL_PATH_TRIM_MIN_BUDGET_M,
   REAL_PATH_TRIM_OVERSHOOT,
   REAL_PATH_TRIM_RATIO,
@@ -843,7 +847,7 @@ test('planRealPathTrim：余量不足（原始只比要求多几米）⇒ 不修
   const points = straight(2003)
   const plan = planRealPathTrim(points, { requiredKm: 2 })
   assert.ok(plan.skipped.length > 0)
-  assert.match(plan.skipped, /不够修剪/)
+  assert.match(plan.skipped, /不够修剪|已低于下限/)
   assert.equal(plan.keptPoints, plan.sourcePoints, '不修剪 ⇒ 点列原样')
   assert.equal(plan.trimmedKm, plan.originalKm)
   assert.equal(plan.trimStartM, 0)
@@ -883,4 +887,131 @@ test('realPathTrimText：裁了报数量、没裁如实说原因（不粉饰）'
   assert.match(realPathTrimText(planRealPathTrim(points, { requiredKm: 0 })), /不修剪/)
   assert.equal(realPathTrimText(null), '')
   assert.equal(realPathTrimText(undefined), '')
+})
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * 🆕 2026-11-28（用户口径）：**重采样**（`resampleRealPath`）＋ 完整几何计划（`planRealPathGeometry`）
+ *
+ * 用户原话："添加插值算法，在保证原版的前提下，对数据点进行重插值处理；也就是整体为连续的线，
+ *  你写个算法让最终的轨迹和原版差不多，但是数据点发生变化。"
+ * 确认过的参数：点距按本机 22 条真实路径实测（均值 3.42 m、逐段 ±30%）；复现 0~2 处 10~30 m 断点；
+ *  点严格落在原折线上（不加横向噪声）。
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/** 点到整条折线的最短距离（米）——"新点是不是还在原来那条线上"的判据 */
+const distToPolyline = (p: RealPathPoint, line: RealPathPoint[]): number => {
+  let best = Infinity
+  for (let i = 1; i < line.length; i++) {
+    const d = pointToSegmentM(p, line[i - 1]!, line[i]!)
+    if (d < best) best = d
+  }
+  return best
+}
+
+test('resampleRealPath：首尾原样、总长不变、点数 ≈ 总长 ÷ 3.42 m', () => {
+  const points = straight(3270)
+  const before = pathLengthM(points)
+  const plan = resampleRealPath(points, { rng: () => 0.5 })
+  assert.equal(plan.skipped, '')
+  assert.equal(plan.sampledPoints, plan.points.length)
+  assert.deepEqual(plan.points[0], points[0], '首点必须与原版完全一致')
+  assert.deepEqual(plan.points[plan.points.length - 1], points[points.length - 1], '尾点必须与原版完全一致')
+  const after = pathLengthM(plan.points)
+  assert.ok(Math.abs(after - before) < 1, `总长必须不变：${before.toFixed(2)} → ${after.toFixed(2)}`)
+  assert.ok(Math.abs(plan.sampledPoints - Math.round(before / 3.42)) <= 3, `点数 ${plan.sampledPoints} 应≈ ${Math.round(before / 3.42)}`)
+})
+
+test('resampleRealPath：新点全部落在原折线上（"线还是那条线，只是点换了一批"）', () => {
+  const points = straight(3270)
+  const plan = resampleRealPath(points, { rng: () => 0.7 })
+  let worst = 0
+  for (const p of plan.points) worst = Math.max(worst, distToPolyline(p, points))
+  assert.ok(worst < 0.5, `最大离线距离 ${worst.toFixed(3)} m（应 < 0.5 m）`)
+})
+
+test('resampleRealPath：步长按实测密度（均值≈3.42、逐段 ±30%）', () => {
+  const points = straight(3270)
+  const plan = resampleRealPath(points, { rng: () => 0.5, gapMaxCount: 0 })
+  const steps: number[] = []
+  for (let i = 1; i < plan.points.length; i++) steps.push(pathLengthM([plan.points[i - 1]!, plan.points[i]!]))
+  const mean = steps.reduce((a, b) => a + b, 0) / steps.length
+  const min = Math.min(...steps)
+  const max = Math.max(...steps)
+  assert.ok(Math.abs(mean - 3.42) < 0.05, `均值 ${mean.toFixed(3)} 应≈ 3.42`)
+  assert.ok(min >= 3.42 * 0.7 - 0.05 && max <= 3.42 * 1.3 + 0.05, `步长范围 ${min.toFixed(2)}~${max.toFixed(2)} 越界`)
+})
+
+test('resampleRealPath：断点 0~2 处、10~30 m；gapMaxCount=0 时一处都没有', () => {
+  const points = straight(3270)
+  const counts = new Set<number>()
+  for (let i = 0; i < 20; i++) counts.add(resampleRealPath(points, {}).gapCount)
+  assert.deepEqual([...counts].sort(), [0, 1, 2], `20 次里断点数应覆盖 0/1/2，实际 ${[...counts].join(',')}`)
+  const none = resampleRealPath(points, { gapMaxCount: 0 })
+  assert.equal(none.gapCount, 0)
+  // 有断点时一定出现 ≥10 m 的跳点
+  let sawGap = false
+  for (let i = 0; i < 20 && !sawGap; i++) {
+    const plan = resampleRealPath(points, { rng: Math.random, gapMaxCount: 2 })
+    for (let k = 1; k < plan.points.length; k++) {
+      if (pathLengthM([plan.points[k - 1]!, plan.points[k]!]) >= 10) {
+        sawGap = true
+        break
+      }
+    }
+  }
+  assert.ok(sawGap, '20 次里应至少出现一次 ≥10 m 的断点')
+})
+
+test('resampleRealPath：随机源相同 ⇒ 结果完全可复现；点太少/路径太短 ⇒ 不重采样', () => {
+  const points = straight(3270)
+  const seed = () => {
+    let x = 12345
+    return () => {
+      x = (x * 1103515245 + 12345) % 2147483648
+      return x / 2147483648
+    }
+  }
+  const a = resampleRealPath(points, { rng: seed() })
+  const b = resampleRealPath(points, { rng: seed() })
+  assert.deepEqual(a.points, b.points)
+  assert.deepEqual(resampleRealPath(points.slice(0, 2), {}).points.length, 2)
+  assert.match(resampleRealPath(points.slice(0, 2), {}).skipped, /点太少/)
+  /** 点不少但总长只有 3 m ⇒ 走「太短」那条分支（点数判据在它前面，所以这里要造多条短边） */
+  assert.match(resampleRealPath(straight(3, 0.5), {}).skipped, /太短/)
+})
+
+test('planRealPathGeometry：4 km 路径 / 要求 3.2 km ⇒ 先裁末尾再重采样，里程落在 3.25~3.93 km', () => {
+  const points = straight(4000)
+  const plan = planRealPathGeometry(points, { entryId: 'e9', requiredKm: 3.2 })
+  assert.equal(plan.entryId, 'e9')
+  assert.equal(plan.skipped, '')
+  assert.equal(plan.trimStartM, 0, '只裁末尾：起点不动')
+  assert.ok(plan.trimEndM > 0, '末尾必须裁')
+  assert.ok(plan.finalKm > 3.2, `结算里程 ${plan.finalKm} 必须大于课程要求 3.2`)
+  assert.ok(plan.finalKm >= 3.2 * 1.003 - 0.001, `必须 ≥ 要求 × 1.003（实际 ${plan.finalKm}）`)
+  assert.ok(plan.finalKm <= 4.0, '不许比原版还长')
+  assert.ok(plan.sampledPoints > 100, `重采样点数 ${plan.sampledPoints}`)
+  assert.deepEqual(plan.points[0], points[0], '起点仍是原点列第 0 点')
+})
+
+test('planRealPathGeometry：200 次抽样都不越下限，且每次点数/里程都在合理范围', () => {
+  const points = straight(4000)
+  for (let i = 0; i < 200; i++) {
+    const plan = planRealPathGeometry(points, { requiredKm: 3.2 })
+    assert.ok(plan.finalKm > 3.2, `第 ${i} 次越线：${plan.finalKm}`)
+    assert.ok(plan.finalKm * 1000 + 0.5 >= 3200 * (1 + plan.overshootRatio), `第 ${i} 次低于下限：${plan.finalKm}`)
+    /** ⚠️ 采样发生在**修剪之前**（先重采样再裁尾）：点数要跟 resampledKm 对得上，不是 finalKm */
+    assert.ok(Math.abs(plan.sampledPoints - Math.round((plan.resampledKm * 1000) / 3.42)) <= 6, `第 ${i} 次点数异常：${plan.sampledPoints}（resampledKm=${plan.resampledKm}）`)
+    assert.ok(plan.keptPoints < plan.sampledPoints || plan.skipped !== '', `第 ${i} 次裁尾后点数没变少：${plan.keptPoints}/${plan.sampledPoints}`)
+  }
+})
+
+test('realPathPlanText：两段都报数，没做就如实说原因', () => {
+  const text = realPathPlanText(planRealPathGeometry(straight(4000), { requiredKm: 3.2 }))
+  assert.match(text, /尾部修剪：4\.00 → [\d.]+ km/)
+  assert.match(text, /重采样：\d+ → \d+ 点/)
+  assert.match(text, /结算里程 [\d.]+ km/)
+  const noReq = realPathPlanText(planRealPathGeometry(straight(4000), { requiredKm: 0 }))
+  assert.match(noReq, /不修剪/)
+  assert.equal(realPathPlanText(null), '')
 })

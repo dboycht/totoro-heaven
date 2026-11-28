@@ -340,8 +340,9 @@ export function planRealPathTrim(
   const budgetM = originalM - floorM
   if (!(budgetM > REAL_PATH_TRIM_MIN_BUDGET_M)) {
     return skip(
-      `原始 ${originalKm.toFixed(2)} km 只比要求 ${requiredKm.toFixed(2)} km 多 ${Math.max(0, Math.round(budgetM))} m` +
-        `（下限 ${(floorM / 1000).toFixed(3)} km），不够修剪`,
+      budgetM > 0
+        ? `当前 ${originalKm.toFixed(2)} km 只比下限 ${(floorM / 1000).toFixed(3)} km 多 ${Math.round(budgetM)} m，不够修剪`
+        : `当前 ${originalKm.toFixed(2)} km 已低于下限 ${(floorM / 1000).toFixed(3)} km（要求 ${requiredKm.toFixed(2)} km × 1+${(overshootRatio * 100).toFixed(1)}%），不修剪`,
     )
   }
   const [rLo, rHi] = opts.ratioRange ?? REAL_PATH_TRIM_RATIO
@@ -393,6 +394,245 @@ export function realPathTrimText(plan: RealPathTrimPlan | null | undefined): str
     `（裁掉末尾 ${Math.round(plan.trimEndM)} m，起点保留；` +
     `${plan.sourcePoints} → ${plan.keptPoints} 点），每次载入重抽`
   )
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * 重采样（2026-11-28 用户口径）
+ *
+ * 用户原话："添加插值算法，在保证原版的前提下，对数据点进行重插值处理；也就是整体为连续的线，
+ *  你写个算法让最终的轨迹和原版差不多，但是数据点发生变化。"
+ * 追加确认：① 点间距按**本机 22 条真实路径的实测密度**（均值 3.42 m、逐段 ±30%）；
+ *  ② 复现真实数据里的**偶发断点**（0~2 处、10~30 m）；③ 点**严格落在原折线上**（不加横向噪声）。
+ *
+ * ## 算法（线性弧长重采样，纯函数）
+ *   ① 累计弧长 `cum[i]`；
+ *   ② 按"目标步数 = 总长 ÷ 3.42 m"生成每段步长，逐段在 [0.7, 1.3] 倍之间随机；
+ *   ③ 随机挑 0~2 段改成 10~30 m 的**断点**（模拟 GPS 丢点）；
+ *   ④ **整体按比例缩放**，让所有步长之和精确等于原长 ⇒ 首尾点与原版完全重合、总长不变；
+ *   ⑤ 在每个弧长位置线性插值出坐标（落点一定在原折线上，曲线形状不变）。
+ *
+ * ⚠️ 纯函数、随机源可注入；输出点列可以直接当本机几何（不插值、不重排、不横向抖动）。
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/** 实测：本机 22 条真实路径的点距均值（米）与逐段相对抖动（±30%） */
+export const REAL_PATH_RESAMPLE_STEP_M = 3.42
+export const REAL_PATH_RESAMPLE_STEP_SPREAD = 0.3
+/** 断点：每场 0~2 处、每处 10~30 m（实测 22 场共 13 处 >10 m 的跳点，最大 87.8 m） */
+export const REAL_PATH_RESAMPLE_GAP_MAX_COUNT = 2
+export const REAL_PATH_RESAMPLE_GAP_MIN_M = 10
+export const REAL_PATH_RESAMPLE_GAP_MAX_M = 30
+
+export interface RealPathResamplePlan {
+  /** 重采样后的点列（首尾与原版完全重合） */
+  points: RealPathPoint[]
+  /** 输入点数 / 输出点数 */
+  sourcePoints: number
+  sampledPoints: number
+  /** 步长均值（米）与实际断点数 */
+  meanStepM: number
+  gapCount: number
+  /** 不重采样的原因（空串 = 真的重采样了） */
+  skipped: string
+}
+
+/** 弧长 `d` 处的坐标（在原点列的两点之间线性插值；`d` 会被夹到 [0, 总长]） */
+function pointAtArcLength(list: RealPathPoint[], cum: number[], d: number): RealPathPoint {
+  const total = cum[cum.length - 1] ?? 0
+  const target = Math.min(Math.max(d, 0), total)
+  let lo = 0
+  let hi = list.length - 1
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1
+    if (cum[mid]! <= target) lo = mid
+    else hi = mid
+  }
+  const a = list[lo]!
+  const b = list[hi]!
+  const segLen = (cum[hi] ?? 0) - (cum[lo] ?? 0)
+  const t = segLen > 0 ? (target - (cum[lo] ?? 0)) / segLen : 0
+  return { latitude: a.latitude + (b.latitude - a.latitude) * t, longitude: a.longitude + (b.longitude - a.longitude) * t }
+}
+
+/**
+ * **线性弧长重采样**：点换一批、线还是那条线（2026-11-28 用户口径"让轨迹和原版差不多，但数据点发生变化"）。
+ *
+ * 判据：
+ *   · 首点 = 原点列第 0 点、尾点 = 原点列最后一点（总长精确不变）；
+ *   · 每段在 `stepMean × [0.7, 1.3]` 内随机，另有 0~2 段是 10~30 m 的断点；
+ *   · 点数 ≈ 总长 ÷ stepMean（3.2 km ⇒ 约 930~950 点，与真实数据 886~1183 同量级）。
+ */
+export function resampleRealPath(
+  points: RealPathPoint[],
+  opts: {
+    rng?: () => number
+    stepMeanM?: number
+    stepSpread?: number
+    gapMaxCount?: number
+    gapMinM?: number
+    gapMaxM?: number
+  } = {},
+): RealPathResamplePlan {
+  const rng = opts.rng ?? Math.random
+  const list = (Array.isArray(points) ? points : [])
+    .filter((p) => p && Number.isFinite(Number(p.latitude)) && Number.isFinite(Number(p.longitude)))
+    .map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
+  const skip = (reason: string): RealPathResamplePlan => ({
+    points: list,
+    sourcePoints: list.length,
+    sampledPoints: list.length,
+    meanStepM: 0,
+    gapCount: 0,
+    skipped: reason,
+  })
+  if (list.length < 3) return skip(`点太少（${list.length} 点），不重采样`)
+  const cum: number[] = [0]
+  for (let i = 1; i < list.length; i++) cum.push(cum[i - 1]! + distanceM(list[i - 1]!, list[i]!))
+  const total = cum[cum.length - 1] ?? 0
+  if (!(total > 5)) return skip('路径太短（< 5 m），不重采样')
+
+  const stepMean = Math.max(0.5, Number(opts.stepMeanM ?? REAL_PATH_RESAMPLE_STEP_M))
+  const spread = Math.min(0.9, Math.max(0, Number(opts.stepSpread ?? REAL_PATH_RESAMPLE_STEP_SPREAD)))
+  const gapMaxCount = Math.max(0, Math.min(10, Math.round(Number(opts.gapMaxCount ?? REAL_PATH_RESAMPLE_GAP_MAX_COUNT))))
+  const gapMin = Math.max(stepMean * 2, Number(opts.gapMinM ?? REAL_PATH_RESAMPLE_GAP_MIN_M))
+  const gapMax = Math.max(gapMin, Number(opts.gapMaxM ?? REAL_PATH_RESAMPLE_GAP_MAX_M))
+
+  /** ② 先按目标步数铺一段段步长 */
+  const count = Math.max(2, Math.round(total / stepMean))
+  const steps: number[] = []
+  for (let i = 0; i < count; i++) steps.push(stepMean * (1 - spread + rng() * 2 * spread))
+
+  /** ③ 随机挑 0~gapMaxCount 段改成断点（落在中间段，避免把首尾吃掉） */
+  const gapCount = count > 4 ? Math.floor(rng() * (gapMaxCount + 1)) : 0
+  const used = new Set<number>()
+  for (let g = 0; g < gapCount; g++) {
+    let idx = 1 + Math.floor(rng() * Math.max(1, count - 2))
+    for (let guard = 0; guard < 8 && used.has(idx); guard++) idx = 1 + Math.floor(rng() * Math.max(1, count - 2))
+    if (used.has(idx)) continue
+    used.add(idx)
+    steps[idx] = gapMin + rng() * (gapMax - gapMin)
+  }
+
+  /** ④ 整体按比例缩放 ⇒ 步长之和精确等于原长（首尾点不动） */
+  const sum = steps.reduce((a, b) => a + b, 0) || 1
+  const scale = total / sum
+  /** ⑤ 逐段取样（弧长线性插值） */
+  const out: RealPathPoint[] = [{ ...list[0]! }]
+  let pos = 0
+  for (const step of steps) {
+    pos = Math.min(total, pos + step * scale)
+    out.push(pointAtArcLength(list, cum, pos))
+  }
+  out[out.length - 1] = { ...list[list.length - 1]! }
+  return {
+    points: out,
+    sourcePoints: list.length,
+    sampledPoints: out.length,
+    meanStepM: Number((total / steps.length).toFixed(2)),
+    gapCount: used.size,
+    skipped: '',
+  }
+}
+
+/**
+ * **真实路径这一跑的完整几何计划**（2026-11-27 修剪 + 2026-11-28 重采样）：
+ *
+ * ## 为什么顺序是"先重采样、再修剪"（2026-11-28 实测改的）
+ * 重采样把点放在原折线上、相邻点走**弦**，会不可避免地把 GPS 顶点处的微小折角"抹掉"一点点长度
+ * （本机 22 条实测：3.42 m 一点时短 9~30 m，约 0.3%~0.9%）。若先修剪再重采样，最终里程就会比
+ * 修剪时算的小一截，可能跌破"要求 × (1+超跑系数)"这条下限（实测踩到过：3.22 → 3.20）。
+ * ⇒ 改成**先重采样、再按重采样后的真实长度做尾部修剪**，下限就永远成立。
+ *
+ * 另：重采样后若仍低于"要求 × 1.003"（原始里程本来就只比要求多一点点），**放弃重采样、保留原点列**
+ * （宁可不换点，也不让里程掉到要求以下）。
+ */
+export interface RealPathGeometryPlan {
+  /** 对应哪条预设（引擎据此确认不是上一轮留下的残留） */
+  entryId: string
+  /** 最终点列（重采样 → 尾部修剪后） */
+  points: RealPathPoint[]
+  /** 原始 / 重采样后 / 最终里程（km，3 位小数；都按各自点列实测） */
+  originalKm: number
+  resampledKm: number
+  finalKm: number
+  /** 首端恒为 0（只裁末尾）/ 尾端裁掉多少米 */
+  trimStartM: number
+  trimEndM: number
+  overshootRatio: number
+  /** 原始 / 重采样后 / 最终点数 */
+  sourcePoints: number
+  sampledPoints: number
+  keptPoints: number
+  /** 重采样里的断点数 */
+  gapCount: number
+  /** 重采样没做的原因（空串 = 做了） */
+  resampleSkipped: string
+  /** 尾部修剪没做的原因（空串 = 做了） */
+  skipped: string
+}
+
+export function planRealPathGeometry(
+  points: RealPathPoint[],
+  opts: { entryId?: string; requiredKm: number; rng?: () => number },
+): RealPathGeometryPlan {
+  const rng = opts.rng ?? Math.random
+  const entryId = String(opts.entryId ?? '')
+  const list = (Array.isArray(points) ? points : [])
+    .filter((p) => p && Number.isFinite(Number(p.latitude)) && Number.isFinite(Number(p.longitude)))
+    .map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
+  const originalKm = Number((pathLengthM(list) / 1000).toFixed(3))
+  const requiredKm = Number(opts.requiredKm)
+
+  /**
+   * ② 兜底门槛：重采样把长度吃掉一点点（弦切顶点），若已经低于"要求 × 1.003"就不换点。
+   * 判据：这条只在"有要求里程"时生效；自由跑（要求 0）照常重采样。
+   * 先按 3.42 m 试；不够就**改用更密的 2.05 m 再试一次**（点越密、弦切越少），仍不够才放弃。
+   */
+  const hardFloorM = requiredKm > 0 ? requiredKm * 1.003 * 1000 : 0
+  const accept = (pts: RealPathPoint[]): boolean => hardFloorM === 0 || pathLengthM(pts) >= hardFloorM
+  let resample = resampleRealPath(list, { rng })
+  if (!resample.skipped && !accept(resample.points)) {
+    const denser = resampleRealPath(list, { rng, stepMeanM: REAL_PATH_RESAMPLE_STEP_M * 0.6 })
+    if (!denser.skipped && accept(denser.points)) resample = denser
+    else {
+      resample = { ...resample, points: list, sampledPoints: list.length, gapCount: 0, skipped: `重采样后里程会低于下限 ${(hardFloorM / 1000).toFixed(3)} km，保留原点列` }
+    }
+  }
+  const sampled = resample.skipped && resample.points.length === list.length ? list : resample.points
+  const resampleSkipped = resample.skipped
+  const resampledKm = Number((pathLengthM(sampled) / 1000).toFixed(3))
+
+  /** ③ 再按重采样后的真实长度做尾部修剪（下限永远成立） */
+  const trim = planRealPathTrim(sampled, { entryId, requiredKm, rng })
+  const finalPoints = trim.points
+  return {
+    entryId,
+    points: finalPoints,
+    originalKm,
+    resampledKm,
+    finalKm: Number((pathLengthM(finalPoints) / 1000).toFixed(3)),
+    trimStartM: trim.trimStartM,
+    trimEndM: trim.trimEndM,
+    overshootRatio: trim.overshootRatio,
+    sourcePoints: list.length,
+    sampledPoints: resampleSkipped === resample.skipped ? resample.sampledPoints : list.length,
+    keptPoints: trim.keptPoints,
+    gapCount: resampleSkipped === resample.skipped ? resample.gapCount : 0,
+    resampleSkipped,
+    skipped: trim.skipped,
+  }
+}
+
+/** 界面一句话：重采样换了几点、尾部裁了多少、结算里程多少（没做就如实说原因） */
+export function realPathPlanText(plan: RealPathGeometryPlan | null | undefined): string {
+  if (!plan) return ''
+  const sampleText = plan.resampleSkipped
+    ? `重采样：不做 —— ${plan.resampleSkipped}`
+    : `重采样：${plan.sourcePoints} → ${plan.sampledPoints} 点（约 ${(plan.resampledKm * 1000 / Math.max(1, plan.sampledPoints - 1)).toFixed(1)} m 一点` +
+      `${plan.gapCount > 0 ? `，${plan.gapCount} 处断点` : ''}）`
+  const trimText = plan.skipped
+    ? `尾部修剪：不修剪 —— ${plan.skipped}`
+    : `尾部修剪：${plan.resampledKm.toFixed(2)} → ${plan.finalKm.toFixed(2)} km（裁掉末尾 ${Math.round(plan.trimEndM)} m）`
+  return `${sampleText} · ${trimText} · 结算里程 ${plan.finalKm.toFixed(2)} km，每次载入重抽`
 }
 
 /**

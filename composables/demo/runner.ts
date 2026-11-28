@@ -27,7 +27,7 @@ import { routeRequirementOf, taskPaperIdOf } from '~/utils/mp/taskShape'
 import { resolveFreePathGeometry } from '~/utils/mp/freePathGeometry'
 import { freeRouteGeometryChoice, resolveEntryName, type TrackRouteEntry } from '~/utils/mp/trackLibrary'
 // 🆕 2026-11-27（用户口径）：真实路径的**首尾修剪**（纯函数，判据与随机都在这里）
-import { planRealPathTrim } from '~/utils/mp/realPath'
+import { planRealPathGeometry } from '~/utils/mp/realPath'
 import { newRunSeed, paceGearOf, planRealisticRun, runPaceWindow, type RunPlan } from '~/utils/mp/realism'
 // 🆕 2026-10-07（用户要求）：本机记录 id（真实提交成功后要按它 / 按 settledAtMs 认领这一条）
 import { newLocalRecordId } from '~/utils/mp/recordState'
@@ -351,21 +351,22 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
       if (trackEntry?.realPath) {
         const curve = trackEntry.freeShape?.kind === 'curve' ? trackEntry.freeShape.points : []
         /**
-         * 🆕 2026-11-27（用户口径"起点和终点左右的数据点进行修剪…这类计算是在计算配速之前发生的"）：
-         * **先修剪、再算里程/配速/时长** —— 配速 = 用时 ÷ 里程，里程变了配速才跟着变，顺序不能反。
-         * 修剪计划由跑步页在「载入」时抽好放进来（同一份 ⇒ 界面显示与结算同源、不会"界面说 A 实际 B"）；
+         * 🆕 2026-11-27（用户口径"起点和终点左右的数据点进行修剪…这类计算是在计算配速之前发生的"）
+         * ＋ 🆕 2026-11-28（"只截断末尾不截断开始"、"加插值算法，让轨迹和原版差不多但数据点变化"）：
+         * **先修剪 + 重采样、再算里程/配速/时长** —— 配速 = 用时 ÷ 里程，顺序不能反。
+         * 几何计划由跑步页在「载入」时抽好放进来（同一份 ⇒ 界面显示与结算同源，不会"界面说 A 实际 B"）；
          * 对不上（换过预设 / 从没抽过）就这里自己抽一次，绝不拿上一条预设的残留。
          */
-        const trimRequiredKm = isSunRun ? requiredKmForThisRun : (Number(freeRunKm.value) || 0)
-        const cachedTrim =
-          run.value.realPathTrim && run.value.realPathTrim.entryId === String(trackEntry.id ?? '')
-            ? run.value.realPathTrim
+        const planRequiredKm = isSunRun ? requiredKmForThisRun : (Number(freeRunKm.value) || 0)
+        const cachedPlan =
+          run.value.realPathPlan && run.value.realPathPlan.entryId === String(trackEntry.id ?? '')
+            ? run.value.realPathPlan
             : null
-        const trim = cachedTrim ?? planRealPathTrim(
+        const plan = cachedPlan ?? planRealPathGeometry(
           curve.map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) })),
-          { entryId: String(trackEntry.id ?? ''), requiredKm: trimRequiredKm },
+          { entryId: String(trackEntry.id ?? ''), requiredKm: planRequiredKm },
         )
-        const source = trim.points.length >= 2 ? trim.points : curve
+        const source = plan.points.length >= 2 ? plan.points : curve
         const raw = source
           .map((p) => ({ latitude: Number(p.latitude), longitude: Number(p.longitude) }))
           .filter((p) => Number.isFinite(p.latitude) && Number.isFinite(p.longitude))
@@ -422,8 +423,8 @@ export function useDemoRunner(state: DemoStateApi, recordsApi: DemoRecordsApi) {
           plan: { targetKm: km, paceSecPerKm, overshootRatio: 0, durationSeconds },
           /** 随机值随状态带下去（结算两次都用它）；没随机过 = undefined ⇒ 用归档/下拉 */
           realPathPaceSeconds: picked > 0 ? paceSecPerKm : undefined,
-          /** 本次首尾修剪计划随状态带下去（换预设/重载才重抽；结算与界面读同一份） */
-          realPathTrim: trim,
+          /** 本次几何计划（尾部修剪 + 重采样）随状态带下去（换预设/重载才重抽；结算与界面读同一份） */
+          realPathPlan: plan,
           /** 结算时长：随机 ⇒ `里程×配速`；归档 ⇒ 归档原文；`finish()` 只在有值时用它 */
           durationOverrideSeconds: durationSeconds > 0 ? durationSeconds : undefined,
           speed: run.value.speed,

@@ -28,7 +28,7 @@ import type { PaceGearKey, RunPlan } from '~/utils/mp/realism'
 import type { LanePoint } from '~/utils/mp/laneProfile'
 import type { TaskCheckResult } from '~/utils/mp/taskRules'
 // 🆕 2026-11-27（用户口径）：真实路径的**首尾修剪计划**（判据/随机都在纯模块里，这里只带类型）
-import type { RealPathTrimPlan } from '~/utils/mp/realPath'
+import type { RealPathGeometryPlan } from '~/utils/mp/realPath'
 import { FREE_RUN_KM_DEFAULT, FREE_RUN_KM_KEY, clampFreeRunKm, parseStoredFreeRunKm } from '~/utils/mp/freeRun'
 // 🆕 2026-09-29（issue #13）：研途健行的"目标里程 / 圈数"与本机记忆（纯逻辑层，含唯一归一化入口）
 // ⚠️ 这里**故意不导入** `parseStoredYtuTargetKm`：它是"必须给个数"的变体，而 state 初始化要区分
@@ -139,12 +139,14 @@ export interface DemoRunState {
    */
   realPathPaceSeconds?: number
   /**
-   * 🆕 2026-11-27（用户口径"起点和终点左右的数据点进行修剪…在计算配速之前发生"）：
-   * **本次真实路径的首尾修剪计划**（判据与随机都在 `utils/mp/realPath.ts` 的 `planRealPathTrim`）。
-   * 有值且 `entryId` 对得上 ⇒ 引擎用 `points` 当轨迹、里程按它实测；`undefined`/对不上 ⇒ 引擎自己抽一次。
-   * ⚠️ 只存活在内存态：换预设/改要求里程/每次「原样载入并结算」都由界面重抽（见 `RunWorkspace.vue`）。
+   * 🆕 2026-11-27（用户口径"起点和终点左右的数据点进行修剪…在计算配速之前发生"）
+   * ＋ 🆕 2026-11-28（用户口径"只截断末尾不截断开始"、"加插值算法，让轨迹和原版差不多但数据点变化"）：
+   * **本次真实路径的完整几何计划**（尾部修剪 + 弧长重采样，判据/随机都在
+   * `utils/mp/realPath.ts` 的 `planRealPathGeometry`）。
+   * 有值且 `entryId` 对得上 ⇒ 引擎直接用 `points` 当轨迹、里程按它实测；对不上 ⇒ 引擎自己抽一次。
+   * ⚠️ 只存活在内存态：换预设/改要求里程/重置/重新生成都由界面重抽（见 `RunWorkspace.vue`）。
    */
-  realPathTrim?: RealPathTrimPlan | null
+  realPathPlan?: RealPathGeometryPlan | null
 }
 
 export interface DemoRunResult {
@@ -199,8 +201,8 @@ export const createRunState = (): DemoRunState => ({
   result: null,
   error: '',
   durationOverrideSeconds: undefined,
-  /** 真实路径的首尾修剪计划（换预设/每次载入由界面重抽） */
-  realPathTrim: null,
+  /** 真实路径的几何计划（尾部修剪 + 重采样；换预设/每次载入由界面重抽） */
+  realPathPlan: null,
 })
 
 /**
