@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>版本更新文案编辑器 · 龙猫天堂</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='24' font-size='24'%3E%F0%9F%93%9D%3C/text%3E%3C/svg%3E" />
+    <style>
+      :root {
+        --primary: #4caf50;
+        --secondary: #26a69a;
+        --bg: #121212;
+        --surface: #1e1e1e;
+        --surface-2: #262626;
+        --text: #eeeeee;
+        --muted: #9e9e9e;
+        --border: #333333;
+        --warn: #ffa726;
+        --ok: #66bb6a;
+        --err: #ef5350;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+        position: sticky;
+        top: 0;
+        z-index: 5;
+      }
+      header h1 { font-size: 15px; margin: 0; font-weight: 700; }
+      header .tag { font-size: 12px; color: var(--muted); }
+      header .spacer { flex: 1; }
+      input[type='text'], select {
+        background: var(--surface-2);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 6px 8px;
+        font: inherit;
+      }
+      button {
+        background: rgba(76, 175, 80, 0.15);
+        color: var(--primary);
+        border: 0;
+        border-radius: 6px;
+        padding: 7px 14px;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button.secondary { background: var(--surface-2); color: var(--text); }
+      button:hover { filter: brightness(1.15); }
+      #status { font-size: 12px; color: var(--muted); min-width: 8em; text-align: right; }
+      #status.ok { color: var(--ok); }
+      #status.err { color: var(--err); }
+      main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; height: calc(100vh - 118px); }
+      @media (max-width: 900px) { main { grid-template-columns: 1fr; height: auto; } }
+      .pane { display: flex; flex-direction: column; min-height: 0; }
+      .pane > .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+      textarea {
+        flex: 1;
+        width: 100%;
+        min-height: 320px;
+        resize: none;
+        background: var(--surface);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 14px;
+        font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        outline: none;
+      }
+      textarea:focus { border-color: var(--primary); }
+      /* —— 预览：刻意照抄主程序弹窗的观感（深色卡片 + 绿色主色），所见即所得 —— */
+      #preview {
+        flex: 1;
+        overflow: auto;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 18px;
+      }
+      .dialog-card {
+        background: var(--surface);
+        border-radius: 8px;
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55);
+        max-width: 560px;
+        margin: 0 auto;
+      }
+      .dialog-title { display: flex; align-items: center; gap: 8px; padding: 16px 18px 6px; font-size: 17px; font-weight: 700; }
+      .dialog-title .dot { color: var(--primary); }
+      .dialog-body { padding: 4px 18px 12px; font-size: 14px; }
+      .dialog-body h1, .dialog-body h2, .dialog-body h3 { margin: 12px 0 6px; font-size: 14px; color: var(--primary); }
+      .dialog-body p { margin: 8px 0; }
+      .dialog-body ul { margin: 8px 0; padding-left: 20px; }
+      .dialog-body li { margin: 4px 0; }
+      .dialog-body strong { color: #fff; }
+      .dialog-actions { display: flex; align-items: center; gap: 8px; padding: 10px 18px 16px; }
+      .dialog-actions .spacer { flex: 1; }
+      .btn-ghost { background: transparent; color: var(--primary); padding: 6px 10px; }
+      .btn-solid { background: var(--primary); color: #0b1a0d; padding: 6px 16px; border-radius: 4px; }
+      .empty-hint { color: var(--muted); font-style: normal; }
+      footer { padding: 0 16px 12px; font-size: 12px; color: var(--muted); }
+      footer code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+      #toast {
+        position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+        background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
+        padding: 8px 16px; border-radius: 20px; font-size: 13px; opacity: 0; pointer-events: none;
+        transition: opacity 0.2s;
+      }
+      #toast.show { opacity: 1; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>📝 版本更新文案编辑器</h1>
+      <span class="tag">独立小工具 · 与主程序无关</span>
+      <span class="spacer"></span>
+      <label class="tag" for="version">版本</label>
+      <input id="version" type="text" list="version-list" size="9" spellcheck="false" />
+      <datalist id="version-list"></datalist>
+      <button id="save" class="secondary">保存</button>
+      <span id="status"></span>
+    </header>
+
+    <main>
+      <section class="pane">
+        <div class="label">文案（Markdown 简易版：一行一条、<code>- </code>列表、<code>**粗体**</code>、<code>#</code> 小标题）</div>
+        <textarea id="editor" spellcheck="false" placeholder="在这里写这一版更新了什么……&#10;&#10;例如：&#10;- **真实路径**新增「首尾修剪」：载入时先裁掉起点与终点各一段&#10;- 配速改为按时长要求与里程四等分选档"></textarea>
+      </section>
+      <section class="pane">
+        <div class="label">预览（右边就是启动新版本时弹窗的样子）</div>
+        <div id="preview">
+          <div class="dialog-card">
+            <div class="dialog-title"><span class="dot">✨</span><span id="preview-title">v— 更新了什么</span></div>
+            <div class="dialog-body" id="preview-body"></div>
+            <div class="dialog-actions">
+              <button class="btn-ghost" disabled>看完整版本说明</button>
+              <span class="spacer"></span>
+              <button class="btn-solid" disabled>知道了</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      保存位置：<code id="file-hint">public/version-notes/&lt;版本&gt;.md</code> ·
+      快捷键 <code>⌘/Ctrl + S</code> 保存 · 停止输入 1.5 秒自动保存 ·
+      关掉这个终端即结束（文案已经写进仓库文件，不会丢）
+    </footer>
+    <div id="toast"></div>
+
+    <script type="module">
+      import { parseVersionNotes } from '/notes-parse.mjs'
+
+      const $ = (id) => document.getElementById(id)
+      const editor = $('editor')
+      const versionInput = $('version')
+      const statusEl = $('status')
+      const previewBody = $('preview-body')
+      const previewTitle = $('preview-title')
+
+      let currentVersion = ''
+      let savedText = ''
+      let dirty = false
+      let timer = null
+
+      const setStatus = (text, kind = '') => {
+        statusEl.textContent = text
+        statusEl.className = kind
+      }
+
+      const toast = (text) => {
+        const el = $('toast')
+        el.textContent = text
+        el.classList.add('show')
+        clearTimeout(el._t)
+        el._t = setTimeout(() => el.classList.remove('show'), 1600)
+      }
+
+      /** 渲染一段行内片段（**粗体** 用 <strong>，其余纯文本节点 —— 不解析 HTML） */
+      const renderInline = (parent, segments) => {
+        for (const seg of segments || []) {
+          if (seg.bold) {
+            const s = document.createElement('strong')
+            s.textContent = seg.text
+            parent.appendChild(s)
+          } else if (seg.text) {
+            parent.appendChild(document.createTextNode(seg.text))
+          }
+        }
+      }
+
+      const render = () => {
+        const { blocks, isEmpty } = parseVersionNotes(editor.value)
+        previewBody.textContent = ''
+        if (isEmpty) {
+          const p = document.createElement('p')
+          p.className = 'empty-hint'
+          p.textContent = '（本版未填写更新说明）'
+          previewBody.appendChild(p)
+        } else {
+          for (const block of blocks) {
+            if (block.kind === 'ul') {
+              const ul = document.createElement('ul')
+              for (const item of block.items || []) {
+                const li = document.createElement('li')
+                renderInline(li, item)
+                ul.appendChild(li)
+              }
+              previewBody.appendChild(ul)
+            } else {
+              const el = document.createElement(block.kind === 'h' ? `h${block.level || 2}` : 'p')
+              renderInline(el, block.text)
+              previewBody.appendChild(el)
+            }
+          }
+        }
+        previewTitle.textContent = `v${currentVersion || '—'} 更新了什么`
+        setStatus(dirty ? '未保存' : '已保存', dirty ? '' : 'ok')
+      }
+
+      const refreshVersions = (versions) => {
+        const list = $('version-list')
+        list.textContent = ''
+        for (const v of versions || []) {
+          const opt = document.createElement('option')
+          opt.value = v
+          list.appendChild(opt)
+        }
+      }
+
+      const load = async (version) => {
+        const res = await fetch(`/api/state?version=${encodeURIComponent(version)}`)
+        const data = await res.json()
+        if (!data.ok) throw new Error(data.error || '读取失败')
+        currentVersion = data.version
+        versionInput.value = data.version
+        editor.value = data.text
+        savedText = data.text
+        dirty = false
+        $('file-hint').textContent = data.file
+        refreshVersions(data.versions)
+        render()
+        return data
+      }
+
+      const save = async () => {
+        const res = await fetch('/api/save', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ version: versionInput.value.trim(), text: editor.value }),
+        })
+        const data = await res.json()
+        if (!data.ok) {
+          setStatus('保存失败', 'err')
+          toast(`保存失败：${data.error || '未知错误'}`)
+          return
+        }
+        currentVersion = data.version
+        savedText = editor.value
+        dirty = false
+        $('file-hint').textContent = data.file
+        refreshVersions(data.versions)
+        render()
+        toast(`已保存 ${data.file}（${data.bytes} B）`)
+      }
+
+      editor.addEventListener('input', () => {
+        dirty = editor.value !== savedText
+        render()
+        clearTimeout(timer)
+        timer = setTimeout(() => {
+          if (dirty) void save()
+        }, 1500)
+      })
+      editor.addEventListener('blur', () => {
+        if (dirty) void save()
+      })
+      versionInput.addEventListener('change', async () => {
+        if (dirty && !confirm('当前版本还有未保存的改动，切换版本会丢掉，继续？')) {
+          versionInput.value = currentVersion
+          return
+        }
+        try {
+          await load(versionInput.value.trim())
+        } catch (err) {
+          setStatus('读取失败', 'err')
+          toast(String(err.message || err))
+        }
+      })
+      $('save').addEventListener('click', () => void save())
+      document.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+          e.preventDefault()
+          void save()
+        }
+      })
+      window.addEventListener('beforeunload', (e) => {
+        if (dirty) e.preventDefault()
+      })
+
+      // 初始化：默认版本由服务端按 package.json 给（不硬编码，版本一升这里自动跟上）
+      try {
+        const boot = await fetch('/api/state').then((r) => r.json())
+        if (!boot.ok) throw new Error(boot.error || '读取失败')
+        refreshVersions(boot.versions)
+        await load(boot.version)
+      } catch (err) {
+        setStatus('读取失败', 'err')
+        toast(String(err.message || err))
+      }
+    </script>
+  </body>
+</html>

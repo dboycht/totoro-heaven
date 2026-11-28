@@ -47,6 +47,14 @@
 
       <v-btn icon="mdi-information-outline" title="关于" @click="aboutOpen = true" />
       <AboutDialog v-model="aboutOpen" />
+      <!-- 🆕 2026-11-28（用户口径）：启动新版本弹一次「更新了什么」；文案由独立编辑器写进
+           public/version-notes/<版本>.md，判定与"已读"在 composables/useVersionNotes.ts -->
+      <VersionNotesDialog
+        v-model="notesOpen"
+        :version="notesVersion"
+        :notes="notesParsed"
+        @seen="markNotesSeen"
+      />
     </v-app-bar>
 
     <v-main>
@@ -97,6 +105,13 @@ const doLogout = () => {
 }
 
 const aboutOpen = ref(false)
+
+/**
+ * 🆕 2026-11-28（用户口径"启动新版本的时候弹窗说明本次更新了什么"）：
+ * 弹窗状态全在 composable 里（读文案 / 判断该不该弹 / 记住已读过哪一版）。
+ * ⚠️ 它自己会在 `/play`、`/blank` 上避开（那两页有各自的开场流程）。
+ */
+const { version: notesVersion, open: notesOpen, notes: notesParsed, markSeen: markNotesSeen } = useVersionNotes()
 
 /**
  * 停更公告（2026-10-29 新增）已于 **2026-10-30 按用户要求取消**：

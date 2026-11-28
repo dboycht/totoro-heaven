@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "nuxt dev",
+    "notes:edit": "node tools/version-notes-editor/server.mjs",
     "build": "nuxt build",
     "preview": "node .output/server/index.mjs",
     "postinstall": "nuxt prepare",
